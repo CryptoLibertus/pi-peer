@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 import { normalizePeerDescriptor } from "./comms.mjs";
+import { normalizePeerIdleWatcherConfig } from "./idle-watcher.mjs";
 import { PEER_VERSION, peerProtocolMetadata, redactPeerAuditValue } from "./protocol.mjs";
 
 export const PEER_SETTINGS_RELATIVE_PATH = ".pi/settings.json";
@@ -33,6 +34,7 @@ export function parsePeerRuntimeConfig({ settings, peerFile, env } = {}) {
   for (const peer of configuredPeers(peerFile?.peers, "peers", warnings)) peersById.set(peer.peerId, { ...(peersById.get(peer.peerId) || {}), ...peer });
 
   const manifest = normalizePeerManifest(peerFile?.manifest || settings?.peerMessaging?.manifest || settings?.manifest);
+  const idleWatcher = normalizePeerIdleWatcherConfig(peerFile?.idleWatcher || settings?.peerMessaging?.idleWatcher || settings?.idleWatcher, { env });
   const peers = [...peersById.values()].map((peer) => markUnsupportedTransport(normalizePeerDescriptor({ ...manifestDefaults(manifest), ...peer }), warnings));
   const peerFileLocalPeerId = normalizePeerId(peerFile?.localPeerId);
   const settingsPeerMessagingLocalPeerId = normalizePeerId(settings?.peerMessaging?.localPeerId);
@@ -42,6 +44,7 @@ export function parsePeerRuntimeConfig({ settings, peerFile, env } = {}) {
     enabled,
     source: configSource(hasSettings, hasPeerFile),
     manifest,
+    idleWatcher,
     localPeerId,
     localPeerIdSource: localPeerIdSource({ peerFileLocalPeerId, settingsPeerMessagingLocalPeerId, settingsLocalPeerId }),
     peers,
@@ -101,6 +104,7 @@ export function summarizePeerRuntimeConfig(config) {
     localPeerProfile: summarizePeerProfile(config.localPeerProfile),
     protocolVersion: config.manifest?.protocolVersion || PEER_VERSION,
     manifest: summarizePeerManifest(config.manifest),
+    idleWatcher: summarizePeerIdleWatcher(config.idleWatcher),
     peerCount: Array.isArray(config.peers) ? config.peers.length : 0,
     peers: (config.peers || []).map((peer) => ({
       peerId: peer.peerId,
@@ -160,6 +164,15 @@ export function summarizePeerProfile(profile = {}) {
     if (value) summary[field] = value;
   }
   return Object.keys(summary).length ? summary : undefined;
+}
+
+function summarizePeerIdleWatcher(idleWatcher = {}) {
+  return {
+    enabled: idleWatcher.enabled !== false,
+    intervalMs: idleWatcher.intervalMs,
+    cooldownMs: idleWatcher.cooldownMs,
+    maxActivationsPerSession: idleWatcher.maxActivationsPerSession,
+  };
 }
 
 function defaultLocalPeerId() {

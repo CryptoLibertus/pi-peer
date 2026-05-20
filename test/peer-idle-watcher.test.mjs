@@ -1,0 +1,137 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  buildPeerIdleActivationPrompt,
+  createPeerIdleWatcher,
+  derivePeerIdleActivation,
+  markPeerIdleActivation,
+  normalizePeerIdleWatcherConfig,
+} from "../src/peers/idle-watcher.mjs";
+
+const openGoalBoard = {
+  goals: {
+    goal_123: {
+      id: "goal_123",
+      objective: "Ship idle watcher",
+      status: "open",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      events: [],
+    },
+  },
+};
+
+test("idle watcher config supports env disable and timing overrides", () => {
+  assert.equal(normalizePeerIdleWatcherConfig({}, { env: { PI_PEER_IDLE_WATCHER: "off" } }).enabled, false);
+  const config = normalizePeerIdleWatcherConfig({ intervalMs: 123, cooldownMs: 456, maxActivationsPerSession: 2 }, { env: {} });
+  assert.equal(config.enabled, true);
+  assert.equal(config.intervalMs, 123);
+  assert.equal(config.cooldownMs, 456);
+  assert.equal(config.maxActivationsPerSession, 2);
+});
+
+test("derivePeerIdleActivation picks scout suggestions and respects cooldown", () => {
+  const state = { activationCount: 0, lastActivationAtByKey: new Map() };
+  const activation = derivePeerIdleActivation(openGoalBoard, {
+    localPeerId: "worker-a",
+    state,
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(activation.goalId, "goal_123");
+  assert.equal(activation.kind, "next-step");
+
+  markPeerIdleActivation(state, activation, 1_000);
+  assert.equal(derivePeerIdleActivation(openGoalBoard, {
+    localPeerId: "worker-a",
+    state,
+    nowMs: 5_000,
+    config: { cooldownMs: 10_000 },
+  }), undefined);
+  assert.equal(derivePeerIdleActivation(openGoalBoard, {
+    localPeerId: "worker-a",
+    state,
+    nowMs: 12_000,
+    config: { cooldownMs: 10_000 },
+  }).goalId, "goal_123");
+});
+
+test("idle activation prompt tells peer to inspect state and avoid duplicate unsafe work", () => {
+  const text = buildPeerIdleActivationPrompt({
+    goalId: "goal_123",
+    priority: "P2",
+    kind: "next-step",
+    summary: "No active work yet",
+    paths: ["src"],
+  }, { localPeerId: "worker-a" });
+  assert.match(text, /peer_get id 'goal_123'/);
+  assert.match(text, /Do not duplicate active claims/);
+  assert.match(text, /claim write work only when you intend to edit/);
+});
+
+test("createPeerIdleWatcher only injects when context is idle and no peer messages are pending", async () => {
+  const sent = [];
+  const runtime = {
+    enabled: true,
+    localPeerId: "worker-a",
+    cwd: "/tmp/project",
+    config: { idleWatcher: { intervalMs: 1_000, cooldownMs: 10_000 } },
+    comms: { listMessages: async () => [] },
+    pendingInboundCount: () => 0,
+  };
+  const ctx = { cwd: "/tmp/project", isIdle: () => true, hasPendingMessages: () => false };
+  const watcher = createPeerIdleWatcher({
+    runtime,
+    pi: { sendMessage: (message, options) => sent.push({ message, options }) },
+    activeContext: () => ctx,
+    loadBoard: async () => openGoalBoard,
+    now: () => 1_000,
+    config: { intervalMs: 1_000, cooldownMs: 10_000 },
+  });
+
+  const result = await watcher.check("test");
+  assert.equal(result.activated, true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].options.triggerTurn, true);
+  assert.equal(sent[0].options.deliverAs, "followUp");
+
+  const cooledDown = await watcher.check("test");
+  assert.equal(cooledDown.activated, false);
+  assert.equal(sent.length, 1);
+
+  const busyWatcher = createPeerIdleWatcher({
+    runtime: { ...runtime, comms: { listMessages: async () => [{ status: "running" }] } },
+    pi: { sendMessage: (message, options) => sent.push({ message, options }) },
+    activeContext: () => ctx,
+    loadBoard: async () => openGoalBoard,
+    config: { intervalMs: 1_000, cooldownMs: 10_000 },
+  });
+  const busy = await busyWatcher.check("test");
+  assert.equal(busy.activated, false);
+  assert.equal(busy.reason, "peer messages pending");
+});
+
+test("idle watcher counts inbound nudges toward the per-session activation limit", async () => {
+  let nudgeCount = 0;
+  const runtime = {
+    enabled: true,
+    localPeerId: "worker-a",
+    cwd: "/tmp/project",
+    config: { idleWatcher: { intervalMs: 1_000, cooldownMs: 10_000, maxActivationsPerSession: 1 } },
+    comms: { listMessages: async () => [] },
+    pendingInboundCount: () => 1,
+    nudgeInboundIfIdle: () => ({ ok: true, messageId: `msg_${++nudgeCount}`, conversationId: "conv_1", activationAttempts: nudgeCount }),
+  };
+  const watcher = createPeerIdleWatcher({
+    runtime,
+    pi: { sendMessage: () => {} },
+    activeContext: () => ({ isIdle: () => true, hasPendingMessages: () => false }),
+    config: { intervalMs: 1_000, cooldownMs: 10_000, maxActivationsPerSession: 1 },
+  });
+
+  assert.equal((await watcher.check("test")).activated, true);
+  const limited = await watcher.check("test");
+  assert.equal(limited.activated, false);
+  assert.equal(limited.reason, "activation limit reached");
+  assert.equal(nudgeCount, 1);
+});

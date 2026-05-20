@@ -28,6 +28,7 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
     source: runtime.source || runtime.summary?.source || "none",
     localPeerId: runtime.localPeerId || runtime.summary?.localPeerId || "unknown",
     localPeerIdSource: runtime.summary?.localPeerIdSource || runtime.config?.localPeerIdSource,
+    projectScope: runtime.projectScope,
     protocolVersion: endpoint?.protocolVersion || runtime.summary?.protocolVersion || runtime.config?.manifest?.protocolVersion,
     localTrust: endpoint?.trust || runtime.config?.manifest?.trust || runtime.summary?.manifest?.trust,
     localCapabilities,
@@ -56,7 +57,7 @@ export function formatPeerStatusLines(status = {}) {
   const capsText = capabilitySummary(status.localCapabilities);
   const lines = [
     line("state", color, `🔗 peers ${enabledText} · id ${status.localPeerId || "unknown"}${profileText ? ` · ${profileText}` : ""}${protocolText} · source ${status.source || "none"}`),
-    line("endpoint", status.endpointStatus === "listening" ? "success" : status.enabled ? "warning" : "muted", `endpoint ${status.endpointStatus || "unknown"} · auth ${status.authStatus || "unknown"}`),
+    line("endpoint", status.endpointStatus === "listening" ? "success" : status.enabled ? "warning" : "muted", `endpoint ${status.endpointStatus || "unknown"} · auth ${status.authStatus || "unknown"}${status.projectScope ? " · repo scoped" : ""}`),
     line("peers", status.activeCount > 0 ? "accent" : "muted", `peers discovered ${status.discoveredCount || 0} · active ${status.activeCount || 0} · configured ${status.configuredPeers || 0}${capsText ? ` · caps ${capsText}` : ""}`),
     line("messages", status.pendingCount > 0 ? "accent" : "muted", `messages pending ${status.pendingCount || 0}`),
   ];

@@ -7,6 +7,7 @@ export const PI_PEER_INBOUND_CUSTOM_TYPE = "pi-peer-inbound";
 export function createInboundPromptBridge(options = {}) {
   const pi = options.pi;
   const responseTimeoutMs = Number.isInteger(options.responseTimeoutMs) ? options.responseTimeoutMs : 30 * 60 * 1000;
+  const activationNudgeCooldownMs = Number.isInteger(options.activationNudgeCooldownMs) ? options.activationNudgeCooldownMs : 30_000;
   const queue = [];
   let activeEntry;
 
@@ -19,17 +20,29 @@ export function createInboundPromptBridge(options = {}) {
     startActiveTimer(entry);
 
     try {
-      pi.sendMessage({
-        customType: PI_PEER_INBOUND_CUSTOM_TYPE,
-        content: renderInboundPeerPrompt(entry.envelope, { responderProfile: options.responderProfile, homeDir: options.homeDir }),
-        display: true,
-        envelope: summarizeEnvelope(entry.envelope),
-      }, { deliverAs: "followUp", triggerTurn: true });
+      sendActiveEntryToPi(entry, "initial");
     } catch (error) {
       activeEntry = undefined;
       settleEntry(entry, { status: "ERROR", summary: error?.message || String(error) });
       activateNext();
     }
+  }
+
+  function sendActiveEntryToPi(entry, reason) {
+    const now = Date.now();
+    entry.activationAttempts = (entry.activationAttempts || 0) + 1;
+    entry.lastNudgeAt = now;
+    if (!entry.activatedAt) entry.activatedAt = now;
+    pi.sendMessage({
+      customType: PI_PEER_INBOUND_CUSTOM_TYPE,
+      content: renderInboundPeerPrompt(entry.envelope, { responderProfile: options.responderProfile, homeDir: options.homeDir }),
+      display: true,
+      envelope: summarizeEnvelope(entry.envelope),
+      details: {
+        activationReason: reason,
+        activationAttempts: entry.activationAttempts,
+      },
+    }, { deliverAs: "followUp", triggerTurn: true });
   }
 
   function startActiveTimer(entry) {
@@ -87,6 +100,34 @@ export function createInboundPromptBridge(options = {}) {
       entry.context?.progress?.(progress);
       void recordGoalProgress(entry, progress, options).catch(() => {});
       return { ok: true, messageId: entry.messageId, conversationId: entry.conversationId, progress };
+    },
+
+    nudgeActive(input = {}) {
+      const entry = activeEntry;
+      if (!entry || entry.settled) return { ok: false, reason: "no active inbound peer task" };
+      const cooldownMs = Number.isInteger(input.cooldownMs) ? input.cooldownMs : activationNudgeCooldownMs;
+      const now = Date.now();
+      if (entry.lastNudgeAt && now - entry.lastNudgeAt < cooldownMs) {
+        return { ok: false, reason: "inbound activation nudge cooldown", messageId: entry.messageId, conversationId: entry.conversationId, activationAttempts: entry.activationAttempts || 0 };
+      }
+      try {
+        sendActiveEntryToPi(entry, input.reason || "idle-nudge");
+        return { ok: true, messageId: entry.messageId, conversationId: entry.conversationId, activationAttempts: entry.activationAttempts || 0 };
+      } catch (error) {
+        return { ok: false, reason: error?.message || String(error), messageId: entry.messageId, conversationId: entry.conversationId, activationAttempts: entry.activationAttempts || 0 };
+      }
+    },
+
+    activeState() {
+      const entry = activeEntry;
+      return entry && !entry.settled ? {
+        messageId: entry.messageId,
+        conversationId: entry.conversationId,
+        activatedAt: entry.activatedAt,
+        lastNudgeAt: entry.lastNudgeAt,
+        activationAttempts: entry.activationAttempts || 0,
+        queuedCount: queue.length,
+      } : { queuedCount: queue.length };
     },
 
     pendingCount() {

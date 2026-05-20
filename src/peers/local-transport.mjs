@@ -1,8 +1,8 @@
 import net from "node:net";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { PEER_VERSION, assertValidPeerEnvelope, createPeerEnvelope, isPeerProtocolCompatible, normalizePeerMessageResponseBody, peerProtocolMetadata, redactPeerAuditValue, resolvePeerAuthToken, validatePeerEnvelope } from "./protocol.mjs";
@@ -70,6 +70,7 @@ export function createLocalPeerEndpoint(options = {}) {
     ? options.presenceHeartbeatIntervalMs
     : DEFAULT_PRESENCE_HEARTBEAT_INTERVAL_MS;
   const authToken = resolveEndpointAuthToken(options);
+  let projectScope;
   let server;
   let descriptor;
   let presenceHeartbeatTimer;
@@ -117,6 +118,7 @@ export function createLocalPeerEndpoint(options = {}) {
         await chmod(socketDir, 0o700).catch(() => {});
       }
       if (socketPath && existsSync(socketPath)) await rm(socketPath, { force: true });
+      projectScope = options.projectScope || await derivePeerProjectScope(options.cwd);
       server = net.createServer((socket) => {
         sockets.add(socket);
         socket.once("close", () => sockets.delete(socket));
@@ -144,6 +146,7 @@ export function createLocalPeerEndpoint(options = {}) {
         maxHopCount: Number.isInteger(options.maxHopCount) ? options.maxHopCount : 1,
         pid: process.pid,
         cwd: options.cwd,
+        projectScope,
         sessionId: options.sessionId,
         role: safeDescriptorText(options.role),
         persona: safeDescriptorText(options.persona),
@@ -185,6 +188,7 @@ export async function discoverLocalPeerEndpoints(options = {}) {
   const discoveryDir = resolve(options.discoveryDir || LOCAL_PEER_DISCOVERY_DIR);
   const excludePeerId = options.excludePeerId;
   const maxAgeMs = Number.isInteger(options.maxAgeMs) ? options.maxAgeMs : 10 * 60 * 1000;
+  const projectScope = options.projectScope || (options.cwd ? await derivePeerProjectScope(options.cwd) : undefined);
   let names;
   try {
     names = await readdir(discoveryDir);
@@ -203,6 +207,10 @@ export async function discoverLocalPeerEndpoints(options = {}) {
     if (descriptor.transport !== "coms" || descriptor.status !== "active") continue;
     if (!descriptor.socketPath && !descriptor.pipeName) continue;
     if (!descriptor.updatedAt) continue;
+    if (projectScope) {
+      const descriptorScope = await descriptorProjectScope(descriptor);
+      if (!descriptorScope || descriptorScope !== projectScope) continue;
+    }
     const updatedAtMs = Date.parse(descriptor.updatedAt);
     if (!Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs > maxAgeMs) continue;
     if (!Number.isInteger(descriptor.pid) || !processAlive(descriptor.pid)) continue;
@@ -218,6 +226,7 @@ export async function discoverLocalPeerEndpoints(options = {}) {
       compatible: isPeerProtocolCompatible(descriptor),
       capabilities: descriptor.capabilities || {},
       cwd: descriptor.cwd,
+      projectScope: descriptor.projectScope,
       role: descriptor.role,
       persona: descriptor.persona,
       sessionId: descriptor.sessionId,
@@ -228,6 +237,47 @@ export async function discoverLocalPeerEndpoints(options = {}) {
     });
   }
   return peers;
+}
+
+export async function derivePeerProjectScope(cwd) {
+  const start = await canonicalPath(cwd || process.cwd());
+  const root = await findGitRoot(start);
+  return root || start;
+}
+
+async function descriptorProjectScope(descriptor = {}) {
+  if (typeof descriptor.projectScope === "string" && descriptor.projectScope.trim()) return canonicalPath(descriptor.projectScope);
+  if (typeof descriptor.cwd === "string" && descriptor.cwd.trim()) return derivePeerProjectScope(descriptor.cwd);
+  return undefined;
+}
+
+async function findGitRoot(start) {
+  let current = resolve(start || process.cwd());
+  for (;;) {
+    if (await hasGitMarker(current)) return current;
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+async function hasGitMarker(dir) {
+  try {
+    const marker = resolve(dir, ".git");
+    const info = await stat(marker);
+    return info.isDirectory() || info.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function canonicalPath(path) {
+  const resolved = resolve(path || process.cwd());
+  try {
+    return await realpath(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 async function sendEnvelopeToEndpoint(envelope, peer, options) {

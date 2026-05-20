@@ -4,7 +4,7 @@ import { InMemoryPeerTransport, MemoryPeerRegistry, createPeerComms } from "./co
 import { applyLocalPeerIdOverride, loadLocalPeerProfile, loadPeerRuntimeConfig, summarizePeerRuntimeConfig } from "./config.mjs";
 import { deriveGoalState, loadPeerGoalBoard } from "./goal-board.mjs";
 import { createInboundPromptBridge } from "./inbound-bridge.mjs";
-import { LocalPeerTransport, createLocalPeerEndpoint, discoverLocalPeerEndpoints } from "./local-transport.mjs";
+import { LocalPeerTransport, createLocalPeerEndpoint, derivePeerProjectScope, discoverLocalPeerEndpoints } from "./local-transport.mjs";
 import { createPeerMessageStore } from "./message-store.mjs";
 import { redactPeerAuditValue } from "./protocol.mjs";
 import { collectPeerRuntimeStatus, deriveFanoutSuggestion } from "./status.mjs";
@@ -48,6 +48,7 @@ export async function createPeerRuntime(cwd, options = {}) {
     messageStore,
     persistedState: persistedMessages,
   });
+  const projectScope = options.projectScope || await derivePeerProjectScope(cwd);
   let localEndpoint;
   let discoveredPeerIds = new Set();
 
@@ -59,12 +60,13 @@ export async function createPeerRuntime(cwd, options = {}) {
     summary: { ...summarizePeerRuntimeConfig(config), localPeerId },
     localPeerId,
     cwd,
+    projectScope,
     get localEndpoint() {
       return localEndpoint?.descriptor;
     },
     async refreshLocalPeers() {
       if (!config.enabled) return [];
-      const peers = await discoverLocalPeerEndpoints({ discoveryDir: options.discoveryDir, excludePeerId: localPeerId });
+      const peers = await discoverLocalPeerEndpoints({ discoveryDir: options.discoveryDir, excludePeerId: localPeerId, projectScope });
       const nextDiscoveredPeerIds = new Set(peers.map((peer) => peer.peerId));
       for (const peerId of discoveredPeerIds) {
         if (nextDiscoveredPeerIds.has(peerId)) continue;
@@ -82,6 +84,7 @@ export async function createPeerRuntime(cwd, options = {}) {
         const endpoint = createLocalPeerEndpoint({
           peerId: localPeerId,
           cwd,
+          projectScope,
           sessionId: options.sessionId || ctx.sessionId,
           role: localPeerProfile.role || options.role,
           persona: localPeerProfile.persona || options.persona,
@@ -110,6 +113,15 @@ export async function createPeerRuntime(cwd, options = {}) {
     },
     recordInboundProgress(progress) {
       return inboundBridge ? inboundBridge.recordProgress(progress) : { ok: false, reason: "no active inbound peer task" };
+    },
+    pendingInboundCount() {
+      return inboundBridge ? inboundBridge.pendingCount() : 0;
+    },
+    nudgeInboundIfIdle(input) {
+      return inboundBridge ? inboundBridge.nudgeActive(input) : { ok: false, reason: "no active inbound peer task" };
+    },
+    activeInboundState() {
+      return inboundBridge ? inboundBridge.activeState() : { queuedCount: 0 };
     },
     async shutdown() {
       if (inboundBridge) {

@@ -17,6 +17,7 @@ import {
   peerSendTimeoutToolResult,
 } from "../../src/peers/tool-results.mjs";
 import { PEER_TOOL_NAMES, PEER_TOOL_PROMPT_GUIDELINES } from "../../src/peers/guidance.mjs";
+import { createPeerIdleWatcher } from "../../src/peers/idle-watcher.mjs";
 
 const MESSAGE_TYPE = "pi-peer";
 const runtimeByCwd = new Map<string, Promise<any>>();
@@ -35,6 +36,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
     activeContext = ctx;
     const runtime = await runtimeFor(pi, ctx.cwd);
     attachPeerUi(runtime, () => activeContext, (current: any) => refreshPeerUi(current, runtime));
+    attachPeerIdleWatcher(pi, runtime, () => activeContext, (current: any) => refreshPeerUi(current, runtime));
     await refreshPeerUi(ctx, runtime);
   });
 
@@ -42,10 +44,13 @@ export default function piPeerExtension(pi: ExtensionAPI) {
     activeContext = ctx;
     const runtime = await runtimeFor(pi, ctx.cwd);
     await refreshPeerUi(ctx, runtime);
+    schedulePeerIdleCheck(runtime, "agent_end");
   });
 
   pi.on("session_shutdown", async (_event, ctx = {}) => {
-    await refreshPeerUi(ctx, await runtimeFor(pi, ctx.cwd));
+    const runtime = await runtimeFor(pi, ctx.cwd);
+    runtime.__peerIdleWatcher?.stop?.();
+    await refreshPeerUi(ctx, runtime);
     activeContext = undefined;
   });
 
@@ -581,6 +586,7 @@ async function resetRuntimeFor(cwd?: string) {
   const pending = runtimeByCwd.get(key);
   runtimeByCwd.delete(key);
   const runtime = await pending?.catch(() => undefined);
+  runtime?.__peerIdleWatcher?.stop?.();
   await runtime?.dispose?.();
 }
 
@@ -591,6 +597,29 @@ function attachPeerUi(runtime: any, activeContext: () => any, refresh: (ctx: any
     const ctx = activeContext();
     if (ctx?.hasUI) void refresh(ctx);
   });
+}
+
+function attachPeerIdleWatcher(pi: ExtensionAPI, runtime: any, activeContext: () => any, refresh: (ctx: any) => Promise<void>) {
+  if (!runtime?.enabled || !runtime?.comms) return false;
+  if (!runtime.__peerIdleWatcher) {
+    runtime.__peerIdleWatcher = createPeerIdleWatcher({
+      pi,
+      runtime,
+      activeContext,
+      refresh,
+      messageType: MESSAGE_TYPE,
+      env: process.env,
+    });
+  }
+  return runtime.__peerIdleWatcher.start?.();
+}
+
+function schedulePeerIdleCheck(runtime: any, reason: string) {
+  if (!runtime?.__peerIdleWatcher?.check) return;
+  const timer = setTimeout(() => {
+    void runtime.__peerIdleWatcher.check(reason).catch(() => {});
+  }, 0);
+  timer.unref?.();
 }
 
 function ensureEnabled(runtime: any) {
