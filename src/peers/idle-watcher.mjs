@@ -62,6 +62,9 @@ export function createPeerIdleWatcher(options = {}) {
       const board = await loadBoard(runtime.cwd || ctx?.cwd || process.cwd());
       const activation = derivePeerIdleActivation(board, {
         localPeerId: runtime.localPeerId,
+        localRole: runtime.config?.localPeerProfile?.role || runtime.localEndpoint?.role,
+        localPersona: runtime.config?.localPeerProfile?.persona || runtime.localEndpoint?.persona,
+        localCapabilities: runtime.localEndpoint?.capabilities || runtime.config?.manifest?.capabilities,
         config,
         state,
         nowMs: now(),
@@ -116,8 +119,8 @@ export function derivePeerIdleActivation(board, options = {}) {
   const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   for (const suggestion of suggestions) {
     if (!allowedKinds.has(suggestion.kind)) continue;
-    const activation = normalizeActivation(suggestion, options.localPeerId);
-    if (!activation) continue;
+    const activation = normalizeActivation(suggestion, options.localPeerId, options);
+    if (!activation || !activationFitsPeer(activation, options)) continue;
     if (isActivationCoolingDown(options.state, activation, config, nowMs)) continue;
     return activation;
   }
@@ -135,11 +138,14 @@ export function markPeerIdleActivation(state, activation, nowMs = Date.now()) {
 export function buildPeerIdleActivationPrompt(activation, options = {}) {
   const peerId = options.localPeerId || "this-peer";
   const paths = activation.paths?.length ? `\nPaths: ${activation.paths.join(", ")}` : "";
-  return `[Pi peer idle watcher]\nYou are local peer '${peerId}' and Pi is idle. A proactive goal-board scout suggestion is available.\n\nGoal: ${activation.goalId}\nSuggestion: ${activation.kind} (${activation.priority}) — ${activation.summary}${paths}\n\nInstructions:\n- First inspect current state with peer_get id '${activation.goalId}'.\n- If useful, take one small safe action: post a proposal/finding/vote, claim a read-only review lane, or claim write work only when you intend to edit and can name the paths.\n- Do not duplicate active claims or proposals. If the board is no longer actionable, say so briefly and stop.\n- For write work, respect goal-board claims and end with the required peer handoff sections.\n- Keep the response concise.`;
+  const lane = activation.recommendedLane ? `\nRecommended lane: ${activation.recommendedLane}${activation.claimMode ? ` (${activation.claimMode})` : ""}${activation.preferredRoles?.length ? ` · preferred roles: ${activation.preferredRoles.join(", ")}` : ""}` : "";
+  const rationale = activation.rationale ? `\nRationale: ${activation.rationale}` : "";
+  const fit = activation.personaFit?.matched?.length ? `\nPersona fit: matched ${activation.personaFit.matched.join(", ")}` : "";
+  return `[Pi peer idle watcher]\nYou are local peer '${peerId}' and Pi is idle. A proactive goal-board scout suggestion is available.\n\nGoal: ${activation.goalId}\nSuggestion: ${activation.kind} (${activation.priority}) — ${activation.summary}${lane}${rationale}${fit}${paths}\n\nInstructions:\n- First inspect current state with peer_get id '${activation.goalId}'.\n- If useful, take one small safe action that fits the recommended lane: post a proposal/finding/vote, claim a read-only review lane, or claim write work only when you intend to edit and can name the paths.\n- Do not duplicate active claims or proposals. If the board is no longer actionable, say so briefly and stop.\n- For write work, respect goal-board claims and end with the required peer handoff sections.\n- Keep the response concise.`;
 }
 
 export function peerIdleActivationKey(activation = {}) {
-  return [activation.goalId, activation.kind, activation.summary, ...(activation.paths || [])].join("|");
+  return [activation.goalId, activation.kind, activation.recommendedLane, activation.summary, ...(activation.paths || [])].join("|");
 }
 
 function isActivationCoolingDown(state, activation, config, nowMs) {
@@ -147,16 +153,74 @@ function isActivationCoolingDown(state, activation, config, nowMs) {
   return Number.isFinite(last) && nowMs - last < config.cooldownMs;
 }
 
-function normalizeActivation(suggestion = {}, localPeerId) {
+function normalizeActivation(suggestion = {}, localPeerId, options = {}) {
   if (!suggestion.goalId || !suggestion.kind || !suggestion.summary) return undefined;
+  const personaFit = peerPersonaFit(suggestion, options);
   return {
     goalId: suggestion.goalId,
     priority: suggestion.priority || "P2",
     kind: suggestion.kind,
     summary: suggestion.summary,
+    recommendedLane: cleanString(suggestion.recommendedLane),
+    preferredRoles: normalizeStringList(suggestion.preferredRoles),
+    preferredCapabilities: normalizeStringList(suggestion.preferredCapabilities),
+    claimMode: cleanString(suggestion.claimMode),
+    suggestedIntent: cleanString(suggestion.suggestedIntent),
+    rationale: cleanString(suggestion.rationale),
+    personaFit,
     paths: Array.isArray(suggestion.paths) ? suggestion.paths.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()) : [],
     peerId: localPeerId,
   };
+}
+
+function activationFitsPeer(activation = {}, options = {}) {
+  const preferred = activation.preferredRoles || [];
+  if (activation.priority === "P0" || !preferred.length) return true;
+  const fit = activation.personaFit || peerPersonaFit(activation, options);
+  if (!fit.hasProfile) return true;
+  return fit.matched.length > 0;
+}
+
+function peerPersonaFit(suggestion = {}, options = {}) {
+  const preferredRoles = normalizeStringList(suggestion.preferredRoles);
+  const localTerms = peerProfileTerms(options);
+  if (!preferredRoles.length) return { hasProfile: localTerms.length > 0, matched: [] };
+  const matched = preferredRoles.filter((role) => localTerms.includes(normalizeRoleToken(role)));
+  return { hasProfile: localTerms.some(isKnownRoleTerm), matched };
+}
+
+function peerProfileTerms(options = {}) {
+  const terms = [options.localRole, options.localPersona, options.localPeerId]
+    .flatMap((value) => String(value || "").toLowerCase().split(/[^a-z0-9]+/g))
+    .map(normalizeRoleToken)
+    .filter(Boolean);
+  const capabilities = options.localCapabilities && typeof options.localCapabilities === "object" ? options.localCapabilities : {};
+  if (Array.isArray(capabilities.roles)) terms.push(...capabilities.roles.map(normalizeRoleToken));
+  return [...new Set(terms)];
+}
+
+function isKnownRoleTerm(value) {
+  return ["planner", "coordinator", "reviewer", "qa", "worker", "researcher"].includes(value);
+}
+
+function normalizeRoleToken(value) {
+  const token = String(value || "").trim().toLowerCase();
+  if (!token) return "";
+  if (/^(reviewer|review|qa|quality)\d*$/.test(token)) return token === "qa" ? "qa" : "reviewer";
+  if (/^(worker|implement|implementation|code|coder|engineer|developer|task)\d*$/.test(token)) return "worker";
+  if (/^(researcher|research|scout)\d*$/.test(token)) return "researcher";
+  if (/^(planner|plan|coordinate|coordinator|orchestrator)\d*$/.test(token)) return token.startsWith("planner") ? "planner" : "coordinator";
+  return token;
+}
+
+function normalizeStringList(value) {
+  if (Array.isArray(value)) return [...new Set(value.map(cleanString).filter(Boolean))];
+  if (typeof value === "string") return [...new Set(value.split(",").map(cleanString).filter(Boolean))];
+  return [];
+}
+
+function cleanString(value) {
+  return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
 }
 
 function isContextIdle(ctx) {

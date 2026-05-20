@@ -133,18 +133,42 @@ function capabilitySummary(capabilities = {}) {
 }
 
 export function deriveFanoutSuggestion(peers = [], pendingMessages = []) {
-  const availablePeers = peers
+  const availablePeerDetails = peers
     .filter((peer) => !peer.current && !peer.self && peer.trust !== "disabled")
-    .map((peer) => peer.peerId)
-    .filter(Boolean);
+    .map((peer) => ({
+      peerId: peer.peerId,
+      role: safeStatusText(peer.role),
+      persona: safeStatusText(peer.persona),
+      recommendedLane: recommendLaneForPeer(peer),
+    }))
+    .filter((peer) => peer.peerId);
+  const availablePeers = availablePeerDetails.map((peer) => peer.peerId);
+  const lanes = availablePeerDetails.reduce((groups, peer) => {
+    const lane = peer.recommendedLane || "general";
+    if (!groups[lane]) groups[lane] = [];
+    groups[lane].push(peer.peerId);
+    return groups;
+  }, {});
   const activePeerTasks = pendingMessages.filter((message) => ["queued", "running"].includes(message.status));
   const recommended = availablePeers.length > 0 && activePeerTasks.length === 0;
+  const laneText = Object.entries(lanes).slice(0, 4).map(([lane, ids]) => `${lane}:${ids.slice(0, 3).join("/")}`).join(", ");
   return {
     recommended,
     availablePeers,
+    availablePeerDetails,
+    lanes,
     activePeerTaskCount: activePeerTasks.length,
-    warning: recommended ? `fan-out available for multi-lane work: ${availablePeers.slice(0, 4).join(", ")} — use /peer goal fanout or peer_send` : undefined,
+    warning: recommended ? `fan-out available for multi-lane work: ${availablePeers.slice(0, 4).join(", ")}${laneText ? ` · lanes ${laneText}` : ""} — use /peer goal fanout or peer_send` : undefined,
   };
+}
+
+function recommendLaneForPeer(peer = {}) {
+  const text = [peer.role, peer.persona, peer.peerId].filter(Boolean).join(" ").toLowerCase();
+  if (/(^|[^a-z0-9])(review|reviewer|qa|quality)\d*($|[^a-z0-9])/.test(text)) return "review";
+  if (/(^|[^a-z0-9])(research|researcher|scout)\d*($|[^a-z0-9])/.test(text)) return "research";
+  if (/(^|[^a-z0-9])(plan|planner|coord|coordinator|orchestrator)\d*($|[^a-z0-9])/.test(text)) return "coordination";
+  if (/(^|[^a-z0-9])(worker|implement|implementation|engineer|developer|code|coder|task)\d*($|[^a-z0-9])/.test(text)) return "implementation";
+  return "general";
 }
 
 function line(kind, color, text) {

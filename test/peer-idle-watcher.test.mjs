@@ -62,11 +62,82 @@ test("idle activation prompt tells peer to inspect state and avoid duplicate uns
     priority: "P2",
     kind: "next-step",
     summary: "No active work yet",
+    recommendedLane: "research",
+    preferredRoles: ["researcher", "reviewer"],
+    claimMode: "read",
+    rationale: "Empty goals need a read-only lane first.",
     paths: ["src"],
   }, { localPeerId: "worker-a" });
   assert.match(text, /peer_get id 'goal_123'/);
   assert.match(text, /Do not duplicate active claims/);
+  assert.match(text, /Recommended lane: research \(read\)/);
   assert.match(text, /claim write work only when you intend to edit/);
+});
+
+test("derivePeerIdleActivation uses persona fit when suggestions prefer roles", () => {
+  const proposalBoard = {
+    goals: {
+      goal_456: {
+        id: "goal_456",
+        objective: "Triage proposal",
+        status: "open",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        events: [{ id: "evt_1", type: "proposal", peerId: "worker-a", summary: "Pick a lane", paths: ["src"] }],
+      },
+    },
+  };
+
+  const reviewer = derivePeerIdleActivation(proposalBoard, {
+    localPeerId: "peer-a",
+    localRole: "reviewer",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(reviewer.kind, "open-proposal");
+  assert.equal(reviewer.recommendedLane, "coordination");
+  assert.deepEqual(reviewer.personaFit.matched, ["reviewer"]);
+
+  assert.equal(derivePeerIdleActivation(proposalBoard, {
+    localPeerId: "worker-a",
+    localRole: "worker",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  }), undefined);
+
+  assert.equal(derivePeerIdleActivation(proposalBoard, {
+    localPeerId: "generic-peer",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  }).kind, "open-proposal");
+
+  assert.equal(derivePeerIdleActivation(openGoalBoard, {
+    localPeerId: "worker3",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  }).personaFit.matched.includes("worker"), true);
+});
+
+test("derivePeerIdleActivation does not suppress critical blockers for mismatched personas", () => {
+  const blockerBoard = {
+    goals: {
+      goal_789: {
+        id: "goal_789",
+        objective: "Fix blocker",
+        status: "open",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        events: [{ id: "evt_1", type: "objection", peerId: "reviewer-a", summary: "Broken", severity: "blocking" }],
+      },
+    },
+  };
+
+  const activation = derivePeerIdleActivation(blockerBoard, {
+    localPeerId: "worker-a",
+    localRole: "worker",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(activation.kind, "blocker");
+  assert.equal(activation.priority, "P0");
 });
 
 test("createPeerIdleWatcher only injects when context is idle and no peer messages are pending", async () => {

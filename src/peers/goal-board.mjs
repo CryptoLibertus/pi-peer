@@ -9,6 +9,15 @@ const EVENT_TYPES = new Set(["finding", "task", "proposal", "claim", "release", 
 const BLOCKING_SEVERITIES = new Set(["blocking", "blocker", "critical"]);
 const VOTE_VERDICTS = new Set(["pass", "fail", "pass-with-risks"]);
 const DEFAULT_GOAL_CLAIM_STALE_MS = 45 * 60 * 1000;
+const SCOUT_LANES = Object.freeze({
+  blocker: { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "review", rationale: "Blocking objections need a coordination/review lane before more work starts." },
+  "failed-vote": { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "review", rationale: "Failed votes need triage before new implementation work." },
+  "stale-claim": { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator"], claimMode: "read", suggestedIntent: "coordinate", rationale: "Stale claims need owner follow-up or release, not duplicate writes." },
+  "open-proposal": { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "review", rationale: "Open proposals need triage into accept, defer, or resolve decisions." },
+  close: { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "coordinate", rationale: "Ready goals need final closure checks and a concise handoff." },
+  "next-step": { recommendedLane: "research", preferredRoles: ["researcher", "reviewer", "planner", "coordinator", "worker"], claimMode: "read", suggestedIntent: "review", rationale: "Empty goals benefit from a read-only lane before write claims." },
+  review: { recommendedLane: "review", preferredRoles: ["reviewer", "qa", "coordinator", "planner"], claimMode: "read", suggestedIntent: "review", rationale: "Goals without current votes need read-only validation before closure." },
+});
 const GOAL_BOARD_LOCK_STALE_MS = 30_000;
 const GOAL_BOARD_LOCK_RETRY_MS = 10;
 const GOAL_BOARD_LOCK_TIMEOUT_MS = 5_000;
@@ -222,7 +231,8 @@ export function formatPeerGoalScout(board, options = {}) {
   const lines = ["# Peer Scout", "", "Proactive suggestions (read-only):"];
   for (const suggestion of suggestions.slice(0, limit)) {
     const pathText = suggestion.paths?.length ? ` · paths: ${suggestion.paths.join(", ")}` : "";
-    lines.push(`- ${suggestion.priority} · ${suggestion.goalId} · ${suggestion.kind}: ${suggestion.summary}${pathText}`);
+    const laneText = suggestion.recommendedLane ? ` · lane: ${suggestion.recommendedLane}${suggestion.preferredRoles?.length ? ` for ${suggestion.preferredRoles.join("/")}` : ""}${suggestion.claimMode ? ` (${suggestion.claimMode})` : ""}` : "";
+    lines.push(`- ${suggestion.priority} · ${suggestion.goalId} · ${suggestion.kind}: ${suggestion.summary}${laneText}${pathText}`);
   }
   lines.push("", "Next: post one with `/peer goal propose <goal-id> <summary>` or claim safe work with `/peer goal claim <goal-id> <task> --mode read|write --path <path>`. Scout does not mutate the board.");
   return lines.join("\n");
@@ -238,7 +248,7 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
   const suggestions = [];
   for (const goal of goals) {
     const state = deriveGoalState(goal);
-    const push = (priority, kind, summary, extra = {}) => suggestions.push(stripEmpty({ goalId: goal.id, priority, kind, summary, ...extra }));
+    const push = (priority, kind, summary, extra = {}) => suggestions.push(enrichScoutSuggestion({ goalId: goal.id, priority, kind, summary, ...extra }));
     if (state.blockingObjections.length) {
       push("P0", "blocker", `Resolve ${state.blockingObjections.length} blocking objection${state.blockingObjections.length === 1 ? "" : "s"} before more work.`, { paths: uniqueEventPaths(state.blockingObjections) });
       continue;
@@ -481,6 +491,19 @@ function currentPeerVotes(votes) {
 
 function uniqueEventPaths(events) {
   return [...new Set(events.flatMap((event) => Array.isArray(event.paths) ? event.paths : []))];
+}
+
+function enrichScoutSuggestion(suggestion = {}) {
+  const lane = SCOUT_LANES[suggestion.kind] || {};
+  return stripEmpty({
+    ...suggestion,
+    recommendedLane: suggestion.recommendedLane || lane.recommendedLane,
+    preferredRoles: normalizeList(suggestion.preferredRoles || lane.preferredRoles),
+    preferredCapabilities: normalizeList(suggestion.preferredCapabilities || lane.preferredCapabilities),
+    claimMode: cleanText(suggestion.claimMode || lane.claimMode),
+    suggestedIntent: cleanText(suggestion.suggestedIntent || lane.suggestedIntent),
+    rationale: cleanText(suggestion.rationale || lane.rationale),
+  });
 }
 
 async function updatePeerGoalBoard(root, updater) {

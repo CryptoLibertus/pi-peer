@@ -164,7 +164,10 @@ test("scout suggestions are read-only and prioritize proactive next steps", asyn
     const suggestions = derivePeerGoalScoutSuggestions(board);
     assert.equal(JSON.stringify(board), before);
     assert.equal(suggestions[0].kind, "next-step");
-    assert.match(formatPeerGoalScout(board), /propose a research, review, or implementation lane|No active work yet/);
+    assert.equal(suggestions[0].recommendedLane, "research");
+    assert.deepEqual(suggestions[0].preferredRoles, ["researcher", "reviewer", "planner", "coordinator", "worker"]);
+    assert.equal(suggestions[0].claimMode, "read");
+    assert.match(formatPeerGoalScout(board), /lane: research for researcher\/reviewer\/planner\/coordinator\/worker \(read\)/);
 
     await appendPeerGoalEvent(root, goalId, {
       type: "objection",
@@ -173,7 +176,10 @@ test("scout suggestions are read-only and prioritize proactive next steps", asyn
       severity: "blocking",
     });
     const withBlocker = await loadPeerGoalBoard(root);
-    assert.equal(derivePeerGoalScoutSuggestions(withBlocker)[0].kind, "blocker");
+    const blockerSuggestion = derivePeerGoalScoutSuggestions(withBlocker)[0];
+    assert.equal(blockerSuggestion.kind, "blocker");
+    assert.equal(blockerSuggestion.recommendedLane, "coordination");
+    assert.deepEqual(blockerSuggestion.preferredRoles, ["planner", "coordinator", "reviewer"]);
   });
 });
 
