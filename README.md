@@ -61,11 +61,33 @@ Normal goal closure requires at least one current passing vote, no current faile
 ## Package checks
 
 ```bash
-npm --prefix packages/pi-peer test
-npm --prefix packages/pi-peer run check:pack
-npm --prefix packages/pi-peer run smoke:pack
-npm --prefix packages/pi-peer run check
+npm test
+npm run check:pack
+npm run smoke:pack
+npm run check
 ```
+
+## Publish to npm
+
+Use this release workflow after landing package changes on `main`:
+
+```bash
+# Keep local peer runtime state out of release commits.
+echo ".pi/" >> .git/info/exclude
+
+# Verify the package before changing the version.
+git status --short
+npm run check
+
+# Bump, commit, and tag the next patch version.
+npm version patch
+
+# Push the release commit and tag, then publish.
+git push origin main --tags
+npm publish --access public
+```
+
+If `npm version patch` reports `Git working directory not clean`, inspect `git status --short`. Do not commit `.pi/`; add it to `.git/info/exclude` or remove local runtime files. If `package.json` was already bumped by the failed command, either commit/tag it manually or reset `package.json` and rerun `npm version patch`.
 
 ## Notes
 
