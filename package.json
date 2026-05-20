@@ -1,0 +1,58 @@
+{
+  "name": "@bob-pro/pi-peer",
+  "version": "0.3.2",
+  "description": "Pi package for local Pi-to-Pi peer messaging, slash commands, tools, and runtime transport.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-peer",
+    "peer-messaging",
+    "agent-collaboration"
+  ],
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test ../../test/peer-*.test.mjs",
+    "check": "npm test && npm run check:pack",
+    "check:pack": "npm pack --dry-run",
+    "smoke:pack": "npm run check:pack",
+    "prepublishOnly": "npm run check"
+  },
+  "exports": {
+    ".": "./src/peers/comms.mjs",
+    "./extension": "./extensions/pi-peer/index.ts",
+    "./peers/*": "./src/peers/*.mjs"
+  },
+  "pi": {
+    "extensions": [
+      "extensions/pi-peer/index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "npm@11.12.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CryptoLibertus/pi-peer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/CryptoLibertus/pi-peer/issues"
+  },
+  "homepage": "https://github.com/CryptoLibertus/pi-peer#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}
