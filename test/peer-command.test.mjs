@@ -49,6 +49,18 @@ test("repeated list-style flags append instead of replacing earlier values", () 
   assert.deepEqual(fanout.paths, ["src", "test"]);
 });
 
+test("parses semantic work-key duplicate controls", () => {
+  const send = parsePeerCommand("send reviewer Review this --goal goal_123 --key review:abc --lane review --duplicate-policy reuse");
+  assert.equal(send.workKey, "review:abc");
+  assert.equal(send.workLane, "review");
+  assert.equal(send.duplicatePolicy, "reuse");
+  assert.equal(send.metadata.workKey, "review:abc");
+
+  const claim = parsePeerCommand("goal claim goal_123 Review this --mode read --key review:abc --duplicate-policy allow-parallel");
+  assert.equal(claim.workKey, "review:abc");
+  assert.equal(claim.duplicatePolicy, "allow-parallel");
+});
+
 test("repeated scalar flags keep last-value behavior", () => {
   const parsed = parsePeerCommand("send worker Do work --timeout-ms 100 --timeout-ms 250 --intent ask --intent review");
   assert.equal(parsed.timeoutMs, 250);

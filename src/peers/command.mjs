@@ -65,10 +65,13 @@ export function parsePeerCommand(rawArgs = "") {
       maxHopCount: positiveIntegerFlag(flags.maxHopCount),
       allowSelf: flagEnabled(flags.allowSelf),
       goalId,
-      goalClaimMode: stringFlag(flags.claimMode, "write"),
+      goalClaimMode: stringFlag(flags.claimMode, undefined),
       goalStaleAfterMs: positiveIntegerFlag(flags.staleAfterMs),
+      workKey: stringFlag(flags.workKey || flags.key, undefined),
+      workLane: stringFlag(flags.workLane || flags.lane, undefined),
+      duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined),
       claimedPaths,
-      metadata: metadataFromFlags(flags, { goalId, claimedPaths }),
+      metadata: metadataFromFlags(flags, { goalId, claimedPaths, workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined) }),
     };
   }
   if (subcommand === "goal") {
@@ -137,7 +140,7 @@ export function formatPeerHelp() {
     "- `/peer reconnect` — refresh local discovery and show current status",
     "- `/peer resume <message-id>` — resume a disconnected restored peer message after reconnect",
     "- `/peer cancel <message-id> [reason]` — mark a queued/running/disconnected peer message cancelled",
-    "- `/peer send <peer> <prompt> [--no-await] [--intent ask] [--goal <goal-id>] [--claim <path[,path]>] [--timeout-ms <ms>] [--allow-self]` — send a prompt-first peer message",
+    "- `/peer send <peer> <prompt> [--no-await] [--intent ask] [--goal <goal-id>] [--claim <path[,path]>] [--key <work-key>] [--duplicate-policy reuse|error|allow-parallel]` — send a prompt-first peer message",
     "- `/peer progress <summary> [--status running] [--phase <name>]` — send a structured checkpoint from an inbound long-running peer task",
     "- `/peer goals|ls`, `/peer current [goal-id]`, `/peer scout [goal-id]`, `/peer fanout`, `/peer propose`, `/peer take|claim`, `/peer complete|done`, `/peer objection|block`, `/peer unblock`, `/peer ping`, `/peer drop`, `/peer pass|fail` — short goal-board aliases",
     "- `/peer goal create <objective> [--constraint <a,b>]` — start a flat shared goal board",
@@ -145,7 +148,7 @@ export function formatPeerHelp() {
     "- `/peer goal fanout <goal-id> <objective> --peer <id[,id]> [--path <a,b>] [--send] [--no-await]` — plan or dispatch role-specific peer lanes",
     "- `/peer goal scout [goal-id] [--limit <n>] [--include-closed]` — read-only proactive suggestions for what peers could do next",
     "- `/peer goal task|finding|proposal|handoff|note <goal-id> <summary> [--path <a,b>] [--status done]` — post goal-board events",
-    "- `/peer goal claim <goal-id> <task> --mode write --path <a,b> [--ttl-ms <ms>] [--stale-after-ms <ms>]` — lease work without hierarchy",
+    "- `/peer goal claim <goal-id> <task> --mode read|write --path <a,b> [--key <work-key>] [--duplicate-policy error|allow-parallel] [--ttl-ms <ms>]` — lease work without hierarchy",
     "- `/peer goal heartbeat <goal-id> <claim-event-id> [summary] [--ttl-ms <ms>] [--stale-after-ms <ms>]` — refresh a live or stale claim",
     "- `/peer goal release <goal-id> <claim-event-id> [summary]` — release a claimed lane",
     "- `/peer goal object <goal-id> <reason> [--path <a,b>]`, `/peer goal resolve <goal-id> <event-id> <summary>`, `/peer goal vote <goal-id> <pass|fail|pass-with-risks> [summary]`",
@@ -198,14 +201,14 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
     const goalId = rest[0];
     const summary = rest.slice(1).join(" ").trim();
     if (!goalId || !summary) return { ...withAction, error: `/peer goal ${action} requires <goal-id> <summary>` };
-    return { ...withAction, goalId, eventType: action === "propose" ? "proposal" : action, summary, paths: listFlag(flags.path || flags.paths), severity: stringFlag(flags.severity, undefined), taskId: stringFlag(flags.taskId, undefined), status: stringFlag(flags.status, undefined) };
+    return { ...withAction, goalId, eventType: action === "propose" ? "proposal" : action, summary, paths: listFlag(flags.path || flags.paths), severity: stringFlag(flags.severity, undefined), taskId: stringFlag(flags.taskId, undefined), status: stringFlag(flags.status, undefined), workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined) };
   }
   if (action === "claim") {
     if (flagEnabled(flags.write) && flags.mode === undefined) flags.mode = "write";
     const goalId = rest[0];
     const summary = rest.slice(1).join(" ").trim();
     if (!goalId || !summary) return { ...withAction, error: "/peer goal claim requires <goal-id> <task>" };
-    return { ...withAction, goalId, summary, paths: listFlag(flags.path || flags.paths), mode: stringFlag(flags.mode, "read"), ttlMs: positiveIntegerFlag(flags.ttlMs), staleAfterMs: positiveIntegerFlag(flags.staleAfterMs) };
+    return { ...withAction, goalId, summary, paths: listFlag(flags.path || flags.paths), mode: stringFlag(flags.mode, "read"), workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined), ttlMs: positiveIntegerFlag(flags.ttlMs), staleAfterMs: positiveIntegerFlag(flags.staleAfterMs) };
   }
   if (action === "heartbeat") {
     const goalId = rest[0];
@@ -266,9 +269,15 @@ function positiveIntegerFlag(value) {
 function metadataFromFlags(flags = {}, options = {}) {
   const claimedPaths = options.claimedPaths || claimedPathsFlag(flags.claim || flags.claimedPath || flags.claimedPaths);
   const goalId = options.goalId || stringFlag(flags.goal || flags.goalId, undefined);
+  const workKey = options.workKey || stringFlag(flags.workKey || flags.key, undefined);
+  const workLane = options.workLane || stringFlag(flags.workLane || flags.lane, undefined);
+  const duplicatePolicy = options.duplicatePolicy || stringFlag(flags.duplicatePolicy, undefined);
   return {
     ...(claimedPaths.length ? { claimedPaths } : {}),
     ...(goalId ? { goalId } : {}),
+    ...(workKey ? { workKey } : {}),
+    ...(workLane ? { workLane } : {}),
+    ...(duplicatePolicy ? { duplicatePolicy } : {}),
   };
 }
 

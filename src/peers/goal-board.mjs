@@ -8,6 +8,7 @@ export const PEER_GOAL_BOARD_RELATIVE_PATH = ".pi/peer-goals.json";
 const EVENT_TYPES = new Set(["finding", "task", "proposal", "claim", "release", "heartbeat", "objection", "resolve", "vote", "handoff", "note"]);
 const BLOCKING_SEVERITIES = new Set(["blocking", "blocker", "critical"]);
 const VOTE_VERDICTS = new Set(["pass", "fail", "pass-with-risks"]);
+const DUPLICATE_POLICIES = new Set(["error", "reuse", "allow-parallel"]);
 const DEFAULT_GOAL_CLAIM_STALE_MS = 45 * 60 * 1000;
 const SCOUT_LANES = Object.freeze({
   blocker: { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "review", rationale: "Blocking objections need a coordination/review lane before more work starts." },
@@ -105,26 +106,61 @@ export async function closePeerGoal(root, goalId, input = {}) {
 
 export async function beginPeerGoalTask(root, goalId, input = {}) {
   const id = requiredGoalId(goalId || input.goalId);
-  const board = await loadPeerGoalBoard(root);
-  if (!board.goals[id]) throw new Error(`peer goal ${id} not found`);
-  const paths = normalizePaths(input.claimedPaths || input.paths);
-  if (!paths.length) return { goalId: id, goal: deriveGoalState(board.goals[id]) };
+  return updatePeerGoalBoard(root, (board) => {
+    const goal = resolveGoal(board, id);
+    const paths = normalizePaths(input.claimedPaths || input.paths);
+    const mode = cleanText(input.mode || input.claimMode || (paths.length ? "write" : "read")).toLowerCase();
+    const lane = cleanText(input.lane || input.workLane || input.intent || mode).toLowerCase();
+    const workKey = normalizeWorkKey(input.workKey) || derivePeerGoalWorkKey({
+      goalId: id,
+      lane,
+      objective: input.objective || input.summary || input.prompt,
+      mode,
+      paths,
+    });
+    if (!paths.length && !workKey) return { goalId: id, goal: deriveGoalState(goal) };
 
-  const result = await appendPeerGoalEvent(root, id, {
-    type: "claim",
-    peerId: cleanText(input.targetPeerId || input.peerId) || "unknown",
-    summary: taskSummary(input),
-    paths,
-    mode: cleanText(input.mode || input.claimMode || "write").toLowerCase(),
-    ttlMs: input.ttlMs,
-    staleAfterMs: input.staleAfterMs,
-    metadata: stripEmpty({ requesterPeerId: cleanText(input.requesterPeerId), targetPeerId: cleanText(input.targetPeerId) }),
+    const duplicatePolicy = normalizeDuplicatePolicy(input.duplicatePolicy) || "reuse";
+    if (workKey && duplicatePolicy === "reuse") {
+      const state = deriveGoalState(goal);
+      const existingClaim = state.activeClaims.find((claim) => claim.workKey === workKey);
+      if (existingClaim) {
+        return {
+          goalId: id,
+          goal: state,
+          duplicate: true,
+          duplicatePolicy,
+          workKey,
+          existingClaim,
+          existingTask: latestTaskForWorkKey(state.tasks, workKey),
+        };
+      }
+    }
+
+    const event = normalizeEvent({
+      type: "claim",
+      peerId: cleanText(input.targetPeerId || input.peerId) || "unknown",
+      summary: taskSummary(input),
+      paths,
+      mode,
+      lane,
+      workKey,
+      duplicatePolicy,
+      ttlMs: input.ttlMs,
+      staleAfterMs: input.staleAfterMs,
+      metadata: stripEmpty({ requesterPeerId: cleanText(input.requesterPeerId), targetPeerId: cleanText(input.targetPeerId), workKey, lane, duplicatePolicy }),
+    });
+    validateClaim(goal, event);
+    goal.events.push(event);
+    goal.updatedAt = event.at;
+    board.currentGoalId = goal.id;
+    return { goalId: id, goal: deriveGoalState(goal), claimEvent: event, workKey, duplicatePolicy };
   });
-  return { goalId: id, goal: result.goal, claimEvent: result.event };
 }
 
 export async function recordPeerGoalTaskDispatch(root, goalId, input = {}) {
   const id = requiredGoalId(goalId || input.goalId);
+  const workKey = normalizeWorkKey(input.workKey) || derivePeerGoalWorkKey({ goalId: id, lane: input.lane || input.workLane || input.intent || input.mode, objective: input.objective || input.summary || input.prompt, mode: input.mode || input.claimMode, paths: input.claimedPaths || input.paths });
   const result = await appendPeerGoalEvent(root, id, {
     type: "task",
     peerId: cleanText(input.requesterPeerId || input.peerId) || "unknown",
@@ -132,11 +168,15 @@ export async function recordPeerGoalTaskDispatch(root, goalId, input = {}) {
     paths: input.claimedPaths || input.paths,
     taskId: input.messageId,
     status: cleanText(input.status || "running"),
+    workKey,
+    lane: input.lane || input.workLane,
+    duplicatePolicy: input.duplicatePolicy,
     metadata: stripEmpty({
       messageId: cleanText(input.messageId),
       conversationId: cleanText(input.conversationId),
       targetPeerId: cleanText(input.targetPeerId),
       claimEventId: cleanText(input.claimEventId),
+      workKey,
     }),
   });
   return { goalId: id, goal: result.goal, taskEvent: result.event };
@@ -144,6 +184,7 @@ export async function recordPeerGoalTaskDispatch(root, goalId, input = {}) {
 
 export async function completePeerGoalTask(root, goalId, input = {}) {
   const id = requiredGoalId(goalId || input.goalId);
+  const workKey = normalizeWorkKey(input.workKey) || derivePeerGoalWorkKey({ goalId: id, lane: input.lane || input.workLane || input.intent || input.mode, objective: input.objective || input.summary || input.prompt, mode: input.mode || input.claimMode, paths: input.claimedPaths || input.paths });
   const handoff = await appendPeerGoalEvent(root, id, {
     type: "handoff",
     peerId: cleanText(input.targetPeerId || input.peerId) || "unknown",
@@ -151,11 +192,14 @@ export async function completePeerGoalTask(root, goalId, input = {}) {
     paths: input.claimedPaths || input.paths,
     taskId: input.messageId,
     status: cleanText(input.status || "done"),
+    workKey,
+    lane: input.lane || input.workLane,
     metadata: stripEmpty({
       messageId: cleanText(input.messageId),
       conversationId: cleanText(input.conversationId),
       claimEventId: cleanText(input.claimEventId),
       responseStatus: cleanText(input.responseStatus),
+      workKey,
     }),
   });
   if (!input.claimEventId) return { goalId: id, goal: handoff.goal, handoffEvent: handoff.event };
@@ -166,6 +210,16 @@ export async function completePeerGoalTask(root, goalId, input = {}) {
     summary: cleanText(input.releaseSummary) || `Released claim ${input.claimEventId}`,
   });
   return { goalId: id, goal: release.goal, handoffEvent: handoff.event, releaseEvent: release.event };
+}
+
+export function derivePeerGoalWorkKey(input = {}) {
+  const goalId = normalizeWorkKeyPart(input.goalId);
+  const lane = normalizeWorkKeyPart(input.lane || input.workLane || input.intent || "work");
+  const objective = normalizeWorkKeyPart(input.objective || input.summary || input.prompt || "work");
+  const mode = normalizeWorkKeyPart(input.mode || input.claimMode || "read");
+  const paths = normalizePaths(input.paths || input.claimedPaths).map(normalizeWorkKeyPart).sort();
+  const parts = [goalId, lane, objective, mode, paths.join(",")].filter((part) => part !== undefined && part !== "");
+  return parts.length ? parts.join("|") : undefined;
 }
 
 export function deriveGoalState(goal, options = {}) {
@@ -248,7 +302,10 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
   const suggestions = [];
   for (const goal of goals) {
     const state = deriveGoalState(goal);
-    const push = (priority, kind, summary, extra = {}) => suggestions.push(enrichScoutSuggestion({ goalId: goal.id, priority, kind, summary, ...extra }));
+    const push = (priority, kind, summary, extra = {}) => {
+      const suggestion = enrichScoutSuggestion({ goalId: goal.id, priority, kind, summary, ...extra });
+      if (!hasActiveClaimForScoutSuggestion(state, suggestion)) suggestions.push(suggestion);
+    };
     if (state.blockingObjections.length) {
       push("P0", "blocker", `Resolve ${state.blockingObjections.length} blocking objection${state.blockingObjections.length === 1 ? "" : "s"} before more work.`, { paths: uniqueEventPaths(state.blockingObjections) });
       continue;
@@ -286,11 +343,11 @@ export function formatPeerGoal(goal) {
   if (state.constraints?.length) lines.push(`constraints: ${state.constraints.join("; ")}`);
   if (state.activeClaims.length) {
     lines.push("", "Active claims:");
-    for (const claim of state.activeClaims) lines.push(`- ${claim.id} · ${claim.peerId} · ${claim.mode || "read"} · ${claim.summary}${claim.paths?.length ? ` · ${claim.paths.join(", ")}` : ""}`);
+    for (const claim of state.activeClaims) lines.push(`- ${claim.id} · ${claim.peerId} · ${claim.mode || "read"} · ${claim.summary}${claim.paths?.length ? ` · ${claim.paths.join(", ")}` : ""}${claim.workKey ? ` · key ${truncate(claim.workKey, 80)}` : ""}`);
   }
   if (state.staleClaims.length) {
     lines.push("", "Stale claims:");
-    for (const claim of state.staleClaims.slice(-8)) lines.push(`- ${claim.id} · ${claim.peerId} · ${claim.mode || "read"} · ${claim.summary}${claim.lastHeartbeatAt ? ` · last heartbeat ${claim.lastHeartbeatAt}` : ""}`);
+    for (const claim of state.staleClaims.slice(-8)) lines.push(`- ${claim.id} · ${claim.peerId} · ${claim.mode || "read"} · ${claim.summary}${claim.workKey ? ` · key ${truncate(claim.workKey, 80)}` : ""}${claim.lastHeartbeatAt ? ` · last heartbeat ${claim.lastHeartbeatAt}` : ""}`);
   }
   if (state.expiredClaims.length) {
     lines.push("", "Expired claims:");
@@ -322,6 +379,10 @@ function validateClaim(goal, event) {
   const paths = normalizePaths(event.paths);
   if (event.mode === "write" && paths.length === 0) throw new Error("write claims require --path <path[,path]>");
   const state = deriveGoalState(goal);
+  if (event.workKey && event.duplicatePolicy !== "allow-parallel") {
+    const duplicates = state.activeClaims.filter((claim) => claim.workKey === event.workKey);
+    if (duplicates.length) throw new Error(`claim duplicates active work key ${event.workKey} already held by ${duplicates.map((claim) => claim.id).join(", ")}`);
+  }
   if (event.mode === "write") {
     const conflicts = state.activeClaims.filter((claim) => claim.mode === "write" && pathsOverlap(paths, claim.paths || []));
     if (conflicts.length) throw new Error(`claim conflicts with active write claim ${conflicts.map((claim) => claim.id).join(", ")}`);
@@ -344,6 +405,10 @@ function validateHeartbeat(goal, event) {
   const state = deriveGoalState(goal);
   const claim = state.activeClaims.find((item) => item.id === event.resolves) || state.staleClaims.find((item) => item.id === event.resolves) || state.expiredClaims.find((item) => item.id === event.resolves);
   if (!claim) throw new Error(`peer goal heartbeat target ${event.resolves} is not an active, stale, or expired claim`);
+  if (claim.workKey && claim.duplicatePolicy !== "allow-parallel") {
+    const duplicates = state.activeClaims.filter((item) => item.id !== claim.id && item.workKey === claim.workKey);
+    if (duplicates.length) throw new Error(`heartbeat conflicts with active work key ${claim.workKey} already held by ${duplicates.map((item) => item.id).join(", ")}`);
+  }
   if (claim.mode === "write") {
     const conflicts = state.activeClaims.filter((item) => item.id !== claim.id && item.mode === "write" && pathsOverlap(claim.paths || [], item.paths || []));
     if (conflicts.length) throw new Error(`heartbeat conflicts with active write claim ${conflicts.map((item) => item.id).join(", ")}`);
@@ -378,6 +443,9 @@ function normalizeEvent(input = {}) {
     paths: normalizePaths(input.paths),
     taskId: cleanText(input.taskId),
     mode: cleanText(input.mode || (type === "claim" ? "read" : "")).toLowerCase() || undefined,
+    lane: cleanText(input.lane || input.workLane)?.toLowerCase(),
+    workKey: normalizeWorkKey(input.workKey),
+    duplicatePolicy: normalizeDuplicatePolicy(input.duplicatePolicy),
     resolves: cleanText(input.resolves),
     verdict: cleanText(input.verdict)?.toLowerCase(),
     confidence: confidenceValue(input.confidence),
@@ -407,6 +475,14 @@ function taskSummary(input = {}) {
   return cleanText(input.summary) || cleanText(input.prompt) || `Peer task for ${cleanText(input.targetPeerId || input.peerId) || "unknown"}`;
 }
 
+function latestTaskForWorkKey(tasks = [], workKey) {
+  if (!workKey) return undefined;
+  const activeStatuses = new Set(["queued", "dispatching", "running", "pending"]);
+  return [...tasks]
+    .reverse()
+    .find((task) => task.workKey === workKey && (!task.status || activeStatuses.has(String(task.status).toLowerCase())));
+}
+
 function normalizeBoard(board = {}) {
   const goals = plainObject(board.goals) ? board.goals : {};
   const normalizedGoals = {};
@@ -422,7 +498,7 @@ function normalizeBoard(board = {}) {
       createdBy: cleanText(goal.createdBy),
       closedAt: cleanText(goal.closedAt),
       closedBy: cleanText(goal.closedBy),
-      events: Array.isArray(goal.events) ? goal.events.map((event) => stripEmpty({ ...event, paths: normalizePaths(event.paths) })) : [],
+      events: Array.isArray(goal.events) ? goal.events.map((event) => stripEmpty({ ...event, paths: normalizePaths(event.paths), workKey: normalizeWorkKey(event.workKey), duplicatePolicy: normalizeDuplicatePolicy(event.duplicatePolicy), lane: cleanText(event.lane || event.workLane)?.toLowerCase() })) : [],
     };
   }
   return { version: 1, currentGoalId: cleanText(board.currentGoalId), goals: normalizedGoals };
@@ -446,6 +522,9 @@ function projectEventSummary(event) {
     paths: event.paths,
     taskId: event.taskId,
     mode: event.mode,
+    lane: event.lane,
+    workKey: event.workKey,
+    duplicatePolicy: event.duplicatePolicy,
     resolves: event.resolves,
     verdict: event.verdict,
     confidence: event.confidence,
@@ -493,17 +572,45 @@ function uniqueEventPaths(events) {
   return [...new Set(events.flatMap((event) => Array.isArray(event.paths) ? event.paths : []))];
 }
 
+function normalizeWorkKey(value) {
+  const text = cleanText(value);
+  if (!text) return undefined;
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function normalizeWorkKeyPart(value) {
+  const text = cleanText(value);
+  if (!text) return undefined;
+  return text.toLowerCase().replace(/\s+/g, " ").replace(/[|]+/g, "/").trim();
+}
+
+function normalizeDuplicatePolicy(value) {
+  const policy = cleanText(value)?.toLowerCase();
+  return DUPLICATE_POLICIES.has(policy) ? policy : undefined;
+}
+
 function enrichScoutSuggestion(suggestion = {}) {
   const lane = SCOUT_LANES[suggestion.kind] || {};
-  return stripEmpty({
+  const recommendedLane = suggestion.recommendedLane || lane.recommendedLane;
+  const claimMode = cleanText(suggestion.claimMode || lane.claimMode);
+  const enriched = stripEmpty({
     ...suggestion,
-    recommendedLane: suggestion.recommendedLane || lane.recommendedLane,
+    recommendedLane,
     preferredRoles: normalizeList(suggestion.preferredRoles || lane.preferredRoles),
     preferredCapabilities: normalizeList(suggestion.preferredCapabilities || lane.preferredCapabilities),
-    claimMode: cleanText(suggestion.claimMode || lane.claimMode),
+    claimMode,
     suggestedIntent: cleanText(suggestion.suggestedIntent || lane.suggestedIntent),
     rationale: cleanText(suggestion.rationale || lane.rationale),
   });
+  return stripEmpty({
+    ...enriched,
+    workKey: suggestion.workKey || derivePeerGoalWorkKey({ goalId: enriched.goalId, lane: recommendedLane, objective: enriched.summary, mode: claimMode, paths: enriched.paths }),
+  });
+}
+
+function hasActiveClaimForScoutSuggestion(state, suggestion) {
+  if (!suggestion?.workKey) return false;
+  return state.activeClaims.some((claim) => claim.workKey === suggestion.workKey);
 }
 
 async function updatePeerGoalBoard(root, updater) {

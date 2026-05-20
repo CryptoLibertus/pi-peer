@@ -101,7 +101,10 @@ export default function piPeerExtension(pi: ExtensionAPI) {
       metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
       claimedPaths: Type.Optional(Type.Array(Type.String({ description: "Paths this peer task is expected to own while running" }))),
       goalId: Type.Optional(Type.String({ description: "Peer goal id to link this long-running task to" })),
-      goalClaimMode: Type.Optional(Type.String({ description: "Goal-board claim mode for claimedPaths; defaults to write" })),
+      goalClaimMode: Type.Optional(Type.String({ description: "Goal-board claim mode; defaults to write when paths are supplied, otherwise read" })),
+      workKey: Type.Optional(Type.String({ description: "Semantic work fingerprint for idempotent peer dispatch" })),
+      workLane: Type.Optional(Type.String({ description: "Semantic work lane, e.g. research, review, coordination, or implementation" })),
+      duplicatePolicy: Type.Optional(Type.String({ description: "Duplicate work policy: reuse (default), error, or allow-parallel" })),
       goalStaleAfterMs: Type.Optional(Type.Number({ description: "Milliseconds before this goal claim is considered stale without heartbeat" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -109,16 +112,24 @@ export default function piPeerExtension(pi: ExtensionAPI) {
       attachPeerUi(runtime, () => activeContext, (current: any) => refreshPeerUi(current, runtime));
       ensureEnabled(runtime);
       await runtime.refreshLocalPeers();
-      const metadata = mergePeerMetadata(params.metadata, params.claimedPaths, params.goalId);
+      const metadata = mergePeerMetadata(params.metadata, params.claimedPaths, params.goalId, { workKey: params.workKey, workLane: params.workLane, duplicatePolicy: params.duplicatePolicy });
       const goalLink = await beginPeerSendGoalLink(ctx?.cwd, runtime, {
         goalId: params.goalId,
         targetPeerId: params.peer,
         prompt: params.prompt,
         claimedPaths: metadata.claimedPaths,
         claimMode: params.goalClaimMode,
+        workKey: metadata.workKey,
+        workLane: metadata.workLane,
+        duplicatePolicy: metadata.duplicatePolicy,
         staleAfterMs: params.goalStaleAfterMs,
       });
+      if (goalLink?.duplicate) {
+        await refreshPeerUi(ctx, runtime);
+        return duplicatePeerSendToolResult(goalLink);
+      }
       if (goalLink?.claimEvent?.id) metadata.goalClaimId = goalLink.claimEvent.id;
+      if (goalLink?.workKey) metadata.workKey = goalLink.workKey;
       let handle: any;
       try {
         handle = await runtime.comms.sendMessage(params.peer, {
@@ -323,9 +334,17 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
         prompt: parsed.prompt,
         claimedPaths: parsed.claimedPaths,
         claimMode: parsed.goalClaimMode,
+        workKey: parsed.workKey,
+        workLane: parsed.workLane,
+        duplicatePolicy: parsed.duplicatePolicy,
         staleAfterMs: parsed.goalStaleAfterMs,
       });
+      if (goalLink?.duplicate) {
+        await refresh();
+        return sendPeerMessage(pi, formatDuplicatePeerSend(goalLink));
+      }
       if (goalLink?.claimEvent?.id) metadata.goalClaimId = goalLink.claimEvent.id;
+      if (goalLink?.workKey) metadata.workKey = goalLink.workKey;
       let handle: any;
       try {
         handle = await runtime.comms.sendMessage(parsed.peerId, { prompt: withPeerGoalInstructions(parsed.prompt, goalLink), intent: parsed.intent, metadata }, { maxHopCount: parsed.maxHopCount, allowSelf: parsed.allowSelf });
@@ -425,6 +444,9 @@ async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
       paths: parsed.paths,
       taskId: parsed.taskId,
       status: parsed.status,
+      workKey: parsed.workKey,
+      lane: parsed.workLane,
+      duplicatePolicy: parsed.duplicatePolicy,
     });
     return `Posted ${result.event.type} ${result.event.id} to ${result.goal.id}.\n\n${formatPeerGoal(result.goal)}`;
   }
@@ -435,6 +457,9 @@ async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
       summary: parsed.summary,
       paths: parsed.paths,
       mode: parsed.mode,
+      lane: parsed.workLane,
+      workKey: parsed.workKey,
+      duplicatePolicy: parsed.duplicatePolicy,
       ttlMs: parsed.ttlMs,
       staleAfterMs: parsed.staleAfterMs,
     });
@@ -505,6 +530,7 @@ async function handlePeerGoalFanout(parsed: any, ctx: any, runtime: any, peerId:
   const planned = [];
   for (const targetPeerId of parsed.peers) {
     const mode = inferFanoutClaimMode(targetPeerId);
+    const lane = inferFanoutWorkLane(targetPeerId, mode);
     const summary = `${parsed.objective} [fanout:${targetPeerId}]`;
     const task = await appendPeerGoalEvent(root, parsed.goalId, {
       type: "task",
@@ -512,9 +538,9 @@ async function handlePeerGoalFanout(parsed: any, ctx: any, runtime: any, peerId:
       summary,
       paths: parsed.paths,
       status: parsed.send ? "dispatching" : "planned",
-      metadata: { targetPeerId, fanout: true, claimMode: mode },
+      metadata: { targetPeerId, fanout: true, claimMode: mode, workLane: lane },
     });
-    planned.push({ peerId: targetPeerId, taskEventId: task.event.id, mode });
+    planned.push({ peerId: targetPeerId, taskEventId: task.event.id, mode, lane });
   }
   if (parsed.send) {
     await Promise.all(planned.map(async (item: any) => {
@@ -526,12 +552,31 @@ async function handlePeerGoalFanout(parsed: any, ctx: any, runtime: any, peerId:
           prompt: parsed.objective,
           claimedPaths: parsed.paths,
           claimMode: item.mode,
+          workLane: item.lane,
+          duplicatePolicy: "reuse",
           staleAfterMs: parsed.staleAfterMs,
         });
-        const metadata = mergePeerMetadata({ fanout: true }, parsed.paths, parsed.goalId);
+        if (goalLink?.duplicate) {
+          item.duplicate = true;
+          item.messageId = goalLink.existingTask?.taskId || goalLink.existingTask?.metadata?.messageId;
+          item.conversationId = goalLink.existingTask?.metadata?.conversationId;
+          await appendPeerGoalEvent(root, parsed.goalId, {
+            type: "handoff",
+            peerId: item.peerId,
+            summary: `Fan-out duplicate reused existing work key ${goalLink.workKey || "unknown"}`,
+            paths: parsed.paths,
+            taskId: item.taskEventId,
+            status: "done",
+            workKey: goalLink.workKey,
+            lane: item.lane,
+            metadata: { fanout: true, duplicate: true, targetPeerId: item.peerId, existingTaskId: item.messageId },
+          }).catch(() => {});
+          return;
+        }
+        const metadata = mergePeerMetadata({ fanout: true }, parsed.paths, parsed.goalId, { workKey: goalLink?.workKey, workLane: item.lane, duplicatePolicy: "reuse" });
         if (goalLink?.claimEvent?.id) metadata.goalClaimId = goalLink.claimEvent.id;
         const handle = await runtime.comms.sendMessage(item.peerId, {
-          prompt: withPeerGoalInstructions(buildFanoutPrompt(parsed.objective, item.peerId, item.mode), goalLink),
+          prompt: withPeerGoalInstructions(buildFanoutPrompt(parsed.objective, item.peerId, item.mode, item.lane), goalLink),
           intent: item.mode === "write" ? "task" : "review",
           metadata,
         });
@@ -569,7 +614,7 @@ async function handlePeerGoalFanout(parsed: any, ctx: any, runtime: any, peerId:
   }
   const lines = [`Fan-out ${parsed.send ? "dispatched" : "planned"} for ${parsed.goalId}: ${parsed.objective}`];
   for (const item of planned) {
-    lines.push(`- ${item.peerId} · ${item.mode}${item.messageId ? ` · ${item.messageId}` : ""}${item.error ? ` · ${item.error.code}` : ""}`);
+    lines.push(`- ${item.peerId} · ${item.lane}/${item.mode}${item.duplicate ? " · duplicate reused" : ""}${item.messageId ? ` · ${item.messageId}` : ""}${item.error ? ` · ${item.error.code}` : ""}`);
   }
   lines.push("", "Final-answer checklist: include Fan-out used: yes, peer ids, message ids, blockers, and verification.");
   return lines.join("\n");
@@ -630,24 +675,56 @@ function sendPeerMessage(pi: ExtensionAPI, content: string) {
   pi.sendMessage({ customType: MESSAGE_TYPE, content, display: true });
 }
 
-function mergePeerMetadata(metadata: any, claimedPaths: unknown, goalId?: unknown) {
-  const base = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? { ...metadata } : {};
+function mergePeerMetadata(metadata: any, claimedPaths: unknown, goalId?: unknown, work: any = {}) {
+  const base: any = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? { ...metadata } : {};
   if (Array.isArray(claimedPaths)) {
     const paths = [...new Set(claimedPaths.filter((item): item is string => typeof item === "string" && item.trim()).map((item) => item.trim()))];
     if (paths.length) base.claimedPaths = paths;
   }
   if (typeof goalId === "string" && goalId.trim()) base.goalId = goalId.trim();
+  for (const [key, value] of Object.entries(work || {})) {
+    if (typeof value === "string" && value.trim()) base[key] = value.trim();
+  }
   return base;
+}
+
+function duplicatePeerSendToolResult(goalLink: any) {
+  return {
+    content: [{ type: "text", text: formatDuplicatePeerSend(goalLink) }],
+    details: { ok: true, kind: "peer_send_duplicate", duplicate: true, ...duplicatePeerSendDetails(goalLink) },
+  };
+}
+
+function formatDuplicatePeerSend(goalLink: any) {
+  const details = duplicatePeerSendDetails(goalLink);
+  const task = details.messageId ? ` Existing message: ${details.messageId}${details.conversationId ? ` in ${details.conversationId}` : ""}.` : "";
+  return `Duplicate peer work reused for ${details.goalId}: active claim ${details.claimId || "unknown"} already owns work key ${details.workKey || "unknown"}.${task}`;
+}
+
+function duplicatePeerSendDetails(goalLink: any) {
+  return {
+    goalId: goalLink?.goalId,
+    workKey: goalLink?.workKey,
+    claimId: goalLink?.existingClaim?.id,
+    claimPeerId: goalLink?.existingClaim?.peerId,
+    messageId: goalLink?.existingTask?.taskId || goalLink?.existingTask?.metadata?.messageId,
+    conversationId: goalLink?.existingTask?.metadata?.conversationId,
+  };
 }
 
 async function beginPeerSendGoalLink(root: string | undefined, runtime: any, options: any) {
   if (!options?.goalId) return undefined;
+  const paths = Array.isArray(options.claimedPaths) ? options.claimedPaths : [];
+  const mode = options.claimMode || (paths.length ? "write" : "read");
   return beginPeerGoalTask(root || process.cwd(), options.goalId, {
     requesterPeerId: runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown",
     targetPeerId: options.targetPeerId,
     prompt: options.prompt,
-    claimedPaths: options.claimedPaths,
-    mode: options.claimMode || "write",
+    claimedPaths: paths,
+    mode,
+    lane: options.workLane || mode,
+    workKey: options.workKey,
+    duplicatePolicy: options.duplicatePolicy || "reuse",
     staleAfterMs: options.staleAfterMs,
   });
 }
@@ -662,6 +739,10 @@ async function recordPeerSendGoalDispatch(root: string | undefined, runtime: any
     messageId: handle.messageId,
     conversationId: handle.conversationId,
     claimEventId: goalLink.claimEvent?.id,
+    workKey: goalLink.workKey,
+    mode: goalLink.claimEvent?.mode,
+    lane: goalLink.claimEvent?.lane,
+    duplicatePolicy: goalLink.duplicatePolicy,
   });
 }
 
@@ -676,6 +757,9 @@ async function recordPeerSendGoalFailure(root: string | undefined, goalLink: any
     responseStatus: "DISPATCH_ERROR",
     summary: `DISPATCH_ERROR: ${options.error?.message || String(options.error || "peer send failed")}`,
     releaseSummary: "Peer message dispatch failed before delivery",
+    workKey: goalLink.workKey,
+    mode: goalLink.claimEvent?.mode,
+    lane: goalLink.claimEvent?.lane,
   }).catch(() => {});
 }
 
@@ -695,6 +779,9 @@ function trackPeerSendGoalCompletion(root: string | undefined, goalLink: any, ha
       responseStatus: response?.status,
       summary: summarizePeerGoalResponse(response),
       releaseSummary: `Peer message ${handle.messageId} completed with ${response?.status || "unknown"}`,
+      workKey: goalLink.workKey,
+      mode: goalLink.claimEvent?.mode,
+      lane: goalLink.claimEvent?.lane,
     });
     const missing = missingHandoffFields(response);
     if (missing.length) {
@@ -739,7 +826,9 @@ function withPeerGoalInstructions(prompt: string, goalLink: any) {
   const lines = [
     `Peer goal context:`,
     `- goalId: ${goalLink.goalId}`,
+    ...(goalLink.workKey ? [`- workKey: ${goalLink.workKey}`] : []),
     ...(goalLink.claimEvent?.id ? [`- claimEventId: ${goalLink.claimEvent.id}`, `- If this takes a while, send heartbeats with /peer goal heartbeat ${goalLink.goalId} ${goalLink.claimEvent.id} "still working".`] : []),
+    `- Before starting, inspect the goal board and stop if another active claim already owns the same work key.`,
     `- End with a concise handoff: status, files changed, verification, blockers.`,
     ``,
     `Original prompt:`,
@@ -753,8 +842,16 @@ function inferFanoutClaimMode(peerId: string) {
   return id.includes("worker") || id.includes("implement") ? "write" : "read";
 }
 
-function buildFanoutPrompt(objective: string, peerId: string, mode: string) {
-  const role = mode === "write" ? "implementation lane" : "read-only research/review lane";
+function inferFanoutWorkLane(peerId: string, mode: string) {
+  const id = String(peerId || "").toLowerCase();
+  if (id.includes("research") || id.includes("scout")) return "research";
+  if (id.includes("review") || id.includes("qa")) return "review";
+  if (id.includes("coordinator") || id.includes("planner")) return "coordination";
+  return mode === "write" ? "implementation" : "review";
+}
+
+function buildFanoutPrompt(objective: string, peerId: string, mode: string, lane: string) {
+  const role = mode === "write" ? `${lane} implementation lane` : `read-only ${lane} lane`;
   return `${objective}\n\nFan-out role for ${peerId}: ${role}. Stay within that lane. Report progress with peer_progress when work is long-running, and end with the required final handoff.`;
 }
 

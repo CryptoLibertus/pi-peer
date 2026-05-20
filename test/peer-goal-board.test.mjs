@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { appendPeerGoalEvent, closePeerGoal, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard } from "../src/peers/goal-board.mjs";
+import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../src/peers/goal-board.mjs";
 
 async function withGoal(t, fn) {
   const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-test-"));
@@ -180,6 +180,141 @@ test("scout suggestions are read-only and prioritize proactive next steps", asyn
     assert.equal(blockerSuggestion.kind, "blocker");
     assert.equal(blockerSuggestion.recommendedLane, "coordination");
     assert.deepEqual(blockerSuggestion.preferredRoles, ["planner", "coordinator", "reviewer"]);
+  });
+});
+
+test("semantic work keys prevent duplicate read claims unless explicitly parallel", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    const workKey = derivePeerGoalWorkKey({ goalId, lane: "review", objective: "Check finalization safety", mode: "read", paths: ["src"] });
+    const first = await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "reviewer-a",
+      summary: "Check finalization safety",
+      mode: "read",
+      paths: ["src"],
+      workKey,
+    });
+    assert.equal(first.event.workKey, workKey);
+
+    await assert.rejects(
+      appendPeerGoalEvent(root, goalId, {
+        type: "claim",
+        peerId: "reviewer-b",
+        summary: "Check finalization safety too",
+        mode: "read",
+        paths: ["src"],
+        workKey,
+      }),
+      /duplicates active work key/,
+    );
+
+    await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "reviewer-c",
+      summary: "Independent second opinion",
+      mode: "read",
+      paths: ["src"],
+      workKey,
+      duplicatePolicy: "allow-parallel",
+    });
+
+    const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.activeClaims.length, 2);
+  });
+});
+
+test("heartbeats cannot revive stale semantic claims over an active matching work key", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    const workKey = derivePeerGoalWorkKey({ goalId, lane: "review", objective: "Review duplicate prevention", mode: "read" });
+    const staleClaim = await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "reviewer-a",
+      summary: "Review duplicate prevention",
+      mode: "read",
+      lane: "review",
+      workKey,
+      staleAfterMs: 1,
+    });
+
+    await delay(5);
+
+    await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "reviewer-b",
+      summary: "Review duplicate prevention after stale",
+      mode: "read",
+      lane: "review",
+      workKey,
+    });
+
+    await assert.rejects(
+      appendPeerGoalEvent(root, goalId, {
+        type: "heartbeat",
+        peerId: "reviewer-a",
+        resolves: staleClaim.event.id,
+        summary: "try to revive stale duplicate review claim",
+        staleAfterMs: 60_000,
+      }),
+      /heartbeat conflicts with active work key/,
+    );
+  });
+});
+
+test("beginPeerGoalTask reuses active work instead of creating duplicate dispatch", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    const first = await beginPeerGoalTask(root, goalId, {
+      targetPeerId: "reviewer-a",
+      prompt: "Review duplicate prevention",
+      mode: "read",
+      lane: "review",
+      claimedPaths: ["src/peers/goal-board.mjs"],
+      duplicatePolicy: "reuse",
+    });
+    await recordPeerGoalTaskDispatch(root, goalId, {
+      requesterPeerId: "planner",
+      targetPeerId: "reviewer-a",
+      prompt: "Review duplicate prevention",
+      mode: "read",
+      lane: "review",
+      claimedPaths: ["src/peers/goal-board.mjs"],
+      workKey: first.workKey,
+      messageId: "msg_existing",
+      conversationId: "conv_existing",
+      claimEventId: first.claimEvent.id,
+    });
+
+    const second = await beginPeerGoalTask(root, goalId, {
+      targetPeerId: "reviewer-b",
+      prompt: "Review duplicate prevention",
+      mode: "read",
+      lane: "review",
+      claimedPaths: ["src/peers/goal-board.mjs"],
+      duplicatePolicy: "reuse",
+    });
+
+    assert.equal(second.duplicate, true);
+    assert.equal(second.workKey, first.workKey);
+    assert.equal(second.existingClaim.id, first.claimEvent.id);
+    assert.equal(second.existingTask.taskId, "msg_existing");
+    const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.activeClaims.length, 1);
+  });
+});
+
+test("scout suppresses suggestions whose work key is actively claimed", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    const summary = "No active work yet; propose a research, review, or implementation lane.";
+    await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "researcher-a",
+      summary,
+      mode: "read",
+      lane: "research",
+      workKey: derivePeerGoalWorkKey({ goalId, lane: "research", objective: summary, mode: "read" }),
+    });
+
+    const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+    assert.equal(suggestions.some((suggestion) => suggestion.kind === "next-step"), false);
   });
 });
 
