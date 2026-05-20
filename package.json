@@ -13,6 +13,7 @@
   ],
   "files": [
     "extensions",
+    "skills",
     "src",
     "README.md",
     "LICENSE"
@@ -32,6 +33,9 @@
   "pi": {
     "extensions": [
       "extensions/pi-peer/index.ts"
+    ],
+    "skills": [
+      "skills"
     ]
   },
   "engines": {

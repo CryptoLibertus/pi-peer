@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Local Pi runtime state
+.pi/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Coverage and build artifacts
+coverage/
+dist/
+build/
+
+# npm package artifacts
+*.tgz
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/

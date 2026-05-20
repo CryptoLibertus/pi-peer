@@ -19,6 +19,7 @@ pi install ./packages/pi-peer
 - Idle watcher daemon: idle peers nudge stuck inbound activations and proactively inspect open goal-board work
 - Protocol compatibility metadata (`protocolVersion`, min/max compatible versions), peer manifests, capabilities, and trust summaries in descriptors/status/list output
 - `PI_PEER_ID` runtime override for running multiple local Pi sessions
+- `pi-peer-publish` skill for safe npm release checks, version bumping, tag push, publish, and verification
 
 ## Setup and health checks
 
@@ -93,7 +94,9 @@ npm run check
 
 ## Publish to npm
 
-Use this release workflow after landing package changes on `main`:
+This package includes a `pi-peer-publish` Pi skill. Ask Pi to use it, or run `/skill:pi-peer-publish`, when you want an agent-guided release with safety checks, version bumping, tag push, publish, and npm verification.
+
+Use this manual release workflow after landing package changes on `main`:
 
 ```bash
 # Keep local peer runtime state out of release commits.
