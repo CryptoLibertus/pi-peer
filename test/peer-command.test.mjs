@@ -38,3 +38,22 @@ test("proposal requires a goal id and summary", () => {
   assert.match(parsePeerCommand("goal propose").error, /requires <goal-id> <summary>/);
   assert.match(parsePeerCommand("proposal goal_123").error, /requires <goal-id> <summary>/);
 });
+
+test("repeated list-style flags append instead of replacing earlier values", () => {
+  const send = parsePeerCommand("send worker Do work --claim src --claim README.md,test --goal goal_123");
+  assert.deepEqual(send.claimedPaths, ["src", "README.md", "test"]);
+  assert.deepEqual(send.metadata.claimedPaths, ["src", "README.md", "test"]);
+
+  const fanout = parsePeerCommand("goal fanout goal_123 Review this --peer worker1 --peer worker2,worker3 --path src --path test");
+  assert.deepEqual(fanout.peers, ["worker1", "worker2", "worker3"]);
+  assert.deepEqual(fanout.paths, ["src", "test"]);
+});
+
+test("repeated scalar flags keep last-value behavior", () => {
+  const parsed = parsePeerCommand("send worker Do work --timeout-ms 100 --timeout-ms 250 --intent ask --intent review");
+  assert.equal(parsed.timeoutMs, 250);
+  assert.equal(parsed.intent, "review");
+
+  const scout = parsePeerCommand("scout goal_123 --include-closed --include-closed=false");
+  assert.equal(scout.includeClosed, false);
+});

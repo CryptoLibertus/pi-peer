@@ -251,11 +251,13 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
 }
 
 function stringFlag(value, fallback) {
+  if (Array.isArray(value)) return stringFlag(value.at(-1), fallback);
   if (typeof value === "string" && value.trim()) return value.trim();
   return fallback;
 }
 
 function positiveIntegerFlag(value) {
+  if (Array.isArray(value)) return positiveIntegerFlag(value.at(-1));
   if (value === undefined || value === true) return undefined;
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : undefined;
@@ -288,7 +290,9 @@ function capabilitiesFromFlags(flags = {}) {
 }
 
 function listFlag(value) {
-  if (Array.isArray(value)) return [...new Set(value.map((item) => String(item).trim()).filter(Boolean))];
-  if (typeof value !== "string" || !value.trim()) return [];
-  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values.flatMap((item) => {
+    if (typeof item !== "string") return [];
+    return item.split(",").map((part) => part.trim()).filter(Boolean);
+  }))];
 }

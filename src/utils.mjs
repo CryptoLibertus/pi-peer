@@ -58,21 +58,22 @@ export function parseFlags(args) {
     const [rawKey, rawValue] = arg.slice(2).split(/=(.*)/s, 2);
     const key = rawKey.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
     if (rawValue !== undefined) {
-      flags[key] = rawValue;
+      appendFlagValue(flags, key, rawValue);
       continue;
     }
     const next = args[i + 1];
     if (next !== undefined && !next.startsWith("--")) {
-      flags[key] = next;
+      appendFlagValue(flags, key, next);
       i += 1;
     } else {
-      flags[key] = true;
+      appendFlagValue(flags, key, true);
     }
   }
   return { flags, positionals };
 }
 
 export function flagEnabled(value) {
+  if (Array.isArray(value)) return flagEnabled(value.at(-1));
   if (value === true) return true;
   if (typeof value === "number") return Number.isFinite(value) && value !== 0;
   if (typeof value === "string") {
@@ -80,4 +81,12 @@ export function flagEnabled(value) {
     return ["true", "1", "yes", "y", "on"].includes(normalized);
   }
   return false;
+}
+
+function appendFlagValue(flags, key, value) {
+  if (Object.prototype.hasOwnProperty.call(flags, key)) {
+    flags[key] = Array.isArray(flags[key]) ? [...flags[key], value] : [flags[key], value];
+  } else {
+    flags[key] = value;
+  }
 }
