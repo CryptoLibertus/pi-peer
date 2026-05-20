@@ -1,11 +1,11 @@
-# @bob-pro/pi-peer
+# @cryptolibertus/pi-peer
 
 Pi package for local Pi-to-Pi peer messaging.
 
 ## Install
 
 ```bash
-pi install npm:@bob-pro/pi-peer
+pi install npm:@cryptolibertus/pi-peer
 # or while developing from this repo:
 pi install ./packages/pi-peer
 ```
