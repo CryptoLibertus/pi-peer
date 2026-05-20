@@ -6,7 +6,7 @@ import { installPeerRuntimeLifecycle } from "../../src/peers/extension-lifecycle
 import { initPeerConfig } from "../../src/peers/config.mjs";
 import { formatPeerCommandError, formatPeerHelp, formatPeerInitResult, parsePeerCommand } from "../../src/peers/command.mjs";
 import { createPeerRuntime, getPeerRuntimeValue } from "../../src/peers/runtime.mjs";
-import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, formatPeerGoal, formatPeerGoalList, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../../src/peers/goal-board.mjs";
+import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../../src/peers/goal-board.mjs";
 import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
 import {
   peerAwaitToolResult,
@@ -51,7 +51,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("peer", {
     description: "Pi-to-Pi peers: setup, doctor, status, list, send, get, await, progress, goal",
-    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "goals", "ls", "current", "fanout", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
+    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "goals", "ls", "current", "scout", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (rawArgs, ctx) => {
@@ -409,8 +409,9 @@ async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
     if (!goal) throw new Error(goalId ? `peer goal ${goalId} not found` : "no current peer goal");
     return formatPeerGoal(goal);
   }
+  if (parsed.goalAction === "scout") return formatPeerGoalScout(await loadPeerGoalBoard(root), { goalId: parsed.goalId, limit: parsed.limit, includeClosed: parsed.includeClosed });
   if (parsed.goalAction === "fanout") return handlePeerGoalFanout(parsed, ctx, runtime, peerId);
-  if (["task", "finding", "handoff", "note"].includes(parsed.goalAction)) {
+  if (["task", "finding", "proposal", "propose", "handoff", "note"].includes(parsed.goalAction)) {
     const result = await appendPeerGoalEvent(root, parsed.goalId, {
       type: parsed.eventType,
       peerId,

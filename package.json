@@ -18,7 +18,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test ../../test/peer-*.test.mjs",
+    "test": "node --test test/peer-*.test.mjs",
     "check": "npm test && npm run check:pack",
     "check:pack": "npm pack --dry-run",
     "smoke:pack": "npm run check:pack",

@@ -7,6 +7,9 @@ const PEER_GOAL_ALIASES = Object.freeze({
   ls: ["list"],
   current: ["show"],
   fanout: ["fanout"],
+  scout: ["scout"],
+  proposal: ["proposal"],
+  propose: ["propose"],
   claim: ["claim"],
   take: ["claim"],
   heartbeat: ["heartbeat"],
@@ -136,11 +139,12 @@ export function formatPeerHelp() {
     "- `/peer cancel <message-id> [reason]` — mark a queued/running/disconnected peer message cancelled",
     "- `/peer send <peer> <prompt> [--no-await] [--intent ask] [--goal <goal-id>] [--claim <path[,path]>] [--timeout-ms <ms>] [--allow-self]` — send a prompt-first peer message",
     "- `/peer progress <summary> [--status running] [--phase <name>]` — send a structured checkpoint from an inbound long-running peer task",
-    "- `/peer goals|ls`, `/peer current [goal-id]`, `/peer fanout`, `/peer take|claim`, `/peer complete|done`, `/peer objection|block`, `/peer unblock`, `/peer ping`, `/peer drop`, `/peer pass|fail` — short goal-board aliases",
+    "- `/peer goals|ls`, `/peer current [goal-id]`, `/peer scout [goal-id]`, `/peer fanout`, `/peer propose`, `/peer take|claim`, `/peer complete|done`, `/peer objection|block`, `/peer unblock`, `/peer ping`, `/peer drop`, `/peer pass|fail` — short goal-board aliases",
     "- `/peer goal create <objective> [--constraint <a,b>]` — start a flat shared goal board",
-    "- `/peer goal list|show [goal-id]` — inspect peer goals, active claims, blockers, and votes",
+    "- `/peer goal list|show [goal-id]` — inspect peer goals, active claims, blockers, proposals, and votes",
     "- `/peer goal fanout <goal-id> <objective> --peer <id[,id]> [--path <a,b>] [--send] [--no-await]` — plan or dispatch role-specific peer lanes",
-    "- `/peer goal task|finding|handoff|note <goal-id> <summary> [--path <a,b>] [--status done]` — post goal-board events",
+    "- `/peer goal scout [goal-id] [--limit <n>] [--include-closed]` — read-only proactive suggestions for what peers could do next",
+    "- `/peer goal task|finding|proposal|handoff|note <goal-id> <summary> [--path <a,b>] [--status done]` — post goal-board events",
     "- `/peer goal claim <goal-id> <task> --mode write --path <a,b> [--ttl-ms <ms>] [--stale-after-ms <ms>]` — lease work without hierarchy",
     "- `/peer goal heartbeat <goal-id> <claim-event-id> [summary] [--ttl-ms <ms>] [--stale-after-ms <ms>]` — refresh a live or stale claim",
     "- `/peer goal release <goal-id> <claim-event-id> [summary]` — release a claimed lane",
@@ -171,6 +175,7 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
     return { ...withAction, objective, constraints: listFlag(flags.constraint || flags.constraints) };
   }
   if (action === "show") return { ...withAction, goalId: rest[0] };
+  if (action === "scout") return { ...withAction, goalId: rest[0], limit: positiveIntegerFlag(flags.limit), includeClosed: flagEnabled(flags.includeClosed) };
   if (action === "fanout") {
     const goalId = rest[0];
     const objective = rest.slice(1).join(" ").trim();
@@ -189,11 +194,11 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
       staleAfterMs: positiveIntegerFlag(flags.staleAfterMs),
     };
   }
-  if (["task", "finding", "handoff", "note"].includes(action)) {
+  if (["task", "finding", "proposal", "propose", "handoff", "note"].includes(action)) {
     const goalId = rest[0];
     const summary = rest.slice(1).join(" ").trim();
     if (!goalId || !summary) return { ...withAction, error: `/peer goal ${action} requires <goal-id> <summary>` };
-    return { ...withAction, goalId, eventType: action === "task" ? "task" : action, summary, paths: listFlag(flags.path || flags.paths), severity: stringFlag(flags.severity, undefined), taskId: stringFlag(flags.taskId, undefined), status: stringFlag(flags.status, undefined) };
+    return { ...withAction, goalId, eventType: action === "propose" ? "proposal" : action, summary, paths: listFlag(flags.path || flags.paths), severity: stringFlag(flags.severity, undefined), taskId: stringFlag(flags.taskId, undefined), status: stringFlag(flags.status, undefined) };
   }
   if (action === "claim") {
     if (flagEnabled(flags.write) && flags.mode === undefined) flags.mode = "write";
