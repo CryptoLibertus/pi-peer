@@ -5,7 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 export const PEER_GOAL_BOARD_RELATIVE_PATH = ".pi/peer-goals.json";
 
-const EVENT_TYPES = new Set(["finding", "task", "claim", "release", "heartbeat", "objection", "resolve", "vote", "handoff", "note"]);
+const EVENT_TYPES = new Set(["finding", "task", "proposal", "claim", "release", "heartbeat", "objection", "resolve", "vote", "handoff", "note"]);
 const BLOCKING_SEVERITIES = new Set(["blocking", "blocker", "critical"]);
 const VOTE_VERDICTS = new Set(["pass", "fail", "pass-with-risks"]);
 const DEFAULT_GOAL_CLAIM_STALE_MS = 45 * 60 * 1000;
@@ -66,6 +66,7 @@ export async function appendPeerGoalEvent(root, goalId, eventInput = {}) {
     const goal = resolveGoal(board, goalId);
     const event = normalizeEvent(eventInput);
     if (event.type === "claim") validateClaim(goal, event);
+    if (event.type === "proposal") validateProposal(event);
     if (event.type === "release") validateRelease(goal, event);
     if (event.type === "heartbeat") validateHeartbeat(goal, event);
     goal.events.push(event);
@@ -172,6 +173,8 @@ export function deriveGoalState(goal, options = {}) {
   const blockingObjections = events
     .filter((event) => event.type === "objection" && isBlockingSeverity(event.severity) && !resolvedIds.has(event.id))
     .map(projectEventSummary);
+  const proposals = events.filter((event) => event.type === "proposal").map(projectEventSummary);
+  const openProposals = proposals.filter((event) => !resolvedIds.has(event.id));
   const votes = events.filter((event) => event.type === "vote").map(projectEventSummary);
   const currentVotes = currentPeerVotes(votes);
   const failedVotes = currentVotes.filter((vote) => vote.verdict === "fail");
@@ -187,6 +190,8 @@ export function deriveGoalState(goal, options = {}) {
     staleClaims,
     releasedClaims,
     blockingObjections,
+    proposals,
+    openProposals,
     votes,
     currentVotes,
     failedVotes,
@@ -205,8 +210,60 @@ export function formatPeerGoalList(board) {
     if (state.activeClaims.length) bits.push(`${state.activeClaims.length} active claim${state.activeClaims.length === 1 ? "" : "s"}`);
     if (state.staleClaims.length) bits.push(`${state.staleClaims.length} stale claim${state.staleClaims.length === 1 ? "" : "s"}`);
     if (state.blockingObjections.length) bits.push(`${state.blockingObjections.length} blocker${state.blockingObjections.length === 1 ? "" : "s"}`);
+    if (state.openProposals.length) bits.push(`${state.openProposals.length} proposal${state.openProposals.length === 1 ? "" : "s"}`);
     return bits.join(" · ");
   }).join("\n");
+}
+
+export function formatPeerGoalScout(board, options = {}) {
+  const suggestions = derivePeerGoalScoutSuggestions(board, options);
+  if (!suggestions.length) return "No proactive scout suggestions. Open goals look idle-safe or there are no matching goals.";
+  const limit = positiveNumber(options.limit) || suggestions.length;
+  const lines = ["# Peer Scout", "", "Proactive suggestions (read-only):"];
+  for (const suggestion of suggestions.slice(0, limit)) {
+    const pathText = suggestion.paths?.length ? ` · paths: ${suggestion.paths.join(", ")}` : "";
+    lines.push(`- ${suggestion.priority} · ${suggestion.goalId} · ${suggestion.kind}: ${suggestion.summary}${pathText}`);
+  }
+  lines.push("", "Next: post one with `/peer goal propose <goal-id> <summary>` or claim safe work with `/peer goal claim <goal-id> <task> --mode read|write --path <path>`. Scout does not mutate the board.");
+  return lines.join("\n");
+}
+
+export function derivePeerGoalScoutSuggestions(board, options = {}) {
+  const normalized = normalizeBoard(board);
+  const includeClosed = options.includeClosed === true;
+  const requestedGoalId = cleanText(options.goalId);
+  const goals = Object.values(normalized.goals)
+    .filter((goal) => (!requestedGoalId || goal.id === requestedGoalId) && (includeClosed || goal.status !== "closed"))
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  const suggestions = [];
+  for (const goal of goals) {
+    const state = deriveGoalState(goal);
+    const push = (priority, kind, summary, extra = {}) => suggestions.push(stripEmpty({ goalId: goal.id, priority, kind, summary, ...extra }));
+    if (state.blockingObjections.length) {
+      push("P0", "blocker", `Resolve ${state.blockingObjections.length} blocking objection${state.blockingObjections.length === 1 ? "" : "s"} before more work.`, { paths: uniqueEventPaths(state.blockingObjections) });
+      continue;
+    }
+    if (state.failedVotes.length) {
+      push("P0", "failed-vote", `Address failed vote from ${state.failedVotes.map((vote) => vote.peerId || vote.id).join(", ")}.`);
+      continue;
+    }
+    if (state.staleClaims.length) {
+      push("P1", "stale-claim", `Ask owners to heartbeat or release ${state.staleClaims.length} stale claim${state.staleClaims.length === 1 ? "" : "s"}.`, { paths: uniqueEventPaths(state.staleClaims) });
+    }
+    if (state.openProposals.length) {
+      push("P1", "open-proposal", `Triage ${state.openProposals.length} open proposal${state.openProposals.length === 1 ? "" : "s"}; claim one or resolve it if obsolete.`, { paths: uniqueEventPaths(state.openProposals) });
+    }
+    if (state.readyToClose) {
+      push("P1", "close", "Goal satisfies closure gates; close it or record a final note.");
+      continue;
+    }
+    if (!state.activeClaims.length && !state.tasks.length && !state.openProposals.length) {
+      push("P2", "next-step", "No active work yet; propose a research, review, or implementation lane.");
+    } else if (!state.currentVotes.length && !state.activeWriteClaims.length) {
+      push("P2", "review", "No current peer vote; ask a peer for read-only review or record a pass/fail vote.");
+    }
+  }
+  return suggestions;
 }
 
 export function formatPeerGoal(goal) {
@@ -233,6 +290,10 @@ export function formatPeerGoal(goal) {
     lines.push("", "Blocking objections:");
     for (const objection of state.blockingObjections) lines.push(`- ${objection.id} · ${objection.peerId} · ${objection.summary}`);
   }
+  if (state.openProposals.length) {
+    lines.push("", "Open proposals:");
+    for (const proposal of state.openProposals.slice(-8)) lines.push(`- ${proposal.id} · ${proposal.peerId} · ${proposal.summary}${proposal.paths?.length ? ` · ${proposal.paths.join(", ")}` : ""}`);
+  }
   if (state.currentVotes.length) {
     lines.push("", "Votes:");
     for (const vote of state.currentVotes.slice(-8)) lines.push(`- ${vote.peerId}: ${vote.verdict}${vote.confidence !== undefined ? ` (${vote.confidence})` : ""}${vote.summary ? ` — ${vote.summary}` : ""}`);
@@ -257,6 +318,10 @@ function validateClaim(goal, event) {
   }
 }
 
+function validateProposal(event) {
+  if (!event.summary) throw new Error("peer goal proposal requires a summary");
+}
+
 function validateRelease(goal, event) {
   if (!event.resolves) throw new Error("peer goal release requires a claim event id");
   const state = deriveGoalState(goal);
@@ -269,6 +334,10 @@ function validateHeartbeat(goal, event) {
   const state = deriveGoalState(goal);
   const claim = state.activeClaims.find((item) => item.id === event.resolves) || state.staleClaims.find((item) => item.id === event.resolves) || state.expiredClaims.find((item) => item.id === event.resolves);
   if (!claim) throw new Error(`peer goal heartbeat target ${event.resolves} is not an active, stale, or expired claim`);
+  if (claim.mode === "write") {
+    const conflicts = state.activeClaims.filter((item) => item.id !== claim.id && item.mode === "write" && pathsOverlap(claim.paths || [], item.paths || []));
+    if (conflicts.length) throw new Error(`heartbeat conflicts with active write claim ${conflicts.map((item) => item.id).join(", ")}`);
+  }
 }
 
 function validateGoalReadyToClose(state) {
@@ -410,6 +479,10 @@ function currentPeerVotes(votes) {
   return [...byPeer.values()];
 }
 
+function uniqueEventPaths(events) {
+  return [...new Set(events.flatMap((event) => Array.isArray(event.paths) ? event.paths : []))];
+}
+
 async function updatePeerGoalBoard(root, updater) {
   const path = goalBoardPath(root);
   await mkdir(dirname(path), { recursive: true });
@@ -460,11 +533,18 @@ function goalBoardPath(root) {
 }
 
 function pathsOverlap(a, b) {
-  return a.some((left) => b.some((right) => left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`)));
+  return a.some((left) => b.some((right) => left === "." || right === "." || left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`)));
 }
 
 function normalizePaths(value) {
-  return [...new Set(normalizeList(value).map((item) => item.replace(/^\.\//, "").replace(/\/+/g, "/").replace(/\/$/, "")).filter(Boolean))];
+  return [...new Set(normalizeList(value).map(normalizePath).filter(Boolean))];
+}
+
+function normalizePath(value) {
+  let path = cleanText(value).replace(/\/+/g, "/");
+  if (path === "" || path === "." || path === "/") return ".";
+  path = path.replace(/^\.\//, "").replace(/\/$/, "");
+  return path === "" || path === "." || path === "/" ? "." : path;
 }
 
 function normalizeList(value) {
