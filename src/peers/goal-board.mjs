@@ -248,7 +248,7 @@ export function deriveGoalState(goal, options = {}) {
   const failedVotes = currentVotes.filter((vote) => vote.verdict === "fail");
   const passingVotes = currentVotes.filter((vote) => vote.verdict === "pass" || vote.verdict === "pass-with-risks");
   const activeWriteClaims = activeClaims.filter((claim) => claim.mode === "write");
-  const tasks = events.filter((event) => event.type === "task").map(projectEventSummary);
+  const tasks = events.filter((event) => event.type === "task").map((event) => projectTaskSummary(event, events));
   return {
     ...goal,
     events,
@@ -291,9 +291,12 @@ export function formatPeerGoalScout(board, options = {}) {
   for (const suggestion of suggestions.slice(0, limit)) {
     const pathText = suggestion.paths?.length ? ` · paths: ${suggestion.paths.join(", ")}` : "";
     const laneText = suggestion.recommendedLane ? ` · lane: ${suggestion.recommendedLane}${suggestion.preferredRoles?.length ? ` for ${suggestion.preferredRoles.join("/")}` : ""}${suggestion.claimMode ? ` (${suggestion.claimMode})` : ""}` : "";
-    lines.push(`- ${suggestion.priority} · ${suggestion.goalId} · ${suggestion.kind}: ${suggestion.summary}${laneText}${pathText}`);
+    const keyText = suggestion.workKey ? ` · key: ${suggestion.workKey}` : "";
+    lines.push(`- ${suggestion.priority} · ${suggestion.goalId} · ${suggestion.kind}: ${suggestion.summary}${laneText}${pathText}${keyText}`);
+    const claim = formatScoutClaimCommand(suggestion);
+    if (claim) lines.push(`  claim: ${claim}`);
   }
-  lines.push("", "Next: post one with `/peer goal propose <goal-id> <summary>` or claim safe work with `/peer goal claim <goal-id> <task> --mode read|write --path <path>`. Scout does not mutate the board.");
+  lines.push("", "Next: post one with `/peer goal propose <goal-id> <summary>` or claim the exact suggested lane with the printed `claim:` command/work key. Scout does not mutate the board.");
   return lines.join("\n");
 }
 
@@ -325,13 +328,16 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
     if (state.openProposals.length) {
       for (const proposal of state.openProposals.filter((item) => item.lane)) {
         const lane = normalizeLaneName(proposal.lane);
-        push("P1", "open-proposal", `Self-select proposed ${lane} lane: ${proposal.summary}`, {
+        const summary = `Self-select proposed ${lane} lane: ${proposal.summary}`;
+        push("P1", "open-proposal", summary, {
           paths: proposal.paths,
           recommendedLane: lane,
           preferredRoles: preferredRolesForLane(lane),
           claimMode: "read",
           suggestedIntent: suggestedIntentForLane(lane),
           rationale: "A peer proposed a lane; matching idle peers can claim or review it without planner assignment.",
+          workKey: proposal.workKey || derivePeerGoalWorkKey({ goalId: goal.id, lane, objective: proposal.summary, mode: "read", paths: proposal.paths }),
+          relatedEventId: proposal.id,
         });
       }
       push("P1", "open-proposal", `Triage ${state.openProposals.length} open proposal${state.openProposals.length === 1 ? "" : "s"}; claim one or resolve it if obsolete.`, { paths: uniqueEventPaths(state.openProposals) });
@@ -559,6 +565,26 @@ function projectEventSummary(event) {
   });
 }
 
+function projectTaskSummary(task, events) {
+  const handoff = latestEvent(events.filter((event) => taskMatchesHandoff(task, event, events)));
+  const projected = projectEventSummary(task);
+  if (!handoff) return projected;
+  return stripEmpty({
+    ...projected,
+    status: handoff.status || "done",
+    completedAt: handoff.at,
+    handoffEventId: handoff.id,
+  });
+}
+
+function taskMatchesHandoff(task, event, events) {
+  if (event.type !== "handoff" || event.at < task.at) return false;
+  if (task.taskId && event.taskId === task.taskId) return true;
+  if (event.taskId === task.id) return true;
+  if (task.taskId || event.taskId || !task.workKey || event.workKey !== task.workKey) return false;
+  return events.filter((item) => item.type === "task" && item.workKey === task.workKey).length === 1;
+}
+
 function projectClaimSummary(claim, events, now) {
   const heartbeat = latestEvent(events.filter((event) => event.type === "heartbeat" && event.resolves === claim.id));
   const lastHeartbeatAt = heartbeat?.at;
@@ -625,11 +651,25 @@ function enrichScoutSuggestion(suggestion = {}) {
     claimMode,
     suggestedIntent: cleanText(suggestion.suggestedIntent || lane.suggestedIntent),
     rationale: cleanText(suggestion.rationale || lane.rationale),
+    relatedEventId: cleanText(suggestion.relatedEventId),
   });
   return stripEmpty({
     ...enriched,
-    workKey: suggestion.workKey || derivePeerGoalWorkKey({ goalId: enriched.goalId, lane: recommendedLane, objective: enriched.summary, mode: claimMode, paths: enriched.paths }),
+    workKey: normalizeWorkKey(suggestion.workKey) || derivePeerGoalWorkKey({ goalId: enriched.goalId, lane: recommendedLane, objective: enriched.summary, mode: claimMode, paths: enriched.paths }),
   });
+}
+
+function formatScoutClaimCommand(suggestion = {}) {
+  if (suggestion.claimMode !== "read" || !suggestion.workKey || !suggestion.goalId || !suggestion.summary) return "";
+  const lane = suggestion.recommendedLane ? ` --lane ${shellQuote(suggestion.recommendedLane)}` : "";
+  const paths = suggestion.paths?.length ? suggestion.paths.map((path) => ` --path ${shellQuote(path)}`).join("") : "";
+  return `/peer goal claim ${shellQuote(suggestion.goalId)} ${shellQuote(suggestion.summary)} --mode read${lane} --key ${shellQuote(suggestion.workKey)}${paths}`;
+}
+
+function shellQuote(value) {
+  const text = String(value || "");
+  if (/^[A-Za-z0-9_./:-]+$/.test(text)) return text;
+  return `'${text.replace(/'/g, `'"'"'`)}'`;
 }
 
 function normalizeLaneName(value) {
