@@ -1,6 +1,6 @@
 {
   "name": "@cryptolibertus/pi-peer",
-  "version": "0.3.7",
+  "version": "0.4.0",
   "description": "Pi package for local Pi-to-Pi peer messaging, slash commands, tools, and runtime transport.",
   "type": "module",
   "license": "MIT",
