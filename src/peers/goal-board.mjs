@@ -16,9 +16,14 @@ const SCOUT_LANES = Object.freeze({
   "stale-claim": { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator"], claimMode: "read", suggestedIntent: "coordinate", rationale: "Stale claims need owner follow-up or release, not duplicate writes." },
   "open-proposal": { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "review", rationale: "Open proposals need triage into accept, defer, or resolve decisions." },
   close: { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "coordinate", rationale: "Ready goals need final closure checks and a concise handoff." },
-  "next-step": { recommendedLane: "research", preferredRoles: ["researcher", "reviewer", "planner", "coordinator", "worker"], claimMode: "read", suggestedIntent: "review", rationale: "Empty goals benefit from a read-only lane before write claims." },
+  "next-step": { recommendedLane: "research", preferredRoles: ["researcher", "reviewer", "planner", "coordinator"], claimMode: "read", suggestedIntent: "review", rationale: "Empty goals benefit from peers self-selecting read-only lanes before write claims." },
   review: { recommendedLane: "review", preferredRoles: ["reviewer", "qa", "coordinator", "planner"], claimMode: "read", suggestedIntent: "review", rationale: "Goals without current votes need read-only validation before closure." },
 });
+const STARTUP_SCOUT_LANES = Object.freeze([
+  { lane: "research", preferredRoles: ["researcher", "planner", "coordinator"], summary: "No active work yet; self-select a research lane to map risks, options, and next moves." },
+  { lane: "review", preferredRoles: ["reviewer", "qa", "planner", "coordinator"], summary: "No active work yet; self-select a read-only review/QA lane to validate the plan and risks." },
+  { lane: "implementation", preferredRoles: ["worker"], summary: "No active work yet; self-select an implementation-planning lane, then claim write paths only after naming them." },
+]);
 const GOAL_BOARD_LOCK_STALE_MS = 30_000;
 const GOAL_BOARD_LOCK_RETRY_MS = 10;
 const GOAL_BOARD_LOCK_TIMEOUT_MS = 5_000;
@@ -318,6 +323,17 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
       push("P1", "stale-claim", `Ask owners to heartbeat or release ${state.staleClaims.length} stale claim${state.staleClaims.length === 1 ? "" : "s"}.`, { paths: uniqueEventPaths(state.staleClaims) });
     }
     if (state.openProposals.length) {
+      for (const proposal of state.openProposals.filter((item) => item.lane)) {
+        const lane = normalizeLaneName(proposal.lane);
+        push("P1", "open-proposal", `Self-select proposed ${lane} lane: ${proposal.summary}`, {
+          paths: proposal.paths,
+          recommendedLane: lane,
+          preferredRoles: preferredRolesForLane(lane),
+          claimMode: "read",
+          suggestedIntent: suggestedIntentForLane(lane),
+          rationale: "A peer proposed a lane; matching idle peers can claim or review it without planner assignment.",
+        });
+      }
       push("P1", "open-proposal", `Triage ${state.openProposals.length} open proposal${state.openProposals.length === 1 ? "" : "s"}; claim one or resolve it if obsolete.`, { paths: uniqueEventPaths(state.openProposals) });
     }
     if (state.readyToClose) {
@@ -325,7 +341,15 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
       continue;
     }
     if (!state.activeClaims.length && !state.tasks.length && !state.openProposals.length) {
-      push("P2", "next-step", "No active work yet; propose a research, review, or implementation lane.");
+      for (const lane of STARTUP_SCOUT_LANES) {
+        push("P2", "next-step", lane.summary, {
+          recommendedLane: lane.lane,
+          preferredRoles: lane.preferredRoles,
+          claimMode: "read",
+          suggestedIntent: suggestedIntentForLane(lane.lane),
+          rationale: "Multiple lane-specific suggestions let idle peers self-select complementary work and suppress duplicates by work key.",
+        });
+      }
     } else if (!state.currentVotes.length && !state.activeWriteClaims.length) {
       push("P2", "review", "No current peer vote; ask a peer for read-only review or record a pass/fail vote.");
     }
@@ -591,7 +615,7 @@ function normalizeDuplicatePolicy(value) {
 
 function enrichScoutSuggestion(suggestion = {}) {
   const lane = SCOUT_LANES[suggestion.kind] || {};
-  const recommendedLane = suggestion.recommendedLane || lane.recommendedLane;
+  const recommendedLane = normalizeLaneName(suggestion.recommendedLane || lane.recommendedLane);
   const claimMode = cleanText(suggestion.claimMode || lane.claimMode);
   const enriched = stripEmpty({
     ...suggestion,
@@ -606,6 +630,27 @@ function enrichScoutSuggestion(suggestion = {}) {
     ...enriched,
     workKey: suggestion.workKey || derivePeerGoalWorkKey({ goalId: enriched.goalId, lane: recommendedLane, objective: enriched.summary, mode: claimMode, paths: enriched.paths }),
   });
+}
+
+function normalizeLaneName(value) {
+  const lane = cleanText(value).toLowerCase();
+  if (["qa", "quality", "test", "testing"].includes(lane)) return "review";
+  if (["implement", "implementation", "developer", "engineer", "worker", "code", "coding"].includes(lane)) return "implementation";
+  if (["coordinate", "coordinator", "planning", "planner", "orchestration"].includes(lane)) return "coordination";
+  if (["researcher", "scout", "investigation"].includes(lane)) return "research";
+  return lane || "review";
+}
+
+function preferredRolesForLane(lane) {
+  const normalized = normalizeLaneName(lane);
+  if (normalized === "implementation") return ["worker"];
+  if (normalized === "research") return ["researcher", "planner", "coordinator"];
+  if (normalized === "coordination") return ["planner", "coordinator", "reviewer"];
+  return ["reviewer", "qa", "planner", "coordinator"];
+}
+
+function suggestedIntentForLane(lane) {
+  return normalizeLaneName(lane) === "implementation" ? "task" : "review";
 }
 
 function hasActiveClaimForScoutSuggestion(state, suggestion) {

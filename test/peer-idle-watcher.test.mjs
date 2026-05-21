@@ -40,6 +40,8 @@ test("derivePeerIdleActivation picks scout suggestions and respects cooldown", (
   });
   assert.equal(activation.goalId, "goal_123");
   assert.equal(activation.kind, "next-step");
+  assert.equal(activation.recommendedLane, "implementation");
+  assert.match(activation.workKey, /implementation/);
 
   markPeerIdleActivation(state, activation, 1_000);
   assert.equal(derivePeerIdleActivation(openGoalBoard, {
@@ -66,12 +68,19 @@ test("idle activation prompt tells peer to inspect state and avoid duplicate uns
     preferredRoles: ["researcher", "reviewer"],
     claimMode: "read",
     rationale: "Empty goals need a read-only lane first.",
+    workKey: "goal_123|research|no-active-work|read|src",
     paths: ["src"],
   }, { localPeerId: "worker-a" });
   assert.match(text, /peer_get id 'goal_123'/);
   assert.match(text, /Do not duplicate active claims/);
   assert.match(text, /Recommended lane: research \(read\)/);
+  assert.match(text, /claim a read-only lane with the work key above/);
+  assert.match(text, /Suggested first action: \/peer goal claim goal_123/);
+  assert.match(text, /--mode read/);
+  assert.match(text, /--lane research/);
+  assert.match(text, /--key 'goal_123\|research\|no-active-work\|read\|src'/);
   assert.match(text, /claim write work only when you intend to edit/);
+  assert.match(text, /If the suggested claim fails as duplicate/);
 });
 
 test("derivePeerIdleActivation uses persona fit when suggestions prefer roles", () => {
@@ -110,11 +119,13 @@ test("derivePeerIdleActivation uses persona fit when suggestions prefer roles", 
     config: { cooldownMs: 10_000 },
   }).kind, "open-proposal");
 
-  assert.equal(derivePeerIdleActivation(openGoalBoard, {
+  const worker = derivePeerIdleActivation(openGoalBoard, {
     localPeerId: "worker3",
     nowMs: 1_000,
     config: { cooldownMs: 10_000 },
-  }).personaFit.matched.includes("worker"), true);
+  });
+  assert.equal(worker.recommendedLane, "implementation");
+  assert.equal(worker.personaFit.matched.includes("worker"), true);
 });
 
 test("derivePeerIdleActivation does not suppress critical blockers for mismatched personas", () => {

@@ -195,7 +195,7 @@ export async function getPeerRuntimeValue(runtime, id) {
     const peers = await runtime.comms.listPeers();
     const messages = await runtime.comms.listMessages();
     const suggestion = deriveFanoutSuggestion(peers, messages);
-    return { type: "fanout", value: { ...suggestion, checklist: ["Run peer_list before multi-lane work", "Create or reuse /peer goal", "Use /peer goal fanout or peer_send goalId+claimedPaths", "Final response must include Fan-out used: yes/no and peer handles"] } };
+    return { type: "fanout", value: { ...suggestion, checklist: ["Run peer_list before multi-lane work", "Create or reuse /peer goal", "For emergent self-organization, ask peers to inspect /peer scout or claim lane-specific work keys before assigning every lane", "Use /peer goal fanout or peer_send goalId+claimedPaths when direct dispatch is needed", "Final response must include Fan-out used: yes/no and peer handles"] } };
   }
   if (id === "audit") return { type: "audit", value: await runtime.comms.getAuditEntries() };
 

@@ -139,13 +139,28 @@ export function buildPeerIdleActivationPrompt(activation, options = {}) {
   const peerId = options.localPeerId || "this-peer";
   const paths = activation.paths?.length ? `\nPaths: ${activation.paths.join(", ")}` : "";
   const lane = activation.recommendedLane ? `\nRecommended lane: ${activation.recommendedLane}${activation.claimMode ? ` (${activation.claimMode})` : ""}${activation.preferredRoles?.length ? ` · preferred roles: ${activation.preferredRoles.join(", ")}` : ""}` : "";
+  const workKey = activation.workKey ? `\nWork key: ${activation.workKey}` : "";
+  const suggestedClaim = buildSuggestedReadClaim(activation);
   const rationale = activation.rationale ? `\nRationale: ${activation.rationale}` : "";
   const fit = activation.personaFit?.matched?.length ? `\nPersona fit: matched ${activation.personaFit.matched.join(", ")}` : "";
-  return `[Pi peer idle watcher]\nYou are local peer '${peerId}' and Pi is idle. A proactive goal-board scout suggestion is available.\n\nGoal: ${activation.goalId}\nSuggestion: ${activation.kind} (${activation.priority}) — ${activation.summary}${lane}${rationale}${fit}${paths}\n\nInstructions:\n- First inspect current state with peer_get id '${activation.goalId}'.\n- If useful, take one small safe action that fits the recommended lane: post a proposal/finding/vote, claim a read-only review lane, or claim write work only when you intend to edit and can name the paths.\n- Do not duplicate active claims or proposals. If the board is no longer actionable, say so briefly and stop.\n- For write work, respect goal-board claims and end with the required peer handoff sections.\n- Keep the response concise.`;
+  return `[Pi peer idle watcher]\nYou are local peer '${peerId}' and Pi is idle. A proactive goal-board scout suggestion is available.\n\nGoal: ${activation.goalId}\nSuggestion: ${activation.kind} (${activation.priority}) — ${activation.summary}${lane}${workKey}${rationale}${fit}${paths}${suggestedClaim}\n\nInstructions:\n- First inspect current state with peer_get id '${activation.goalId}'.\n- If useful, take one small safe action that fits the recommended lane: claim a read-only lane with the work key above, post a proposal/finding/vote, or claim write work only when you intend to edit and can name the paths.\n- If the suggested claim fails as duplicate, inspect the board and stop with a brief handoff instead of starting parallel work.\n- Do not duplicate active claims, work keys, or proposals. If the board is no longer actionable, say so briefly and stop.\n- For write work, respect goal-board claims and end with the required peer handoff sections.\n- Keep the response concise.`;
+}
+
+function buildSuggestedReadClaim(activation = {}) {
+  if (activation.claimMode !== "read" || !activation.workKey) return "";
+  const lane = activation.recommendedLane ? ` --lane ${shellQuote(activation.recommendedLane)}` : "";
+  const paths = activation.paths?.length ? activation.paths.map((path) => ` --path ${shellQuote(path)}`).join("") : "";
+  return `\nSuggested first action: /peer goal claim ${shellQuote(activation.goalId)} ${shellQuote(activation.summary)} --mode read${lane} --key ${shellQuote(activation.workKey)}${paths}`;
+}
+
+function shellQuote(value) {
+  const text = String(value || "");
+  if (/^[A-Za-z0-9_./:-]+$/.test(text)) return text;
+  return `'${text.replace(/'/g, `'"'"'`)}'`;
 }
 
 export function peerIdleActivationKey(activation = {}) {
-  return [activation.goalId, activation.kind, activation.recommendedLane, activation.summary, ...(activation.paths || [])].join("|");
+  return [activation.goalId, activation.kind, activation.recommendedLane, activation.workKey, activation.summary, ...(activation.paths || [])].join("|");
 }
 
 function isActivationCoolingDown(state, activation, config, nowMs) {
@@ -167,6 +182,7 @@ function normalizeActivation(suggestion = {}, localPeerId, options = {}) {
     claimMode: cleanString(suggestion.claimMode),
     suggestedIntent: cleanString(suggestion.suggestedIntent),
     rationale: cleanString(suggestion.rationale),
+    workKey: cleanString(suggestion.workKey),
     personaFit,
     paths: Array.isArray(suggestion.paths) ? suggestion.paths.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()) : [],
     peerId: localPeerId,

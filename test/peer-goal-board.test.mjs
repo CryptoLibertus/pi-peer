@@ -165,9 +165,13 @@ test("scout suggestions are read-only and prioritize proactive next steps", asyn
     assert.equal(JSON.stringify(board), before);
     assert.equal(suggestions[0].kind, "next-step");
     assert.equal(suggestions[0].recommendedLane, "research");
-    assert.deepEqual(suggestions[0].preferredRoles, ["researcher", "reviewer", "planner", "coordinator", "worker"]);
+    assert.deepEqual(suggestions[0].preferredRoles, ["researcher", "planner", "coordinator"]);
     assert.equal(suggestions[0].claimMode, "read");
-    assert.match(formatPeerGoalScout(board), /lane: research for researcher\/reviewer\/planner\/coordinator\/worker \(read\)/);
+    assert.equal(suggestions[1].recommendedLane, "review");
+    assert.equal(suggestions[2].recommendedLane, "implementation");
+    assert.equal(new Set(suggestions.slice(0, 3).map((suggestion) => suggestion.workKey)).size, 3);
+    assert.match(formatPeerGoalScout(board), /lane: research for researcher\/planner\/coordinator \(read\)/);
+    assert.match(formatPeerGoalScout(board), /lane: implementation for worker \(read\)/);
 
     await appendPeerGoalEvent(root, goalId, {
       type: "objection",
@@ -180,6 +184,27 @@ test("scout suggestions are read-only and prioritize proactive next steps", asyn
     assert.equal(blockerSuggestion.kind, "blocker");
     assert.equal(blockerSuggestion.recommendedLane, "coordination");
     assert.deepEqual(blockerSuggestion.preferredRoles, ["planner", "coordinator", "reviewer"]);
+  });
+});
+
+test("scout suggestions turn lane proposals into self-selection work", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "proposal",
+      peerId: "planner-a",
+      summary: "Add an implementation lane for CLI parsing",
+      lane: "implementation",
+      paths: ["src/peers/command.mjs"],
+    });
+
+    const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+    const laneSuggestion = suggestions.find((suggestion) => suggestion.summary.includes("Self-select proposed implementation lane"));
+    assert.ok(laneSuggestion);
+    assert.equal(laneSuggestion.kind, "open-proposal");
+    assert.equal(laneSuggestion.recommendedLane, "implementation");
+    assert.deepEqual(laneSuggestion.preferredRoles, ["worker"]);
+    assert.equal(laneSuggestion.claimMode, "read");
+    assert.match(laneSuggestion.workKey, /implementation/);
   });
 });
 
@@ -322,6 +347,6 @@ test("scout excludes closed goals unless requested", async (t) => {
   await withGoal(t, async (_root, goalId) => {
     const board = { goals: { [goalId]: { id: goalId, objective: "closed", status: "closed", events: [] } } };
     assert.equal(derivePeerGoalScoutSuggestions(board).length, 0);
-    assert.equal(derivePeerGoalScoutSuggestions(board, { includeClosed: true }).length, 1);
+    assert.equal(derivePeerGoalScoutSuggestions(board, { includeClosed: true }).length, 3);
   });
 });

@@ -147,7 +147,7 @@ export function formatPeerHelp() {
     "- `/peer goal list|show [goal-id]` — inspect peer goals, active claims, blockers, proposals, and votes",
     "- `/peer goal fanout <goal-id> <objective> --peer <id[,id]> [--path <a,b>] [--send] [--no-await]` — plan or dispatch role-specific peer lanes",
     "- `/peer goal scout [goal-id] [--limit <n>] [--include-closed]` — read-only proactive suggestions for what peers could do next",
-    "- `/peer goal task|finding|proposal|handoff|note <goal-id> <summary> [--path <a,b>] [--status done]` — post goal-board events",
+    "- `/peer goal task|finding|proposal|handoff|note <goal-id> <summary> [--path <a,b>] [--lane research|review|implementation] [--status done]` — post goal-board events; lane-tagged proposals become scout suggestions peers can self-select",
     "- `/peer goal claim <goal-id> <task> --mode read|write --path <a,b> [--key <work-key>] [--duplicate-policy error|allow-parallel] [--ttl-ms <ms>]` — lease work without hierarchy",
     "- `/peer goal heartbeat <goal-id> <claim-event-id> [summary] [--ttl-ms <ms>] [--stale-after-ms <ms>]` — refresh a live or stale claim",
     "- `/peer goal release <goal-id> <claim-event-id> [summary]` — release a claimed lane",

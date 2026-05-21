@@ -11,7 +11,7 @@ const PEER_SEND_GUIDANCE = "Use peer_send to send a prompt-first message to a pe
 const PEER_AWAIT_GUIDANCE = "Use peer_await with messageId values from queued or timed-out peer_send calls to read final assistant replies.";
 const PEER_GET_GUIDANCE = "Use peer_get to inspect a peer, message, conversation, runtime summary, active tasks via 'tasks', fan-out suggestions via 'fanout', or redacted audit state by id.";
 const PEER_PROGRESS_GUIDANCE = "Use peer_progress from inside an inbound long-running peer task to send structured checkpoint updates before the final handoff.";
-const PEER_FANOUT_GUIDANCE = "Fan-out gate: for multi-part, long-running, or implementation-plus-review work, call peer_list and delegate research/review/QA lanes with peer_send unless the user explicitly says to work solo; if you skip fan-out, state the reason in the final response.";
+const PEER_FANOUT_GUIDANCE = "Fan-out gate: for multi-part, long-running, or implementation-plus-review work, call peer_list and use a goal board plus peer_send for research/review/QA lanes unless the user explicitly says to work solo. For emergent self-organization tests, create/reuse a peer goal and let peers inspect scout suggestions or claim lane-specific work keys instead of over-assigning every lane; if you skip fan-out, state the reason in the final response.";
 
 export const PEER_INBOUND_FINAL_RESPONSE_GUIDANCE = "For inbound peer asks, answer the inbound ask in your final assistant response; that final assistant response is returned to the requesting peer. For write-capable task intents, end with a concise handoff: status, files changed, verification commands with exit status, and blockers.";
 
