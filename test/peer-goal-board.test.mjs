@@ -312,6 +312,57 @@ test("scout stops re-emitting completed proposal lane work but keeps triage visi
   });
 });
 
+test("proposal triage distinguishes total open proposals from actionable unclaimed work", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    for (let index = 1; index <= 5; index += 1) {
+      await appendPeerGoalEvent(root, goalId, {
+        type: "proposal",
+        peerId: "planner",
+        summary: `Loop ${index} work`,
+        lane: "review",
+        workKey: `loop-${index}`,
+      });
+    }
+    for (const workKey of ["loop-1", "loop-2"]) {
+      await appendPeerGoalEvent(root, goalId, {
+        type: "claim",
+        peerId: `worker-${workKey}`,
+        summary: `Claim ${workKey}`,
+        mode: "read",
+        lane: "review",
+        workKey,
+      });
+    }
+
+    let suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+    const triage = suggestions.find((suggestion) => suggestion.summary.startsWith("Triage 5 open proposals"));
+    assert.ok(triage);
+    assert.match(triage.summary, /3 unclaimed actionable/);
+    assert.match(triage.summary, /2 active-owned/);
+    assert.equal(triage.workKey, derivePeerGoalWorkKey({ goalId, lane: "coordination", objective: "triage open proposals", mode: "read" }));
+    assert.equal(suggestions.filter((suggestion) => suggestion.summary.startsWith("Self-select proposed review lane")).length, 3);
+
+    await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "coordinator",
+      summary: triage.summary,
+      mode: "read",
+      lane: "coordination",
+      workKey: triage.workKey,
+    });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "worker-loop-3",
+      summary: "Claim loop-3 after triage started",
+      mode: "read",
+      lane: "review",
+      workKey: "loop-3",
+    });
+    suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+    assert.equal(suggestions.some((suggestion) => suggestion.summary.startsWith("Triage")), false);
+  });
+});
+
 test("semantic work keys prevent duplicate read claims unless explicitly parallel", async (t) => {
   await withGoal(t, async (root, goalId) => {
     const workKey = derivePeerGoalWorkKey({ goalId, lane: "review", objective: "Check finalization safety", mode: "read", paths: ["src"] });

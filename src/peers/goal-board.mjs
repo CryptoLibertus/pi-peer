@@ -353,7 +353,10 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
           relatedEventId: proposal.id,
         });
       }
-      push("P1", "open-proposal", `Triage ${state.openProposals.length} open proposal${state.openProposals.length === 1 ? "" : "s"}; claim one or resolve it if obsolete.`, { paths: uniqueEventPaths(state.openProposals) });
+      push("P1", "open-proposal", formatOpenProposalTriageSummary(state, goal.id), {
+        paths: uniqueEventPaths(state.openProposals),
+        workKey: derivePeerGoalWorkKey({ goalId: goal.id, lane: "coordination", objective: "triage open proposals", mode: "read" }),
+      });
     }
     if (state.readyToClose) {
       push("P1", "close", "Goal satisfies closure gates; close it or record a final note.");
@@ -719,6 +722,27 @@ function proposalLaneWorkCompleted(state, goalId, proposal) {
   const releasedClaim = state.releasedClaims.some((claim) => claim.workKey === workKey && String(claim.at || "") >= proposalAt);
   if (!releasedClaim) return false;
   return state.events.some((event) => ["finding", "handoff", "note"].includes(event.type) && event.workKey === workKey && String(event.at || "") >= proposalAt);
+}
+
+function formatOpenProposalTriageSummary(state, goalId) {
+  const total = state.openProposals.length;
+  const actionable = state.openProposals.filter((proposal) => proposalLaneActionability(state, goalId, proposal) === "unclaimed").length;
+  const owned = state.openProposals.filter((proposal) => proposalLaneActionability(state, goalId, proposal) === "owned").length;
+  const fulfilled = state.openProposals.filter((proposal) => proposalLaneActionability(state, goalId, proposal) === "fulfilled").length;
+  const detail = [];
+  if (actionable !== total) detail.push(`${actionable} unclaimed actionable`);
+  if (owned) detail.push(`${owned} active-owned`);
+  if (fulfilled) detail.push(`${fulfilled} fulfilled awaiting resolve/defer`);
+  const suffix = detail.length ? ` (${detail.join("; ")})` : "";
+  return `Triage ${total} open proposal${total === 1 ? "" : "s"}${suffix}; claim one, resolve fulfilled work, or defer obsolete/ambiguous items.`;
+}
+
+function proposalLaneActionability(state, goalId, proposal) {
+  const lane = normalizeLaneName(proposal?.lane);
+  const workKey = proposalLaneWorkKey(goalId, lane, proposal);
+  if (workKey && state.activeClaims.some((claim) => claim.workKey === workKey)) return "owned";
+  if (proposalLaneWorkCompleted(state, goalId, proposal)) return "fulfilled";
+  return "unclaimed";
 }
 
 function proposalLaneWorkKey(goalId, lane, proposal = {}) {
