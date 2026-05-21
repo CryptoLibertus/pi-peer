@@ -1,6 +1,6 @@
 import { flagEnabled, parseFlags, splitCommandLine } from "../utils.mjs";
 
-export const PEER_COMMANDS = Object.freeze(["help", "status", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm"]);
+export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm"]);
 
 const PEER_GOAL_ALIASES = Object.freeze({
   goals: ["list"],
@@ -138,7 +138,8 @@ export function formatPeerHelp() {
   return [
     "# Peer Commands",
     "",
-    "- `/peer status` — show local peer runtime, endpoint/auth, discovered peers, pending messages, and warnings",
+    "- `/peer status` — show local peer runtime, endpoint/auth, discovered peers, pending messages, context pressure, and warnings",
+    "- `/peer context` — show local context usage/pressure when Pi exposes it to extensions",
     "- `/peer list` — list configured and discovered peers",
     "- `/peer setup [--id <peer-id>] [--role planner|worker|reviewer] [--peer <peer-id>]` — guided alias for creating .pi/peers.json with protocol/capability metadata; never overwrites",
     "- `/peer init [--id <peer-id>]` — create .pi/peers.json if missing; never overwrites",

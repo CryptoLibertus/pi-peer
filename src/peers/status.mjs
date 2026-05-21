@@ -1,3 +1,4 @@
+import { formatPeerContextBudget, normalizePeerContextBudget } from "./context-budget.mjs";
 import { deriveGoalState } from "./goal-board.mjs";
 import { redactPeerAuditValue } from "./protocol.mjs";
 
@@ -23,6 +24,7 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
   if (fanoutSuggestion.warning) warnings.push(fanoutSuggestion.warning);
   const localProfile = runtime.summary?.localPeerProfile || runtime.config?.localPeerProfile || endpoint || {};
   const localCapabilities = endpoint?.capabilities || runtime.config?.manifest?.capabilities || runtime.summary?.manifest?.capabilities || {};
+  const contextBudget = normalizePeerContextBudget(options.contextBudget || runtime.contextBudget);
 
   return {
     enabled,
@@ -33,6 +35,7 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
     protocolVersion: endpoint?.protocolVersion || runtime.summary?.protocolVersion || runtime.config?.manifest?.protocolVersion,
     localTrust: endpoint?.trust || runtime.config?.manifest?.trust || runtime.summary?.manifest?.trust,
     localCapabilities,
+    contextBudget,
     localRole: safeStatusText(localProfile.role || endpoint?.role),
     localPersona: safeStatusText(localProfile.persona || endpoint?.persona),
     endpointStatus: enabled ? (endpoint ? "listening" : "not listening") : "disabled",
@@ -62,6 +65,10 @@ export function formatPeerStatusLines(status = {}) {
     line("peers", status.activeCount > 0 ? "accent" : "muted", `peers discovered ${status.discoveredCount || 0} · active ${status.activeCount || 0} · configured ${status.configuredPeers || 0}${capsText ? ` · caps ${capsText}` : ""}`),
     line("messages", status.pendingCount > 0 ? "accent" : "muted", `messages pending ${status.pendingCount || 0}`),
   ];
+  if (status.contextBudget?.available) {
+    const pressure = status.contextBudget.pressure;
+    lines.push(line("context", pressure === "critical" || pressure === "tight" ? "warning" : pressure === "watch" ? "accent" : "muted", formatPeerContextBudget(status.contextBudget)));
+  }
   for (const task of (status.activeTasks || []).slice(0, 2)) lines.push(line("task", "accent", formatActiveTaskLine(task)));
   const extraTasks = (status.activeTasks || []).length - 2;
   if (extraTasks > 0) lines.push(line("task", "accent", `tasks +${extraTasks} more active`));

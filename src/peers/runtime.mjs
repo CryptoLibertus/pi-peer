@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { InMemoryPeerTransport, MemoryPeerRegistry, createPeerComms } from "./comms.mjs";
 import { applyLocalPeerIdOverride, loadLocalPeerProfile, loadPeerRuntimeConfig, summarizePeerRuntimeConfig } from "./config.mjs";
+import { normalizePeerContextBudget } from "./context-budget.mjs";
 import { deriveGoalState, loadPeerGoalBoard } from "./goal-board.mjs";
 import { createInboundPromptBridge } from "./inbound-bridge.mjs";
 import { LocalPeerTransport, createLocalPeerEndpoint, derivePeerProjectScope, discoverLocalPeerEndpoints } from "./local-transport.mjs";
@@ -122,6 +123,10 @@ export async function createPeerRuntime(cwd, options = {}) {
     },
     activeInboundState() {
       return inboundBridge ? inboundBridge.activeState() : { queuedCount: 0 };
+    },
+    updateContextBudget(input) {
+      runtime.contextBudget = normalizePeerContextBudget(input);
+      return runtime.contextBudget;
     },
     async shutdown() {
       if (inboundBridge) {

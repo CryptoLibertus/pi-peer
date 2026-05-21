@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { deriveFanoutSuggestion, formatPeerGoalDashboard } from "../src/peers/status.mjs";
+import { deriveFanoutSuggestion, derivePeerRuntimeStatus, formatPeerGoalDashboard, formatPeerStatusText } from "../src/peers/status.mjs";
 
 test("fanout suggestion groups available peers by persona-aware lanes", () => {
   const suggestion = deriveFanoutSuggestion([
@@ -22,6 +22,13 @@ test("fanout suggestion is suppressed while peer tasks are active", () => {
   const suggestion = deriveFanoutSuggestion([{ peerId: "worker-a" }], [{ status: "running" }]);
   assert.equal(suggestion.recommended, false);
   assert.equal(suggestion.warning, undefined);
+});
+
+test("peer status includes local context pressure when available", () => {
+  const status = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test", contextBudget: { tokens: 95_000, contextWindow: 100_000 } }, { peers: [], messages: [] });
+  assert.equal(status.contextBudget.pressure, "critical");
+  assert.match(formatPeerStatusText(status), /context critical/);
+  assert.match(formatPeerStatusText(status), /5\.0k left/);
 });
 
 test("goal dashboard groups proposal state and prints safe next actions", () => {

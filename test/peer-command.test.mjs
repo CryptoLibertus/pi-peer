@@ -27,6 +27,11 @@ test("parses dashboard alias as read-only goal dashboard", () => {
   assert.equal(parsed.goalId, "goal_123");
 });
 
+test("parses peer context command", () => {
+  const parsed = parsePeerCommand("context");
+  assert.equal(parsed.subcommand, "context");
+});
+
 test("parses hive and swarm start as safe self-selection goal starters", () => {
   const hive = parsePeerCommand("hive start Ship autonomous workers --constraint no-overlap --path src --path test --lane research,review --proposal \"Validate handoff evidence\"");
   assert.equal(hive.subcommand, "hive");

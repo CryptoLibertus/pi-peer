@@ -5,6 +5,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { installPeerRuntimeLifecycle } from "../../src/peers/extension-lifecycle.mjs";
 import { initPeerConfig } from "../../src/peers/config.mjs";
 import { formatPeerCommandError, formatPeerHelp, formatPeerInitResult, parsePeerCommand } from "../../src/peers/command.mjs";
+import { capturePeerContextBudget, formatPeerContextBudget } from "../../src/peers/context-budget.mjs";
 import { createPeerRuntime, getPeerRuntimeValue } from "../../src/peers/runtime.mjs";
 import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../../src/peers/goal-board.mjs";
 import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerGoalDashboard, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
@@ -37,6 +38,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx = {}) => {
     activeContext = ctx;
     const runtime = await runtimeFor(pi, ctx.cwd);
+    updatePeerContextBudget(runtime, ctx);
     attachPeerUi(runtime, () => activeContext, (current: any) => refreshPeerUi(current, runtime));
     attachPeerIdleWatcher(pi, runtime, () => activeContext, (current: any) => refreshPeerUi(current, runtime));
     await refreshPeerUi(ctx, runtime);
@@ -45,6 +47,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   pi.on("agent_end", async (_event, ctx = {}) => {
     activeContext = ctx;
     const runtime = await runtimeFor(pi, ctx.cwd);
+    updatePeerContextBudget(runtime, ctx);
     await refreshPeerUi(ctx, runtime);
     schedulePeerIdleCheck(runtime, "agent_end");
   });
@@ -183,6 +186,24 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: PEER_TOOL_NAMES.context,
+    label: "Peer Context",
+    description: "Inspect local Pi context usage/pressure for peer coordination and handoff decisions.",
+    promptSnippet: "Inspect local context usage before compacting, summarizing, or delegating peer work.",
+    promptGuidelines: PEER_TOOL_PROMPT_GUIDELINES[PEER_TOOL_NAMES.context],
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      const runtime = await runtimeFor(pi, ctx?.cwd);
+      const budget = updatePeerContextBudget(runtime, ctx);
+      await refreshPeerUi(ctx, runtime);
+      return {
+        content: [{ type: "text", text: formatPeerContextBudget(budget) }],
+        details: { ok: budget.available === true, kind: "peer_context", contextBudget: budget },
+      };
+    },
+  });
+
+  pi.registerTool({
     name: PEER_TOOL_NAMES.progress,
     label: "Peer Progress",
     description: "Send a structured progress checkpoint from the current inbound peer task.",
@@ -294,9 +315,15 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
 
     const runtime = await runtimeFor(pi, ctx?.cwd);
     if (parsed.subcommand === "status") {
+      updatePeerContextBudget(runtime, ctx);
       if (runtime.enabled) await runtime.refreshLocalPeers();
       await refresh();
       return sendPeerMessage(pi, formatPeerStatusText(await collectPeerRuntimeStatus(runtime)));
+    }
+    if (parsed.subcommand === "context") {
+      const budget = updatePeerContextBudget(runtime, ctx);
+      await refresh();
+      return sendPeerMessage(pi, formatPeerContextBudget(budget));
     }
     if (parsed.subcommand === "doctor") {
       if (runtime.enabled) await runtime.refreshLocalPeers();
@@ -718,6 +745,11 @@ function attachPeerIdleWatcher(pi: ExtensionAPI, runtime: any, activeContext: ()
     });
   }
   return runtime.__peerIdleWatcher.start?.();
+}
+
+function updatePeerContextBudget(runtime: any, ctx: any) {
+  const budget = capturePeerContextBudget(ctx);
+  return typeof runtime?.updateContextBudget === "function" ? runtime.updateContextBudget(budget) : budget;
 }
 
 function schedulePeerIdleCheck(runtime: any, reason: string) {
