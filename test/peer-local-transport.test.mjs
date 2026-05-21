@@ -4,7 +4,8 @@ import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { derivePeerProjectScope, discoverLocalPeerEndpoints } from "../src/peers/local-transport.mjs";
+import { createPeerComms, MemoryPeerRegistry } from "../src/peers/comms.mjs";
+import { LocalPeerTransport, createLocalPeerEndpoint, derivePeerProjectScope, discoverLocalPeerEndpoints } from "../src/peers/local-transport.mjs";
 
 async function withTempRoot(t, fn) {
   const root = await mkdtemp(join(tmpdir(), "pi-peer-local-transport-"));
@@ -78,5 +79,49 @@ test("discovery honors advertised projectScope when present", async (t) => {
     const peers = await discoverLocalPeerEndpoints({ discoveryDir, cwd: repo, excludePeerId: "local" });
     assert.deepEqual(peers.map((peer) => peer.peerId), ["scoped"]);
     assert.equal(peers[0].projectScope, scope);
+  });
+});
+
+test("local transport propagates cancellation and comms records acknowledgement", async (t) => {
+  await withTempRoot(t, async (root) => {
+    const discoveryDir = join(root, "discovery");
+    const endpoint = createLocalPeerEndpoint({
+      peerId: "worker",
+      cwd: root,
+      discoveryDir,
+      handler: async (_envelope, _descriptor, context) => {
+        context.markQueued({ queuedPosition: 1, queueLength: 1, priority: "P0" });
+        return new Promise((resolve) => {
+          context.onCancel(({ reason }) => resolve({ status: "CANCELLED", summary: `ack: ${reason}` }));
+        });
+      },
+    });
+    const descriptor = await endpoint.start();
+    t.after(async () => endpoint.stop());
+
+    const comms = createPeerComms({
+      localPeerId: "planner",
+      registry: new MemoryPeerRegistry([descriptor]),
+      transport: new LocalPeerTransport({ discoveryDir, timeoutMs: 1_000 }),
+    });
+    t.after(async () => comms.dispose());
+
+    const handle = await comms.sendMessage("worker", { prompt: "do cancellable work", intent: "task" }, { priority: "P0" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const cancelling = await handle.cancel("stop now");
+    assert.equal(cancelling.status, "cancelling");
+    const secondCancel = await handle.cancel("stop now again");
+    assert.equal(secondCancel.status, "cancelling");
+
+    const response = await handle.response;
+    assert.equal(response.status, "CANCELLED");
+    assert.match(response.summary, /stop now/);
+
+    const message = await comms.getMessage(handle.messageId);
+    assert.equal(message.status, "cancelled");
+    assert.equal(message.priority, "P0");
+    assert.equal(message.events.some((event) => event.type === "request.queued" && event.priority === "P0"), true);
+    assert.equal(message.events.some((event) => event.type === "request.cancelled"), true);
+    assert.equal(message.events.some((event) => event.type === "cancel.acknowledged"), true);
   });
 });

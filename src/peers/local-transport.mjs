@@ -39,6 +39,7 @@ export class LocalPeerTransport {
       timeoutMs: this.timeoutMs,
       maxMessageBytes: this.maxMessageBytes,
       progress: (event) => context.comms?.recordMessageEvent?.(envelope.id, event),
+      cancelSignal: context.cancelSignal,
     };
     if (authToken) {
       return sendAuthenticatedEnvelopeToEndpoint(outboundEnvelope, peer, authToken, transportOptions);
@@ -292,6 +293,14 @@ async function sendEnvelopeToEndpoint(envelope, peer, options) {
 
     socket.setEncoding("utf8");
     socket.once("connect", () => socket.write(`${JSON.stringify(envelope)}\n`));
+    const removeCancelListener = bindCancelSignal(options.cancelSignal, () => {
+      writeLocalControlFrame(socket, "request.cancel", {
+        messageId: envelope.id,
+        conversationId: envelope.conversationId,
+        reason: cancelReason(options.cancelSignal),
+      });
+      armTimeout();
+    });
     socket.on("data", (chunk) => {
       buffer += chunk;
       if (Buffer.byteLength(buffer, "utf8") > maxMessageBytes) {
@@ -330,7 +339,7 @@ async function sendEnvelopeToEndpoint(envelope, peer, options) {
       if (!isLocalControlFrame(frame)) return false;
       emitProgress(frame);
       if (frame.type === "request.queued") clearTimeout(timer);
-      if (frame.type === "request.active" || frame.type === "heartbeat" || frame.type === "progress") armTimeout();
+      if (frame.type === "request.active" || frame.type === "heartbeat" || frame.type === "progress" || frame.type === "request.cancelled") armTimeout();
       return true;
     }
 
@@ -338,6 +347,7 @@ async function sendEnvelopeToEndpoint(envelope, peer, options) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      removeCancelListener();
       socket.end();
       resolveSend(value);
     }
@@ -346,6 +356,7 @@ async function sendEnvelopeToEndpoint(envelope, peer, options) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      removeCancelListener();
       socket.destroy();
       rejectSend(error);
     }
@@ -364,6 +375,14 @@ async function sendAuthenticatedEnvelopeToEndpoint(envelope, peer, authToken, op
     const clientNonce = createLocalAuthNonce();
     let timer;
 
+    const removeCancelListener = bindCancelSignal(options.cancelSignal, () => {
+      writeLocalControlFrame(socket, "request.cancel", {
+        messageId: envelope.id,
+        conversationId: envelope.conversationId,
+        reason: cancelReason(options.cancelSignal),
+      });
+      armTimeout();
+    });
     socket.setEncoding("utf8");
     socket.once("connect", () => {
       socket.write(`${JSON.stringify(createLocalAuthHelloFrame(peer.peerId, clientNonce))}\n`);
@@ -411,7 +430,7 @@ async function sendAuthenticatedEnvelopeToEndpoint(envelope, peer, authToken, op
       if (!isLocalControlFrame(frame)) return false;
       emitProgress(frame);
       if (frame.type === "request.queued") clearTimeout(timer);
-      if (frame.type === "request.active" || frame.type === "heartbeat" || frame.type === "progress") armTimeout();
+      if (frame.type === "request.active" || frame.type === "heartbeat" || frame.type === "progress" || frame.type === "request.cancelled") armTimeout();
       return true;
     }
 
@@ -419,6 +438,7 @@ async function sendAuthenticatedEnvelopeToEndpoint(envelope, peer, authToken, op
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      removeCancelListener();
       socket.end();
       resolveSend(value);
     }
@@ -427,6 +447,7 @@ async function sendAuthenticatedEnvelopeToEndpoint(envelope, peer, authToken, op
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      removeCancelListener();
       socket.destroy();
       rejectSend(error);
     }
@@ -436,6 +457,7 @@ async function sendAuthenticatedEnvelopeToEndpoint(envelope, peer, authToken, op
 function handleSocket(socket, handler, descriptor, options = {}) {
   socket.setEncoding("utf8");
   let buffer = "";
+  let activeContext;
   const maxMessageBytes = options.maxMessageBytes || DEFAULT_MAX_MESSAGE_BYTES;
   const authState = options.authToken ? {} : undefined;
   socket.on("data", (chunk) => {
@@ -445,12 +467,23 @@ function handleSocket(socket, handler, descriptor, options = {}) {
       void writeJsonLineAndEnd(socket, responseEnvelope);
       return;
     }
-    const newline = buffer.indexOf("\n");
-    if (newline < 0) return;
-    const line = buffer.slice(0, newline);
-    buffer = buffer.slice(newline + 1);
-    const operation = handleSocketLine(socket, handler, descriptor, options, line, authState);
-    if (options.trackOperation) options.trackOperation(operation);
+    for (;;) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      const controlFrame = parseJsonMaybe(line);
+      if (activeContext && isLocalCancelFrame(controlFrame)) {
+        activeContext.cancel(controlFrame);
+        continue;
+      }
+      const operation = handleSocketLine(socket, handler, descriptor, {
+        ...options,
+        setActiveContext: (context) => { activeContext = context; },
+        clearActiveContext: (context) => { if (activeContext === context) activeContext = undefined; },
+      }, line, authState);
+      if (options.trackOperation) options.trackOperation(operation);
+    }
   });
 }
 
@@ -470,16 +503,18 @@ async function handleSocketLine(socket, handler, descriptor, options, line, auth
         envelope = assertValidPeerEnvelope(JSON.parse(line));
       }
       const deliveryEnvelope = stripPeerEnvelopeAuth(envelope);
-      const requestContext = createLocalRequestContext(socket, { activeHeartbeatIntervalMs: options.activeHeartbeatIntervalMs });
+      const requestContext = createLocalRequestContext(socket, { activeHeartbeatIntervalMs: options.activeHeartbeatIntervalMs, request: deliveryEnvelope });
+      options.setActiveContext?.(requestContext);
       try {
         const result = await handler(deliveryEnvelope, descriptor, requestContext);
-        const responseEnvelope = normalizeResponseEnvelope(result, deliveryEnvelope);
+        const responseEnvelope = normalizeResponseEnvelope(requestContext.cancelled ? { status: "CANCELLED", summary: requestContext.cancelReason || "cancelled by sender" } : result, deliveryEnvelope);
         const outbound = authState
           ? createLocalAuthResponseFrame(responseEnvelope, descriptor.peerId, options.authToken, authState.challenge.nonce, authState.clientNonce)
           : responseEnvelope;
         await writeJsonLineAndEnd(socket, outbound);
       } finally {
         requestContext.close();
+        options.clearActiveContext?.(requestContext);
       }
     } catch (error) {
       const responseEnvelope = errorResponseEnvelope(error, line);
@@ -506,6 +541,10 @@ function writeJsonLineAndEnd(socket, value) {
 function createLocalRequestContext(socket, options = {}) {
   let queued = false;
   let active = false;
+  let cancelled = false;
+  let cancelReasonText = "";
+  const cancelListeners = new Set();
+  const request = options.request || {};
   let heartbeatTimer;
   const heartbeatIntervalMs = Number.isInteger(options.activeHeartbeatIntervalMs) && options.activeHeartbeatIntervalMs > 0
     ? options.activeHeartbeatIntervalMs
@@ -524,15 +563,15 @@ function createLocalRequestContext(socket, options = {}) {
 
   return {
     socket,
-    markQueued() {
+    markQueued(input = {}) {
       if (queued || active) return;
       queued = true;
-      writeLocalControlFrame(socket, "request.queued");
+      writeLocalControlFrame(socket, "request.queued", queueControlDetail(input, request));
     },
     markActive() {
       if (active) return;
       active = true;
-      writeLocalControlFrame(socket, "request.active");
+      writeLocalControlFrame(socket, "request.active", requestControlIdentity(request));
       startHeartbeat();
     },
     progress(input = {}) {
@@ -544,8 +583,37 @@ function createLocalRequestContext(socket, options = {}) {
       });
       startHeartbeat();
     },
+    onCancel(listener) {
+      if (typeof listener !== "function") return () => {};
+      cancelListeners.add(listener);
+      if (cancelled) listener({ reason: cancelReasonText, messageId: request.id, conversationId: request.conversationId });
+      return () => cancelListeners.delete(listener);
+    },
+    cancel(frame = {}) {
+      const reason = typeof frame.reason === "string" && frame.reason.trim() ? frame.reason.trim() : "cancelled by sender";
+      if (!cancelled) {
+        cancelled = true;
+        cancelReasonText = reason;
+        stopHeartbeat();
+        for (const listener of [...cancelListeners]) {
+          try {
+            listener({ reason, messageId: request.id, conversationId: request.conversationId });
+          } catch {
+            // Cancellation listeners must not corrupt transport state.
+          }
+        }
+      }
+      writeLocalControlFrame(socket, "request.cancelled", { ...requestControlIdentity(request), status: "cancelling", summary: `Cancellation acknowledged: ${reason}` });
+    },
+    get cancelled() {
+      return cancelled;
+    },
+    get cancelReason() {
+      return cancelReasonText;
+    },
     close() {
       stopHeartbeat();
+      cancelListeners.clear();
     },
   };
 }
@@ -558,7 +626,50 @@ function writeLocalControlFrame(socket, type, extra = {}) {
 function isLocalControlFrame(frame) {
   return frame?.protocol === LOCAL_CONTROL_PROTOCOL
     && frame.version === LOCAL_CONTROL_VERSION
-    && (frame.type === "request.queued" || frame.type === "request.active" || frame.type === "heartbeat" || frame.type === "progress");
+    && (frame.type === "request.queued" || frame.type === "request.active" || frame.type === "heartbeat" || frame.type === "progress" || frame.type === "request.cancel" || frame.type === "request.cancelled");
+}
+
+function isLocalCancelFrame(frame) {
+  return frame?.protocol === LOCAL_CONTROL_PROTOCOL && frame.version === LOCAL_CONTROL_VERSION && frame.type === "request.cancel";
+}
+
+function requestControlIdentity(request = {}) {
+  return {
+    ...(typeof request.id === "string" ? { messageId: request.id } : {}),
+    ...(typeof request.conversationId === "string" ? { conversationId: request.conversationId } : {}),
+  };
+}
+
+function queueControlDetail(input = {}, request = {}) {
+  return {
+    ...requestControlIdentity(request),
+    ...(Number.isInteger(input.queuedPosition) ? { queuedPosition: input.queuedPosition } : {}),
+    ...(Number.isInteger(input.queueLength) ? { queueLength: input.queueLength } : {}),
+    ...(typeof input.priority === "string" && input.priority.trim() ? { priority: input.priority.trim() } : {}),
+  };
+}
+
+function parseJsonMaybe(line) {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+}
+
+function bindCancelSignal(signal, onCancel) {
+  if (!signal || typeof signal.addEventListener !== "function") return () => {};
+  if (signal.aborted) {
+    onCancel();
+    return () => {};
+  }
+  signal.addEventListener("abort", onCancel, { once: true });
+  return () => signal.removeEventListener?.("abort", onCancel);
+}
+
+function cancelReason(signal) {
+  const reason = signal?.reason;
+  return typeof reason === "string" && reason.trim() ? reason.trim() : "cancelled by sender";
 }
 
 function createProgressEmitter(progress) {
@@ -569,13 +680,20 @@ function createProgressEmitter(progress) {
         ? frame.summary.trim()
         : frame.type === "request.queued"
           ? "Remote peer queued the request"
-          : frame.type === "heartbeat"
-            ? "Remote peer is still handling the request"
-            : "Remote peer is actively handling the request";
+          : frame.type === "request.cancel"
+            ? "Cancellation requested for remote peer task"
+            : frame.type === "request.cancelled"
+              ? "Remote peer acknowledged cancellation"
+              : frame.type === "heartbeat"
+                ? "Remote peer is still handling the request"
+                : "Remote peer is actively handling the request";
       const result = progress({
         type: frame.type,
-        status: typeof frame.status === "string" && frame.status.trim() ? frame.status.trim() : frame.type === "request.queued" ? "queued" : "running",
+        status: typeof frame.status === "string" && frame.status.trim() ? frame.status.trim() : frame.type === "request.queued" ? "queued" : frame.type === "request.cancel" || frame.type === "request.cancelled" ? "cancelling" : "running",
         summary,
+        ...(Number.isInteger(frame.queuedPosition) ? { queuedPosition: frame.queuedPosition } : {}),
+        ...(Number.isInteger(frame.queueLength) ? { queueLength: frame.queueLength } : {}),
+        ...(typeof frame.priority === "string" && frame.priority.trim() ? { priority: frame.priority.trim() } : {}),
         ...(typeof frame.phase === "string" && frame.phase.trim() ? { phase: frame.phase.trim() } : {}),
         ...(frame.detail !== undefined ? { detail: frame.detail } : {}),
       });

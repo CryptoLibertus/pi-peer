@@ -122,6 +122,60 @@ export function summarizePeerRuntimeConfig(config) {
   };
 }
 
+export function normalizePeerGoalClosurePolicy(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const policy = {};
+  const minPassingVotes = positiveInteger(source.minPassingVotes ?? source.minVotes);
+  if (minPassingVotes !== undefined) policy.minPassingVotes = minPassingVotes;
+
+  const requiredVotes = normalizeClosureRequirements(source.requiredVotes || source.votes, { defaultTypes: ["vote"] });
+  if (requiredVotes.length) policy.requiredVotes = requiredVotes;
+
+  const requiredEvidence = normalizeClosureRequirements(source.requiredEvidence || source.evidence, { defaultTypes: ["finding", "handoff"] });
+  if (requiredEvidence.length) policy.requiredEvidence = requiredEvidence;
+
+  return Object.keys(policy).length ? policy : undefined;
+}
+
+function normalizeClosureRequirements(input, options = {}) {
+  const items = Array.isArray(input) ? input : [];
+  return items
+    .map((item) => normalizeClosureRequirement(item, options))
+    .filter(Boolean);
+}
+
+function normalizeClosureRequirement(input = {}, options = {}) {
+  if (!isPlainObject(input)) return undefined;
+  const requirement = {};
+  const types = normalizeStringList(input.types || input.type || options.defaultTypes).map((item) => item.toLowerCase());
+  if (types.length) requirement.types = types;
+  const verdicts = normalizeStringList(input.verdicts || input.verdict).map((item) => item.toLowerCase());
+  if (verdicts.length) requirement.verdicts = verdicts;
+  const lane = normalizedString(input.lane || input.workLane)?.toLowerCase();
+  if (lane) requirement.lane = lane;
+  const role = normalizedString(input.role)?.toLowerCase();
+  if (role) requirement.role = role;
+  const peerId = normalizedString(input.peerId);
+  if (peerId) requirement.peerId = peerId;
+  const workKey = normalizedString(input.workKey)?.toLowerCase().replace(/\s+/g, " ");
+  if (workKey) requirement.workKey = workKey;
+  const status = normalizedString(input.status)?.toLowerCase();
+  if (status) requirement.status = status;
+  requirement.min = positiveInteger(input.min) || 1;
+  return requirement;
+}
+
+function normalizeStringList(value) {
+  if (Array.isArray(value)) return value.map((item) => normalizedString(item)).filter(Boolean);
+  const text = normalizedString(value);
+  return text ? [text] : [];
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : undefined;
+}
+
 export async function loadLocalPeerProfile(cwd, config = {}, options = {}) {
   const readFile = options.readFile || defaultReadFile;
   const profile = deriveLocalPeerProfile(config, options);

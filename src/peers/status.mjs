@@ -1,3 +1,4 @@
+import { deriveGoalState } from "./goal-board.mjs";
 import { redactPeerAuditValue } from "./protocol.mjs";
 
 export async function collectPeerRuntimeStatus(runtime, options = {}) {
@@ -126,6 +127,113 @@ export function formatPeerDoctorText(report = {}) {
   return lines.join("\n");
 }
 
+export function formatPeerGoalDashboard(goal, options = {}) {
+  if (!goal) return "No peer goal found for dashboard.";
+  const state = goal && Array.isArray(goal.activeClaims) && Array.isArray(goal.openProposals) ? goal : deriveGoalState(goal, options);
+  const lines = [
+    `# Peer Goal Dashboard ${state.id}`,
+    `status: ${state.status || "open"} · ready: ${state.status === "closed" ? "closed" : state.readyToClose ? "yes" : "no"}`,
+    `objective: ${truncateStatus(state.objective, 120)}`,
+    "",
+    `counts: active claims ${state.activeClaims.length} · stale ${state.staleClaims.length} · open proposals ${state.openProposals.length} · active tasks ${state.activeTasks.length} · blockers ${state.blockingObjections.length}`,
+  ];
+
+  const peerRows = peerContributionRows(state);
+  if (peerRows.length) {
+    lines.push("", "Peer contribution/load:");
+    for (const row of peerRows.slice(0, 8)) lines.push(`- ${row.peerId}: active ${row.activeClaims}/${row.activeTasks} · stale ${row.staleClaims} · handoffs ${row.handoffs} · findings ${row.findings} · votes ${row.votes}`);
+  }
+
+  if (state.activeClaims.length) {
+    lines.push("", "Active lanes:");
+    for (const claim of state.activeClaims.slice(0, 10)) lines.push(`- ${claim.id} · ${claim.peerId} · ${claim.lane || "work"}/${claim.mode || "read"} · ${truncateStatus(claim.summary, 100)}${claim.workKey ? ` · key ${claim.workKey}` : ""}`);
+  }
+
+  if (state.staleClaims.length) {
+    lines.push("", "Stale work (coordination only; do not auto-steal writes):");
+    for (const claim of state.staleClaims.slice(-10)) {
+      lines.push(`- ${claim.id} · ${claim.peerId} · ${claim.mode || "read"} · ${truncateStatus(claim.summary, 100)}${claim.staleAt ? ` · stale ${claim.staleAt}` : ""}`);
+      lines.push(`  next: ask owner to heartbeat or release; release command: /peer goal release ${shellQuote(state.id)} ${shellQuote(claim.id)} ${shellQuote("owner confirmed stale/superseded")}`);
+    }
+  }
+
+  const proposalBuckets = bucketOpenProposals(state);
+  if (state.openProposals.length) {
+    lines.push("", "Open proposals:");
+    for (const [bucket, proposals] of Object.entries(proposalBuckets)) {
+      if (!proposals.length) continue;
+      lines.push(`- ${bucket}: ${proposals.length}`);
+      for (const proposal of proposals.slice(0, 8)) {
+        lines.push(`  - ${proposal.id} · ${proposal.lane || "lane"} · ${truncateStatus(proposal.summary, 110)}${proposal.workKey ? ` · key ${proposal.workKey}` : ""}`);
+        const command = dashboardProposalCommand(state, proposal, bucket);
+        if (command) lines.push(`    next: ${command}`);
+      }
+    }
+  }
+
+  if (state.blockingObjections.length) {
+    lines.push("", "Blockers:");
+    for (const blocker of state.blockingObjections.slice(0, 8)) lines.push(`- ${blocker.id} · ${blocker.peerId}: ${truncateStatus(blocker.summary, 120)}`);
+  }
+
+  if (state.currentVotes.length) {
+    lines.push("", "Votes:");
+    for (const vote of state.currentVotes.slice(0, 8)) lines.push(`- ${vote.peerId}: ${vote.verdict}${vote.confidence !== undefined ? ` (${vote.confidence})` : ""} · ${truncateStatus(vote.summary, 100)}`);
+  }
+
+  lines.push("", "Safe next actions:");
+  if (state.readyToClose && state.status !== "closed") lines.push(`- close: /peer goal close ${shellQuote(state.id)} ${shellQuote("closure gates satisfied")}`);
+  if (!state.currentVotes.length && !state.openProposals.length && !state.activeClaims.length) lines.push(`- vote: /peer goal vote ${shellQuote(state.id)} pass ${shellQuote("reviewed and verified")}`);
+  if (!state.readyToClose && !state.openProposals.length && !state.activeClaims.length && !state.staleClaims.length) lines.push("- no mutation suggested; ask for a read-only review or claim an explicit implementation path.");
+  return lines.join("\n");
+}
+
+function bucketOpenProposals(state = {}) {
+  const buckets = { unclaimed: [], "active-owned": [], "fulfilled-awaiting-resolve": [] };
+  const activeKeys = new Set((state.activeClaims || []).map((claim) => claim.workKey).filter(Boolean));
+  for (const proposal of state.openProposals || []) {
+    if (proposal.workKey && activeKeys.has(proposal.workKey)) buckets["active-owned"].push(proposal);
+    else if (isProposalFulfilled(state, proposal)) buckets["fulfilled-awaiting-resolve"].push(proposal);
+    else buckets.unclaimed.push(proposal);
+  }
+  return buckets;
+}
+
+function isProposalFulfilled(state = {}, proposal = {}) {
+  if (!proposal.workKey) return false;
+  const proposalAt = String(proposal.at || "");
+  const released = (state.releasedClaims || []).some((claim) => claim.workKey === proposal.workKey && String(claim.at || "") >= proposalAt);
+  if (!released) return false;
+  return (state.events || []).some((event) => ["finding", "handoff", "note"].includes(event.type) && event.workKey === proposal.workKey && String(event.at || "") >= proposalAt);
+}
+
+function dashboardProposalCommand(state = {}, proposal = {}, bucket = "") {
+  if (bucket === "fulfilled-awaiting-resolve") return `/peer goal resolve ${shellQuote(state.id)} ${shellQuote(proposal.id)} ${shellQuote("fulfilled lane complete")}`;
+  if (bucket !== "unclaimed") return "";
+  const lane = proposal.lane || "review";
+  const paths = Array.isArray(proposal.paths) ? proposal.paths.map((path) => ` --path ${shellQuote(path)}`).join("") : "";
+  const key = proposal.workKey ? ` --key ${shellQuote(proposal.workKey)}` : "";
+  return `/peer goal claim ${shellQuote(state.id)} ${shellQuote(`Self-select proposed ${lane} lane: ${proposal.summary || "work"}`)} --mode read --lane ${shellQuote(lane)}${key}${paths}`;
+}
+
+function peerContributionRows(state = {}) {
+  const rows = new Map();
+  const ensure = (peerId) => {
+    const id = peerId || "unknown";
+    if (!rows.has(id)) rows.set(id, { peerId: id, activeClaims: 0, activeTasks: 0, staleClaims: 0, handoffs: 0, findings: 0, votes: 0 });
+    return rows.get(id);
+  };
+  for (const claim of state.activeClaims || []) ensure(claim.peerId).activeClaims += 1;
+  for (const task of state.activeTasks || []) ensure(task.peerId).activeTasks += 1;
+  for (const claim of state.staleClaims || []) ensure(claim.peerId).staleClaims += 1;
+  for (const event of state.events || []) {
+    if (event.type === "handoff") ensure(event.peerId).handoffs += 1;
+    if (event.type === "finding") ensure(event.peerId).findings += 1;
+    if (event.type === "vote") ensure(event.peerId).votes += 1;
+  }
+  return [...rows.values()].sort((a, b) => (b.activeClaims + b.activeTasks + b.handoffs + b.findings + b.votes) - (a.activeClaims + a.activeTasks + a.handoffs + a.findings + a.votes) || a.peerId.localeCompare(b.peerId));
+}
+
 function capabilitySummary(capabilities = {}) {
   if (!capabilities || typeof capabilities !== "object") return "";
   if (Array.isArray(capabilities.intents) && capabilities.intents.length) return `intents:${capabilities.intents.join(",")}`;
@@ -173,6 +281,17 @@ function recommendLaneForPeer(peer = {}) {
 
 function line(kind, color, text) {
   return { kind, color, text };
+}
+
+function truncateStatus(value, max = 80) {
+  const text = safeStatusText(String(value || "")) || "";
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
+}
+
+function shellQuote(value) {
+  const text = String(value || "");
+  if (/^[A-Za-z0-9_./:-]+$/.test(text)) return text;
+  return `'${text.replace(/'/g, `'"'"'`)}'`;
 }
 
 function safeStatusText(value) {

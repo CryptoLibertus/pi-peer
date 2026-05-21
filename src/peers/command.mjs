@@ -1,6 +1,6 @@
 import { flagEnabled, parseFlags, splitCommandLine } from "../utils.mjs";
 
-export const PEER_COMMANDS = Object.freeze(["help", "status", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal"]);
+export const PEER_COMMANDS = Object.freeze(["help", "status", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm"]);
 
 const PEER_GOAL_ALIASES = Object.freeze({
   goals: ["list"],
@@ -8,8 +8,11 @@ const PEER_GOAL_ALIASES = Object.freeze({
   current: ["show"],
   fanout: ["fanout"],
   scout: ["scout"],
+  dashboard: ["dashboard"],
   proposal: ["proposal"],
   propose: ["propose"],
+  item: ["item"],
+  "work-item": ["work-item"],
   claim: ["claim"],
   take: ["claim"],
   heartbeat: ["heartbeat"],
@@ -77,6 +80,9 @@ export function parsePeerCommand(rawArgs = "") {
   if (subcommand === "goal") {
     return parsePeerGoalCommand(parsed, flags, positionals);
   }
+  if (subcommand === "hive" || subcommand === "swarm") {
+    return parsePeerHiveCommand(parsed, flags, positionals);
+  }
   if (subcommand === "progress") {
     const summary = positionals.join(" ").trim();
     if (!summary) return { ...parsed, error: "/peer progress requires <summary>" };
@@ -142,12 +148,14 @@ export function formatPeerHelp() {
     "- `/peer cancel <message-id> [reason]` — mark a queued/running/disconnected peer message cancelled",
     "- `/peer send <peer> <prompt> [--no-await] [--intent ask] [--goal <goal-id>] [--claim <path[,path]>] [--key <work-key>] [--duplicate-policy reuse|error|allow-parallel]` — send a prompt-first peer message",
     "- `/peer progress <summary> [--status running] [--phase <name>]` — send a structured checkpoint from an inbound long-running peer task",
-    "- `/peer goals|ls`, `/peer current [goal-id]`, `/peer scout [goal-id]`, `/peer fanout`, `/peer propose`, `/peer take|claim`, `/peer complete|done`, `/peer objection|block`, `/peer unblock`, `/peer ping`, `/peer drop`, `/peer pass|fail` — short goal-board aliases",
+    "- `/peer hive start <objective> [--constraint <a,b>] [--path <a,b>] [--lane research,review,implementation]` — create a goal, seed read-only self-selection proposals, and print scout commands without dispatching peers",
+    "- `/peer goals|ls`, `/peer current [goal-id]`, `/peer scout [goal-id]`, `/peer dashboard [goal-id]`, `/peer fanout`, `/peer propose`, `/peer take|claim`, `/peer complete|done`, `/peer objection|block`, `/peer unblock`, `/peer ping`, `/peer drop`, `/peer pass|fail` — short goal-board aliases",
     "- `/peer goal create <objective> [--constraint <a,b>]` — start a flat shared goal board",
     "- `/peer goal list|show [goal-id]` — inspect peer goals, active claims, blockers, proposals, and votes",
     "- `/peer goal fanout <goal-id> <objective> --peer <id[,id]> [--path <a,b>] [--send] [--no-await]` — plan or dispatch role-specific peer lanes",
     "- `/peer goal scout [goal-id] [--limit <n>] [--include-closed]` — read-only proactive suggestions with exact work keys and copyable claim commands for what peers could do next",
     "- `/peer goal task|finding|proposal|handoff|note <goal-id> <summary> [--path <a,b>] [--lane research|review|implementation] [--status done]` — post goal-board events; lane-tagged proposals become scout suggestions peers can self-select",
+    "- `/peer goal item <goal-id> <summary> --item-id <id> [--status open|done] [--depends-on <id[,id]>] [--parent <id>]` — add/update first-class epic work items that gate closure until done and dependencies are satisfied",
     "- `/peer goal claim <goal-id> <task> --mode read|write --path <a,b> [--key <work-key>] [--duplicate-policy error|allow-parallel] [--ttl-ms <ms>]` — lease work without hierarchy",
     "- `/peer goal heartbeat <goal-id> <claim-event-id> [summary] [--ttl-ms <ms>] [--stale-after-ms <ms>]` — refresh a live or stale claim",
     "- `/peer goal release <goal-id> <claim-event-id> [summary]` — release a claimed lane",
@@ -167,6 +175,25 @@ export function formatPeerCommandError(message) {
   return `${message}\n\nRun \`/peer help\` for usage.`;
 }
 
+function parsePeerHiveCommand(parsed, flags, positionals) {
+  const action = positionals[0] || "start";
+  const rest = positionals.slice(1);
+  const withAction = { ...parsed, hiveAction: action };
+  if (action !== "start") return { ...withAction, error: `Unknown /peer ${parsed.subcommand} action '${action}'` };
+  const objective = rest.join(" ").trim();
+  if (!objective) return { ...withAction, error: `/peer ${parsed.subcommand} start requires <objective>` };
+  return {
+    ...withAction,
+    objective,
+    constraints: listFlag(flags.constraint || flags.constraints),
+    paths: listFlag(flags.path || flags.paths),
+    lanes: listFlag(flags.lane || flags.lanes),
+    proposals: listFlag(flags.proposal || flags.proposals),
+    send: flagEnabled(flags.send),
+    write: flagEnabled(flags.write),
+  };
+}
+
 function parsePeerGoalCommand(parsed, flags, positionals) {
   const action = positionals[0] || "list";
   const rest = positionals.slice(1);
@@ -178,6 +205,7 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
     return { ...withAction, objective, constraints: listFlag(flags.constraint || flags.constraints) };
   }
   if (action === "show") return { ...withAction, goalId: rest[0] };
+  if (action === "dashboard") return { ...withAction, goalId: rest[0] };
   if (action === "scout") return { ...withAction, goalId: rest[0], limit: positiveIntegerFlag(flags.limit), includeClosed: flagEnabled(flags.includeClosed) };
   if (action === "fanout") {
     const goalId = rest[0];
@@ -197,11 +225,12 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
       staleAfterMs: positiveIntegerFlag(flags.staleAfterMs),
     };
   }
-  if (["task", "finding", "proposal", "propose", "handoff", "note"].includes(action)) {
+  if (["task", "finding", "proposal", "propose", "handoff", "note", "item", "work-item"].includes(action)) {
     const goalId = rest[0];
     const summary = rest.slice(1).join(" ").trim();
     if (!goalId || !summary) return { ...withAction, error: `/peer goal ${action} requires <goal-id> <summary>` };
-    return { ...withAction, goalId, eventType: action === "propose" ? "proposal" : action, summary, paths: listFlag(flags.path || flags.paths), severity: stringFlag(flags.severity, undefined), taskId: stringFlag(flags.taskId, undefined), status: stringFlag(flags.status, undefined), workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined) };
+    const eventType = action === "propose" ? "proposal" : ["item", "work-item"].includes(action) ? "work-item" : action;
+    return { ...withAction, goalId, eventType, summary, paths: listFlag(flags.path || flags.paths), severity: stringFlag(flags.severity, undefined), taskId: stringFlag(flags.taskId, undefined), itemId: stringFlag(flags.itemId || flags.item || flags.id, undefined), parentId: stringFlag(flags.parentId || flags.parent, undefined), dependsOn: listFlag(flags.dependsOn || flags.depends || flags.dependency || flags.dependencies), status: stringFlag(flags.status, undefined), workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined) };
   }
   if (action === "claim") {
     if (flagEnabled(flags.write) && flags.mode === undefined) flags.mode = "write";

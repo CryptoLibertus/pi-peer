@@ -7,7 +7,7 @@ import { initPeerConfig } from "../../src/peers/config.mjs";
 import { formatPeerCommandError, formatPeerHelp, formatPeerInitResult, parsePeerCommand } from "../../src/peers/command.mjs";
 import { createPeerRuntime, getPeerRuntimeValue } from "../../src/peers/runtime.mjs";
 import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../../src/peers/goal-board.mjs";
-import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
+import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerGoalDashboard, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
 import {
   peerAwaitToolResult,
   peerGetToolResult,
@@ -15,6 +15,8 @@ import {
   peerSendQueuedToolResult,
   peerSendResponseToolResult,
   peerSendTimeoutToolResult,
+  parsePeerHandoffEvidence,
+  normalizePeerHandoffEvidence,
 } from "../../src/peers/tool-results.mjs";
 import { PEER_TOOL_NAMES, PEER_TOOL_PROMPT_GUIDELINES } from "../../src/peers/guidance.mjs";
 import { createPeerIdleWatcher } from "../../src/peers/idle-watcher.mjs";
@@ -55,8 +57,8 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("peer", {
-    description: "Pi-to-Pi peers: setup, doctor, status, list, send, get, await, progress, goal",
-    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "goals", "ls", "current", "scout", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
+    description: "Pi-to-Pi peers: setup, doctor, status, list, send, get, await, progress, goal, hive",
+    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (rawArgs, ctx) => {
@@ -318,6 +320,11 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       await refresh();
       return sendPeerMessage(pi, text);
     }
+    if (parsed.subcommand === "hive" || parsed.subcommand === "swarm") {
+      const text = await handlePeerHiveCommand(parsed, ctx, runtime);
+      await refresh();
+      return sendPeerMessage(pi, text);
+    }
 
     ensureEnabled(runtime);
     if (parsed.subcommand === "progress") {
@@ -418,6 +425,42 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
   }
 }
 
+async function handlePeerHiveCommand(parsed: any, ctx: any, runtime: any) {
+  const root = ctx?.cwd || process.cwd();
+  const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown";
+  if (parsed.hiveAction !== "start") throw new Error(`Unknown peer hive action '${parsed.hiveAction}'`);
+
+  const goal = await createPeerGoal(root, { objective: parsed.objective, constraints: parsed.constraints, peerId });
+  const lanes = Array.isArray(parsed.lanes) && parsed.lanes.length ? parsed.lanes : ["research", "review", "implementation"];
+  for (const lane of lanes) {
+    await appendPeerGoalEvent(root, goal.id, {
+      type: "proposal",
+      peerId,
+      summary: `Self-select ${lane} lane for: ${parsed.objective}`,
+      paths: parsed.paths,
+      lane,
+      workKey: `hive:${lane}`,
+    });
+  }
+  for (const proposal of parsed.proposals || []) {
+    await appendPeerGoalEvent(root, goal.id, {
+      type: "proposal",
+      peerId,
+      summary: proposal,
+      paths: parsed.paths,
+      lane: "review",
+    });
+  }
+
+  const board = await loadPeerGoalBoard(root);
+  const currentGoal = board.goals[goal.id];
+  const scout = formatPeerGoalScout(board, { goalId: goal.id, limit: 10 });
+  const optIn = parsed.send || parsed.write
+    ? "\n\nDispatch/write flags were provided, but hive start is intentionally safe-by-default: no peers were dispatched and no write claims were created. Use /peer goal fanout ... --send or /peer goal claim ... --mode write explicitly after reviewing scout output."
+    : "\n\nNo peers dispatched and no write claims created. Peers should self-select with the scout claim commands below; use /peer goal fanout ... --send only as an explicit follow-up.";
+  return `${formatPeerGoal(currentGoal)}\n\n${scout}${optIn}`;
+}
+
 async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
   const root = ctx?.cwd || process.cwd();
   const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown";
@@ -434,8 +477,15 @@ async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
     return formatPeerGoal(goal);
   }
   if (parsed.goalAction === "scout") return formatPeerGoalScout(await loadPeerGoalBoard(root), { goalId: parsed.goalId, limit: parsed.limit, includeClosed: parsed.includeClosed });
+  if (parsed.goalAction === "dashboard") {
+    const board = await loadPeerGoalBoard(root);
+    const goalId = parsed.goalId || board.currentGoalId;
+    const goal = goalId ? board.goals[goalId] : undefined;
+    if (!goal) throw new Error(goalId ? `peer goal ${goalId} not found` : "no current peer goal");
+    return formatPeerGoalDashboard(goal);
+  }
   if (parsed.goalAction === "fanout") return handlePeerGoalFanout(parsed, ctx, runtime, peerId);
-  if (["task", "finding", "proposal", "propose", "handoff", "note"].includes(parsed.goalAction)) {
+  if (["task", "finding", "proposal", "propose", "handoff", "note", "item", "work-item"].includes(parsed.goalAction)) {
     const result = await appendPeerGoalEvent(root, parsed.goalId, {
       type: parsed.eventType,
       peerId,
@@ -443,6 +493,9 @@ async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
       severity: parsed.severity,
       paths: parsed.paths,
       taskId: parsed.taskId,
+      itemId: parsed.itemId,
+      parentId: parsed.parentId,
+      dependsOn: parsed.dependsOn,
       status: parsed.status,
       workKey: parsed.workKey,
       lane: parsed.workLane,
@@ -790,7 +843,8 @@ function trackPeerSendGoalCompletion(root: string | undefined, goalLink: any, ha
       mode: goalLink.claimEvent?.mode,
       lane: goalLink.claimEvent?.lane,
     });
-    const missing = missingHandoffFields(response);
+    const handoffEvidence = peerResponseHandoffEvidence(response);
+    const missing = missingHandoffFields(response, handoffEvidence);
     if (missing.length) {
       await appendPeerGoalEvent(boardRoot, goalLink.goalId, {
         type: "objection",
@@ -862,22 +916,28 @@ function buildFanoutPrompt(objective: string, peerId: string, mode: string, lane
   return `${objective}\n\nFan-out role for ${peerId}: ${role}. Stay within that lane. Report progress with peer_progress when work is long-running, and end with the required final handoff.`;
 }
 
-function missingHandoffFields(response: any) {
+function peerResponseHandoffEvidence(response: any) {
+  return normalizePeerHandoffEvidence(response?.handoffEvidence || parsePeerHandoffEvidence(response?.finalAssistantMessage));
+}
+
+function missingHandoffFields(response: any, evidence = peerResponseHandoffEvidence(response)) {
   if (response?.status !== "OK" && response?.status !== "OK_WITH_NOTES") return [];
-  const text = typeof response?.finalAssistantMessage === "string" ? response.finalAssistantMessage : "";
-  if (!text.trim()) return ["Status", "Files changed", "Verification", "Blockers/risks", "Safe for review"];
-  const required = [
-    ["Status", /status\s*:/i],
-    ["Files changed", /files changed\s*:/i],
-    ["Verification", /verification\s*:/i],
-    ["Blockers/risks", /(?:blockers?|risks?|blockers?\s*\/\s*risks?)\s*:/i],
-    ["Safe for review", /safe for review\s*:/i],
-  ];
-  return required.filter(([, pattern]) => !pattern.test(text)).map(([name]) => name);
+  if (!evidence.present) return ["Status", "Files changed", "Verification", "Blockers/risks", "Safe for review"];
+  return Array.isArray(evidence.missingFields) ? evidence.missingFields : [];
 }
 
 function summarizePeerGoalResponse(response: any) {
   const status = response?.status || "unknown";
+  const evidence = peerResponseHandoffEvidence(response);
+  if (evidence.present) {
+    const files = evidence.filesChanged?.length ? evidence.filesChanged.join(", ") : "unknown";
+    const verification = evidence.verification?.length
+      ? evidence.verification.map((item: any) => `${item.command || item.raw || "verification"}${Number.isInteger(item.exitStatus) ? ` exit ${item.exitStatus}` : ""}`).join("; ")
+      : "missing";
+    const blockers = evidence.blockersRisks?.length ? evidence.blockersRisks.join(", ") : "missing";
+    const safe = typeof evidence.safeForReview === "boolean" ? (evidence.safeForReview ? "yes" : "no") : "missing";
+    return `${status}: Status ${evidence.status || "unknown"}; files changed: ${files}; verification: ${verification}; blockers/risks: ${blockers}; safe for review: ${safe}`.replace(/\s+/g, " ").slice(0, 500);
+  }
   const text = typeof response?.summary === "string" && response.summary.trim()
     ? response.summary.trim()
     : typeof response?.finalAssistantMessage === "string" && response.finalAssistantMessage.trim()

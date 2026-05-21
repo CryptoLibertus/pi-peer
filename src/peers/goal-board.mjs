@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, resolve as resolvePath } from "node:path";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { normalizePeerGoalClosurePolicy } from "./config.mjs";
+import { goalBoardPath, loadGoalBoardSnapshot, PEER_GOAL_BOARD_RELATIVE_PATH as STORE_PEER_GOAL_BOARD_RELATIVE_PATH, saveGoalBoardSnapshot } from "./goal-store.mjs";
 
-export const PEER_GOAL_BOARD_RELATIVE_PATH = ".pi/peer-goals.json";
+export const PEER_GOAL_BOARD_RELATIVE_PATH = STORE_PEER_GOAL_BOARD_RELATIVE_PATH;
 
-const EVENT_TYPES = new Set(["finding", "task", "proposal", "claim", "release", "heartbeat", "objection", "resolve", "vote", "handoff", "note"]);
+const EVENT_TYPES = new Set(["finding", "task", "proposal", "work-item", "claim", "release", "heartbeat", "objection", "resolve", "vote", "handoff", "note"]);
 const BLOCKING_SEVERITIES = new Set(["blocking", "blocker", "critical"]);
 const VOTE_VERDICTS = new Set(["pass", "fail", "pass-with-risks"]);
 const DUPLICATE_POLICIES = new Set(["error", "reuse", "allow-parallel"]);
@@ -30,29 +32,11 @@ const GOAL_BOARD_LOCK_RETRY_MS = 10;
 const GOAL_BOARD_LOCK_TIMEOUT_MS = 5_000;
 
 export async function loadPeerGoalBoard(root) {
-  const path = goalBoardPath(root);
-  try {
-    const parsed = JSON.parse(await readFile(path, "utf8"));
-    return normalizeBoard(parsed);
-  } catch (error) {
-    if (error?.code === "ENOENT") return normalizeBoard({});
-    throw error;
-  }
+  return loadGoalBoardSnapshot(root, { normalize: normalizeBoard });
 }
 
 export async function savePeerGoalBoard(root, board) {
-  const path = goalBoardPath(root);
-  const normalized = normalizeBoard(board);
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.${process.hrtime.bigint().toString(36)}.tmp`;
-  try {
-    await writeFile(tmp, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
-    await rename(tmp, path);
-  } catch (error) {
-    await unlink(tmp).catch(() => {});
-    throw error;
-  }
-  return normalized;
+  return saveGoalBoardSnapshot(root, board, { normalize: normalizeBoard });
 }
 
 export async function createPeerGoal(root, input = {}) {
@@ -70,6 +54,9 @@ export async function createPeerGoal(root, input = {}) {
       createdBy: cleanText(input.peerId) || "unknown",
       events: [],
     };
+    if (plainObject(input.metadata)) goal.metadata = input.metadata;
+    const closurePolicy = normalizePeerGoalClosurePolicy(input.closurePolicy || input.metadata?.closurePolicy);
+    if (closurePolicy) goal.closurePolicy = closurePolicy;
     if (board.goals[goal.id]) throw new Error(`peer goal ${goal.id} already exists`);
     board.goals[goal.id] = goal;
     board.currentGoalId = goal.id;
@@ -251,6 +238,12 @@ export function deriveGoalState(goal, options = {}) {
   const activeWriteClaims = activeClaims.filter((claim) => claim.mode === "write");
   const tasks = events.filter((event) => event.type === "task").map((event) => projectTaskSummary(event, events));
   const activeTasks = tasks.filter(isActiveTaskSummary);
+  const workItems = projectWorkItems(events);
+  const openWorkItems = workItems.filter((item) => !isTerminalWorkItemStatus(item.status));
+  const blockedWorkItems = workItems.filter((item) => item.blockedBy?.length);
+  const closurePolicy = normalizePeerGoalClosurePolicy(goal?.closurePolicy || goal?.metadata?.closurePolicy);
+  const baseReadyToClose = goal?.status === "open" && blockingObjections.length === 0 && failedVotes.length === 0 && activeClaims.length === 0 && activeTasks.length === 0 && openProposals.length === 0 && openWorkItems.length === 0 && blockedWorkItems.length === 0 && passingVotes.length > 0;
+  const closurePolicyStatus = evaluateClosurePolicy(closurePolicy, { events, passingVotes });
   return {
     ...goal,
     events,
@@ -268,7 +261,12 @@ export function deriveGoalState(goal, options = {}) {
     passingVotes,
     tasks,
     activeTasks,
-    readyToClose: goal?.status === "open" && blockingObjections.length === 0 && failedVotes.length === 0 && activeClaims.length === 0 && activeTasks.length === 0 && openProposals.length === 0 && passingVotes.length > 0,
+    workItems,
+    openWorkItems,
+    blockedWorkItems,
+    closurePolicy,
+    closurePolicyStatus,
+    readyToClose: baseReadyToClose && closurePolicyStatus.satisfied,
   };
 }
 
@@ -282,6 +280,7 @@ export function formatPeerGoalList(board) {
     if (state.staleClaims.length) bits.push(`${state.staleClaims.length} stale claim${state.staleClaims.length === 1 ? "" : "s"}`);
     if (state.blockingObjections.length) bits.push(`${state.blockingObjections.length} blocker${state.blockingObjections.length === 1 ? "" : "s"}`);
     if (state.openProposals.length) bits.push(`${state.openProposals.length} proposal${state.openProposals.length === 1 ? "" : "s"}`);
+    if (state.openWorkItems.length) bits.push(`${state.openWorkItems.length} work item${state.openWorkItems.length === 1 ? "" : "s"}`);
     return bits.join(" · ");
   }).join("\n");
 }
@@ -365,7 +364,21 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
         });
       }
     }
-    if (state.readyToClose && !state.openProposals.length) {
+    if (state.openWorkItems.length) {
+      for (const item of state.openWorkItems) {
+        push("P1", "work-item", `Self-select work item ${item.itemId}: ${item.summary}`, {
+          paths: item.paths,
+          recommendedLane: item.lane || "implementation",
+          preferredRoles: preferredRolesForLane(item.lane || "implementation"),
+          claimMode: "read",
+          suggestedIntent: suggestedIntentForLane(item.lane || "implementation"),
+          rationale: item.blockedBy?.length ? `Work item is waiting on dependencies: ${item.blockedBy.join(", ")}` : "First-class work items can be claimed or updated without planner assignment.",
+          workKey: item.workKey || derivePeerGoalWorkKey({ goalId: goal.id, lane: item.lane || "implementation", objective: item.summary, mode: "read", paths: item.paths }),
+          relatedEventId: item.id,
+        });
+      }
+    }
+    if (state.readyToClose && !state.openProposals.length && !state.openWorkItems.length) {
       push("P1", "close", "Goal satisfies closure gates; close it or record a final note.");
       continue;
     }
@@ -414,6 +427,10 @@ export function formatPeerGoal(goal) {
     lines.push("", "Open proposals:");
     for (const proposal of state.openProposals.slice(-8)) lines.push(`- ${proposal.id} · ${proposal.peerId} · ${proposal.summary}${proposal.paths?.length ? ` · ${proposal.paths.join(", ")}` : ""}`);
   }
+  if (state.workItems?.length) {
+    lines.push("", "Work items:");
+    for (const item of state.workItems.slice(-8)) lines.push(`- ${item.itemId} · ${item.status || "open"} · ${item.summary}${item.parentId ? ` · parent ${item.parentId}` : ""}${item.dependsOn?.length ? ` · depends ${item.dependsOn.join(",")}` : ""}${item.blockedBy?.length ? ` · blocked by ${item.blockedBy.join(",")}` : ""}`);
+  }
   if (state.currentVotes.length) {
     lines.push("", "Votes:");
     for (const vote of state.currentVotes.slice(-8)) lines.push(`- ${vote.peerId}: ${vote.verdict}${vote.confidence !== undefined ? ` (${vote.confidence})` : ""}${vote.summary ? ` — ${vote.summary}` : ""}`);
@@ -446,6 +463,54 @@ function validateProposal(event) {
   if (!event.summary) throw new Error("peer goal proposal requires a summary");
 }
 
+function evaluateClosurePolicy(policy, context = {}) {
+  if (!policy) return { satisfied: true, missing: [] };
+  const events = Array.isArray(context.events) ? context.events : [];
+  const passingVotes = Array.isArray(context.passingVotes) ? context.passingVotes : [];
+  const missing = [];
+
+  if (policy.minPassingVotes && passingVotes.length < policy.minPassingVotes) {
+    missing.push({ kind: "min-passing-votes", required: policy.minPassingVotes, actual: passingVotes.length, summary: `${policy.minPassingVotes} passing votes required (${passingVotes.length} present)` });
+  }
+
+  for (const requirement of policy.requiredVotes || []) {
+    const actual = events.filter((event) => event.type === "vote" && eventMatchesClosureRequirement(event, requirement, { defaultVerdicts: ["pass", "pass-with-risks"] })).length;
+    if (actual < requirement.min) missing.push({ kind: "required-votes", requirement, required: requirement.min, actual, summary: `${describeClosureRequirement(requirement, "vote")} requires ${requirement.min} matching vote(s) (${actual} present)` });
+  }
+
+  for (const requirement of policy.requiredEvidence || []) {
+    const actual = events.filter((event) => eventMatchesClosureRequirement(event, requirement)).length;
+    if (actual < requirement.min) missing.push({ kind: "required-evidence", requirement, required: requirement.min, actual, summary: `${describeClosureRequirement(requirement, "evidence")} requires ${requirement.min} matching event(s) (${actual} present)` });
+  }
+
+  return { satisfied: missing.length === 0, missing };
+}
+
+function eventMatchesClosureRequirement(event = {}, requirement = {}, options = {}) {
+  const types = Array.isArray(requirement.types) && requirement.types.length ? requirement.types : undefined;
+  if (types && !types.includes(String(event.type || "").toLowerCase())) return false;
+  if (requirement.lane && String(event.lane || event.workLane || "").toLowerCase() !== requirement.lane) return false;
+  if (requirement.role && String(event.metadata?.role || event.role || "").toLowerCase() !== requirement.role) return false;
+  if (requirement.peerId && event.peerId !== requirement.peerId) return false;
+  if (requirement.workKey && normalizeWorkKey(event.workKey) !== requirement.workKey) return false;
+  if (requirement.status && String(event.status || "").toLowerCase() !== requirement.status) return false;
+  const verdicts = Array.isArray(requirement.verdicts) && requirement.verdicts.length ? requirement.verdicts : options.defaultVerdicts;
+  if (verdicts && !verdicts.includes(String(event.verdict || "").toLowerCase())) return false;
+  return true;
+}
+
+function describeClosureRequirement(requirement = {}, fallback = "requirement") {
+  const parts = [];
+  if (Array.isArray(requirement.types) && requirement.types.length) parts.push(requirement.types.join("/"));
+  else parts.push(fallback);
+  if (requirement.lane) parts.push(`lane=${requirement.lane}`);
+  if (requirement.role) parts.push(`role=${requirement.role}`);
+  if (requirement.peerId) parts.push(`peer=${requirement.peerId}`);
+  if (requirement.workKey) parts.push(`workKey=${requirement.workKey}`);
+  if (requirement.status) parts.push(`status=${requirement.status}`);
+  return parts.join(" ");
+}
+
 function validateRelease(goal, event) {
   if (!event.resolves) throw new Error("peer goal release requires a claim event id");
   const state = deriveGoalState(goal);
@@ -468,7 +533,7 @@ function validateHeartbeat(goal, event) {
   }
 }
 
-function validateGoalReadyToClose(state) {
+export function validateGoalReadyToClose(state) {
   if (state.blockingObjections.length) {
     throw new Error(`peer goal ${state.id} has unresolved blocking objections: ${state.blockingObjections.map((item) => item.id).join(", ")}`);
   }
@@ -484,7 +549,16 @@ function validateGoalReadyToClose(state) {
   if (state.openProposals.length) {
     throw new Error(`peer goal ${state.id} has unresolved open proposals: ${state.openProposals.map((item) => item.id).join(", ")}`);
   }
+  if (state.openWorkItems?.length) {
+    throw new Error(`peer goal ${state.id} has open work items: ${state.openWorkItems.map((item) => item.itemId || item.id).join(", ")}`);
+  }
+  if (state.blockedWorkItems?.length) {
+    throw new Error(`peer goal ${state.id} has dependency-blocked work items: ${state.blockedWorkItems.map((item) => item.itemId || item.id).join(", ")}`);
+  }
   if (!state.passingVotes.length) throw new Error(`peer goal ${state.id} is not ready to close; record at least one passing vote or use --force`);
+  if (state.closurePolicyStatus && !state.closurePolicyStatus.satisfied) {
+    throw new Error(`peer goal ${state.id} has unmet closure policy requirements: ${state.closurePolicyStatus.missing.map((item) => item.summary).join("; ")}`);
+  }
   if (!state.readyToClose) throw new Error(`peer goal ${state.id} is not ready to close; use --force to override readiness gates`);
 }
 
@@ -502,6 +576,9 @@ function normalizeEvent(input = {}) {
     severity: cleanText(input.severity || (type === "objection" ? "blocking" : "info")).toLowerCase(),
     paths: normalizePaths(input.paths),
     taskId: cleanText(input.taskId),
+    itemId: cleanText(input.itemId || input.metadata?.itemId),
+    parentId: cleanText(input.parentId || input.metadata?.parentId),
+    dependsOn: normalizeList(input.dependsOn || input.dependencies || input.metadata?.dependsOn || input.metadata?.dependencies),
     mode: cleanText(input.mode || (type === "claim" ? "read" : "")).toLowerCase() || undefined,
     lane: cleanText(input.lane || input.workLane)?.toLowerCase(),
     workKey: normalizeWorkKey(input.workKey),
@@ -516,6 +593,11 @@ function normalizeEvent(input = {}) {
   if (ttlMs) {
     event.ttlMs = ttlMs;
     event.expiresAt = new Date(Date.now() + ttlMs).toISOString();
+  }
+  if (event.type === "work-item") {
+    if (!event.summary) throw new Error("peer goal work-item requires a summary");
+    if (!event.itemId) event.itemId = event.workKey || event.id;
+    if (!event.status) event.status = "open";
   }
   if (event.type === "vote" && !VOTE_VERDICTS.has(event.verdict)) {
     throw new Error("peer goal vote verdict must be pass, fail, or pass-with-risks");
@@ -547,7 +629,7 @@ function normalizeBoard(board = {}) {
   const normalizedGoals = {};
   for (const [id, goal] of Object.entries(goals)) {
     if (!plainObject(goal)) continue;
-    normalizedGoals[id] = {
+    const normalizedGoal = {
       id: cleanText(goal.id) || id,
       objective: cleanText(goal.objective),
       constraints: normalizeList(goal.constraints),
@@ -555,10 +637,16 @@ function normalizeBoard(board = {}) {
       createdAt: cleanText(goal.createdAt),
       updatedAt: cleanText(goal.updatedAt || goal.createdAt),
       createdBy: cleanText(goal.createdBy),
-      closedAt: cleanText(goal.closedAt),
-      closedBy: cleanText(goal.closedBy),
-      events: Array.isArray(goal.events) ? goal.events.map((event) => stripEmpty({ ...event, paths: normalizePaths(event.paths), workKey: normalizeWorkKey(event.workKey), duplicatePolicy: normalizeDuplicatePolicy(event.duplicatePolicy), lane: cleanText(event.lane || event.workLane)?.toLowerCase() })) : [],
+      events: Array.isArray(goal.events) ? goal.events.map((event) => stripEmpty({ ...event, paths: normalizePaths(event.paths), workKey: normalizeWorkKey(event.workKey), duplicatePolicy: normalizeDuplicatePolicy(event.duplicatePolicy), lane: cleanText(event.lane || event.workLane)?.toLowerCase(), itemId: cleanText(event.itemId || event.metadata?.itemId), parentId: cleanText(event.parentId || event.metadata?.parentId), dependsOn: normalizeList(event.dependsOn || event.dependencies || event.metadata?.dependsOn || event.metadata?.dependencies) })) : [],
     };
+    const closedAt = cleanText(goal.closedAt);
+    if (closedAt) normalizedGoal.closedAt = closedAt;
+    const closedBy = cleanText(goal.closedBy);
+    if (closedBy) normalizedGoal.closedBy = closedBy;
+    if (plainObject(goal.metadata)) normalizedGoal.metadata = goal.metadata;
+    const closurePolicy = normalizePeerGoalClosurePolicy(goal.closurePolicy || goal.metadata?.closurePolicy);
+    if (closurePolicy) normalizedGoal.closurePolicy = closurePolicy;
+    normalizedGoals[id] = normalizedGoal;
   }
   return { version: 1, currentGoalId: cleanText(board.currentGoalId), goals: normalizedGoals };
 }
@@ -580,6 +668,9 @@ function projectEventSummary(event) {
     severity: event.severity,
     paths: event.paths,
     taskId: event.taskId,
+    itemId: event.itemId,
+    parentId: event.parentId,
+    dependsOn: event.dependsOn,
     mode: event.mode,
     lane: event.lane,
     workKey: event.workKey,
@@ -592,6 +683,35 @@ function projectEventSummary(event) {
     at: event.at,
     expiresAt: event.expiresAt,
   });
+}
+
+function projectWorkItems(events = []) {
+  const itemEvents = events.filter((event) => event.type === "work-item");
+  const byItemId = new Map();
+  for (const event of itemEvents) {
+    const itemId = cleanText(event.itemId) || event.workKey || event.id;
+    const previous = byItemId.get(itemId);
+    byItemId.set(itemId, stripEmpty({
+      ...(previous || {}),
+      ...projectEventSummary(event),
+      id: event.id,
+      itemId,
+      firstEventId: previous?.firstEventId || event.id,
+      firstAt: previous?.firstAt || event.at,
+      status: cleanText(event.status || previous?.status || "open").toLowerCase(),
+      dependsOn: normalizeList(event.dependsOn?.length ? event.dependsOn : previous?.dependsOn),
+      parentId: cleanText(event.parentId || previous?.parentId),
+    }));
+  }
+  const doneIds = new Set([...byItemId.values()].filter((item) => isTerminalWorkItemStatus(item.status)).map((item) => item.itemId));
+  return [...byItemId.values()].map((item) => {
+    const blockedBy = item.dependsOn?.filter((dependency) => !doneIds.has(dependency)) || [];
+    return stripEmpty({ ...item, blockedBy });
+  });
+}
+
+function isTerminalWorkItemStatus(status) {
+  return ["done", "closed", "cancelled", "canceled", "resolved"].includes(String(status || "").toLowerCase());
 }
 
 function projectTaskSummary(task, events) {
@@ -821,11 +941,6 @@ async function removeStaleGoalBoardLock(lockPath) {
     if (error?.code === "ENOENT") return true;
     return false;
   }
-}
-
-function goalBoardPath(root) {
-  if (!root) throw new Error("peer goal board requires root");
-  return resolvePath(root, PEER_GOAL_BOARD_RELATIVE_PATH);
 }
 
 function pathsOverlap(a, b) {

@@ -20,6 +20,38 @@ test("parses goal scout without a goal id", () => {
   assert.equal(parsed.limit, 2);
 });
 
+test("parses dashboard alias as read-only goal dashboard", () => {
+  const parsed = parsePeerCommand("dashboard goal_123");
+  assert.equal(parsed.subcommand, "goal");
+  assert.equal(parsed.goalAction, "dashboard");
+  assert.equal(parsed.goalId, "goal_123");
+});
+
+test("parses hive and swarm start as safe self-selection goal starters", () => {
+  const hive = parsePeerCommand("hive start Ship autonomous workers --constraint no-overlap --path src --path test --lane research,review --proposal \"Validate handoff evidence\"");
+  assert.equal(hive.subcommand, "hive");
+  assert.equal(hive.hiveAction, "start");
+  assert.equal(hive.objective, "Ship autonomous workers");
+  assert.deepEqual(hive.constraints, ["no-overlap"]);
+  assert.deepEqual(hive.paths, ["src", "test"]);
+  assert.deepEqual(hive.lanes, ["research", "review"]);
+  assert.deepEqual(hive.proposals, ["Validate handoff evidence"]);
+  assert.equal(hive.send, false);
+  assert.equal(hive.write, false);
+
+  const swarm = parsePeerCommand("swarm start Improve hive UX --send --write");
+  assert.equal(swarm.subcommand, "swarm");
+  assert.equal(swarm.hiveAction, "start");
+  assert.equal(swarm.objective, "Improve hive UX");
+  assert.equal(swarm.send, true);
+  assert.equal(swarm.write, true);
+});
+
+test("hive start requires an objective", () => {
+  assert.match(parsePeerCommand("hive start").error, /requires <objective>/);
+  assert.match(parsePeerCommand("swarm review something").error, /Unknown \/peer swarm action 'review'/);
+});
+
 test("parses proposal aliases as proposal events", () => {
   for (const raw of [
     "proposal goal_123 Add a reviewer lane --path src,README.md",
@@ -37,6 +69,21 @@ test("parses proposal aliases as proposal events", () => {
 test("proposal requires a goal id and summary", () => {
   assert.match(parsePeerCommand("goal propose").error, /requires <goal-id> <summary>/);
   assert.match(parsePeerCommand("proposal goal_123").error, /requires <goal-id> <summary>/);
+});
+
+test("parses epic work item events", () => {
+  const parsed = parsePeerCommand("goal item goal_123 Implement DAG --item-id impl --parent epic --depends-on research,review --status open --lane implementation --path src");
+  assert.equal(parsed.subcommand, "goal");
+  assert.equal(parsed.goalAction, "item");
+  assert.equal(parsed.eventType, "work-item");
+  assert.equal(parsed.goalId, "goal_123");
+  assert.equal(parsed.summary, "Implement DAG");
+  assert.equal(parsed.itemId, "impl");
+  assert.equal(parsed.parentId, "epic");
+  assert.deepEqual(parsed.dependsOn, ["research", "review"]);
+  assert.equal(parsed.status, "open");
+  assert.equal(parsed.workLane, "implementation");
+  assert.deepEqual(parsed.paths, ["src"]);
 });
 
 test("repeated list-style flags append instead of replacing earlier values", () => {

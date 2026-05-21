@@ -14,6 +14,9 @@ export const HOP_LIMIT_ERROR_CODE = "PI_PEER_HOP_LIMIT_EXCEEDED";
 export const SELF_SEND_ERROR_CODE = "PI_PEER_SELF_TARGET";
 export const UNSUPPORTED_TRANSPORT_ERROR_CODE = "PI_PEER_UNSUPPORTED_TRANSPORT";
 
+const ACTIVE_MESSAGE_STATUSES = new Set(["queued", "running", "cancelling"]);
+const TERMINAL_MESSAGE_STATUSES = new Set(["responded", "cancelled", "error"]);
+
 export class PeerCommsError extends Error {
   constructor(message, code, details = {}) {
     super(message);
@@ -98,6 +101,7 @@ class PeerComms {
   #messages = new Map();
   #conversations = new Map();
   #pending = new Map();
+  #cancelHandlers = new Map();
   #audit = [];
   #listeners = new Set();
   #auditSink;
@@ -172,7 +176,10 @@ class PeerComms {
       throw error;
     }
 
-    const body = normalizePeerMessageSendBody(message);
+    const body = normalizePeerMessageSendBody({
+      ...message,
+      ...(options.priority !== undefined && message.priority === undefined ? { priority: options.priority } : {}),
+    });
     const target = normalizePeerAddress({ peerId: peer.peerId, transport: peer.transport, cwd: peer.cwd, role: peer.role });
     const request = createPeerEnvelope({
       type: "message.send",
@@ -197,6 +204,7 @@ class PeerComms {
       error: null,
       createdAt: request.timestamp,
       updatedAt: request.timestamp,
+      priority: normalizeMessagePriority(body.priority || body.metadata?.priority),
     };
     this.#appendMessageEvent(snapshot, { type: "queued", status: "queued", summary: `Queued for ${peer.peerId}` }, { updateTimestamp: false });
     this.#messages.set(snapshot.messageId, snapshot);
@@ -272,7 +280,7 @@ class PeerComms {
   async listTasks(filter = {}) {
     this.#ensureActive();
     let messages = [...this.#messages.values()];
-    if (filter.active === true) messages = messages.filter((message) => ["queued", "running"].includes(message.status));
+    if (filter.active === true) messages = messages.filter((message) => ACTIVE_MESSAGE_STATUSES.has(message.status));
     if (filter.status) messages = messages.filter((message) => message.status === filter.status);
     if (filter.peerId) messages = messages.filter((message) => message.peerId === filter.peerId);
     return messages.map((message) => this.#messageTaskSummary(message));
@@ -299,7 +307,7 @@ class PeerComms {
         error.details = {
           ...(error.details || {}),
           timedOut: true,
-          taskStillRunning: ["queued", "running"].includes(snapshot.status),
+          taskStillRunning: ACTIVE_MESSAGE_STATUSES.has(snapshot.status),
           messageId: snapshot.messageId,
           conversationId: snapshot.conversationId,
           peerId: snapshot.peerId,
@@ -314,7 +322,8 @@ class PeerComms {
     this.#ensureActive();
     const snapshot = this.#messages.get(messageId);
     if (!snapshot) return undefined;
-    this.#appendMessageEvent(snapshot, event);
+    const normalized = this.#appendMessageEvent(snapshot, event);
+    this.#applyControlEventStatus(snapshot, normalized);
     this.#upsertConversation(snapshot);
     this.#recordAudit({ kind: "message.event", peerId: snapshot.peerId, transport: snapshot.request.target.transport, status: snapshot.status, messageId, conversationId: snapshot.conversationId, event });
     this.#emit({ type: "message.event", message: this.#cloneMessage(snapshot), event: clone(event) });
@@ -326,7 +335,21 @@ class PeerComms {
     this.#ensureActive();
     const snapshot = this.#messages.get(messageId);
     if (!snapshot) throw new PeerCommsError(`Unknown peer message '${messageId}'`, "PI_PEER_UNKNOWN_MESSAGE", { messageId });
-    if (["responded", "cancelled", "error"].includes(snapshot.status)) return;
+    if (TERMINAL_MESSAGE_STATUSES.has(snapshot.status)) return this.#cloneMessage(snapshot);
+    const cancel = this.#cancelHandlers.get(messageId);
+    if (cancel) {
+      if (snapshot.status !== "cancelling") {
+        snapshot.status = "cancelling";
+        snapshot.updatedAt = new Date().toISOString();
+        this.#appendMessageEvent(snapshot, { type: "cancel.requested", status: "cancelling", summary: reason }, { updateTimestamp: false });
+      }
+      cancel(reason);
+      this.#upsertConversation(snapshot);
+      this.#recordAudit({ kind: "message.cancel.requested", peerId: snapshot.peerId, transport: snapshot.request.target.transport, status: "cancelling", messageId, conversationId: snapshot.conversationId, reason });
+      this.#emit({ type: "message.cancelling", message: this.#cloneMessage(snapshot) });
+      this.#persistMessageState();
+      return this.#cloneMessage(snapshot);
+    }
     snapshot.status = "cancelled";
     snapshot.updatedAt = new Date().toISOString();
     snapshot.response = { status: "CANCELLED", summary: reason };
@@ -358,6 +381,11 @@ class PeerComms {
   async #dispatch(messageId, peer) {
     const snapshot = this.#messages.get(messageId);
     if (!snapshot || snapshot.status === "cancelled") return snapshot?.response || { status: "CANCELLED" };
+    const cancelController = new AbortController();
+    this.#cancelHandlers.set(messageId, (reason) => {
+      if (!cancelController.signal.aborted) cancelController.abort(reason || "cancelled by sender");
+      return true;
+    });
     snapshot.status = "running";
     snapshot.updatedAt = new Date().toISOString();
     this.#appendMessageEvent(snapshot, { type: "running", status: "running", summary: `Dispatched to ${peer.peerId}` }, { updateTimestamp: false });
@@ -367,21 +395,22 @@ class PeerComms {
     this.#persistMessageState();
 
     try {
-      const responseEnvelope = await this.#transport.send(snapshot.request, peer, { comms: this });
-      if (snapshot.status === "cancelled") return clone(snapshot.response || { status: "CANCELLED" });
+      const responseEnvelope = await this.#transport.send(snapshot.request, peer, { comms: this, cancelSignal: cancelController.signal });
+      if (snapshot.status === "cancelled" && snapshot.response) return clone(snapshot.response);
       const validation = validatePeerEnvelope(responseEnvelope);
       if (!validation.ok) throw new PeerCommsError(`Invalid peer response envelope: ${validation.errors.join("; ")}`, "PI_PEER_INVALID_RESPONSE", { errors: validation.errors });
       if (responseEnvelope.type !== "message.response" || responseEnvelope.correlationId !== snapshot.request.id) {
         throw new PeerCommsError("Peer response did not correlate to the request", "PI_PEER_RESPONSE_MISMATCH", { messageId });
       }
-      snapshot.status = "responded";
-      snapshot.response = attachPeerResponseIdentity(normalizePeerMessageResponseBody(responseEnvelope.body), peer, { homeDir: this.#homeDir });
+      const responseBody = attachPeerResponseIdentity(normalizePeerMessageResponseBody(responseEnvelope.body), peer, { homeDir: this.#homeDir });
+      snapshot.status = responseBody.status === "CANCELLED" ? "cancelled" : "responded";
+      snapshot.response = responseBody;
       snapshot.responseEnvelope = responseEnvelope;
       snapshot.updatedAt = new Date().toISOString();
-      this.#appendMessageEvent(snapshot, { type: "responded", status: "responded", summary: snapshot.response.summary || snapshot.response.status }, { updateTimestamp: false });
+      this.#appendMessageEvent(snapshot, { type: responseBody.status === "CANCELLED" ? "cancel.acknowledged" : "responded", status: snapshot.status, summary: snapshot.response.summary || snapshot.response.status }, { updateTimestamp: false });
       this.#upsertConversation(snapshot);
-      this.#recordAudit({ kind: "message.response", peerId: peer.peerId, transport: peer.transport, status: snapshot.response.status, messageId, conversationId: snapshot.conversationId, body: snapshot.response });
-      this.#emit({ type: "message.responded", message: this.#cloneMessage(snapshot) });
+      this.#recordAudit({ kind: responseBody.status === "CANCELLED" ? "message.cancel.acknowledged" : "message.response", peerId: peer.peerId, transport: peer.transport, status: snapshot.response.status, messageId, conversationId: snapshot.conversationId, body: snapshot.response });
+      this.#emit({ type: responseBody.status === "CANCELLED" ? "message.cancelled" : "message.responded", message: this.#cloneMessage(snapshot) });
       this.#persistMessageState();
       return clone(snapshot.response);
     } catch (error) {
@@ -397,6 +426,7 @@ class PeerComms {
       return clone(snapshot.response);
     } finally {
       this.#pending.delete(messageId);
+      this.#cancelHandlers.delete(messageId);
     }
   }
 
@@ -416,7 +446,7 @@ class PeerComms {
         events: Array.isArray(raw.events) ? clone(raw.events).slice(-50) : [],
         error: raw.error || null,
       };
-      if (["queued", "running"].includes(snapshot.status)) {
+      if (ACTIVE_MESSAGE_STATUSES.has(snapshot.status)) {
         snapshot.status = "disconnected";
         snapshot.updatedAt = recoveredAt;
         snapshot.recoveredAt = recoveredAt;
@@ -481,6 +511,9 @@ class PeerComms {
       ...(typeof event.summary === "string" && event.summary.trim() ? { summary: event.summary.trim() } : {}),
       ...(event.code !== undefined ? { code: event.code } : {}),
       ...(event.timeoutMs !== undefined ? { timeoutMs: event.timeoutMs } : {}),
+      ...(event.queuedPosition !== undefined ? { queuedPosition: event.queuedPosition } : {}),
+      ...(event.queueLength !== undefined ? { queueLength: event.queueLength } : {}),
+      ...(event.priority !== undefined ? { priority: event.priority } : {}),
       ...(typeof event.phase === "string" && event.phase.trim() ? { phase: event.phase.trim() } : {}),
       ...(event.detail !== undefined ? { detail: event.detail } : {}),
     }, { homeDir: this.#homeDir });
@@ -490,6 +523,15 @@ class PeerComms {
     if (normalized.type === "heartbeat" || normalized.type === "request.queued" || normalized.type === "request.active") snapshot.lastHeartbeatAt = normalized.at;
     if (options.updateTimestamp !== false) snapshot.updatedAt = at;
     return normalized;
+  }
+
+  #applyControlEventStatus(snapshot, event = {}) {
+    if (event.type === "request.queued") snapshot.status = "queued";
+    else if (event.type === "request.active") snapshot.status = "running";
+    else if (event.type === "request.cancel") snapshot.status = "cancelling";
+    else if (event.type === "request.cancelled") snapshot.status = "cancelling";
+    else return;
+    snapshot.updatedAt = event.at || new Date().toISOString();
   }
 
   #annotatePeerDescriptor(peer) {
@@ -527,7 +569,8 @@ class PeerComms {
       conversationId: message.conversationId,
       peerId: message.peerId,
       status: message.status,
-      active: ["queued", "running"].includes(message.status),
+      active: ACTIVE_MESSAGE_STATUSES.has(message.status),
+      priority: message.priority,
       intent: body.intent || "ask",
       claimedPaths: Array.isArray(metadata.claimedPaths) ? metadata.claimedPaths.filter((item) => typeof item === "string") : [],
       goalId: typeof metadata.goalId === "string" ? metadata.goalId : undefined,
@@ -655,6 +698,14 @@ function defaultPromptResponder(envelope, peer) {
 
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function normalizeMessagePriority(value) {
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (["p0", "urgent", "high"].includes(text)) return "P0";
+  if (["p1", "normal", "medium"].includes(text)) return "P1";
+  if (["p2", "low", "background"].includes(text)) return "P2";
+  return undefined;
 }
 
 function nonEmptyString(value) {

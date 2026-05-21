@@ -1,6 +1,7 @@
 import { appendPeerGoalEvent } from "./goal-board.mjs";
 import { normalizePeerMessageResponseBody, redactPeerAuditValue } from "./protocol.mjs";
 import { renderPeerCommunicationGuidance } from "./guidance.mjs";
+import { parsePeerHandoffEvidence } from "./tool-results.mjs";
 
 export const PI_PEER_INBOUND_CUSTOM_TYPE = "pi-peer-inbound";
 
@@ -26,6 +27,40 @@ export function createInboundPromptBridge(options = {}) {
       settleEntry(entry, { status: "ERROR", summary: error?.message || String(error) });
       activateNext();
     }
+  }
+
+  function enqueueEntry(entry) {
+    const rank = priorityRank(entry.priority);
+    const index = queue.findIndex((queued) => priorityRank(queued.priority) > rank);
+    if (index < 0) queue.push(entry);
+    else queue.splice(index, 0, entry);
+  }
+
+  function cancelEntry(entry, reason = "cancelled by sender") {
+    if (!entry || entry.settled) return false;
+    const queuedIndex = queue.indexOf(entry);
+    if (queuedIndex >= 0) {
+      queue.splice(queuedIndex, 1);
+      settleEntry(entry, { status: "CANCELLED", summary: reason });
+      activateNext();
+      return true;
+    }
+    if (activeEntry === entry) {
+      entry.cancelRequested = true;
+      entry.cancelReason = reason;
+      entry.cancelledAt = entry.cancelledAt || Date.now();
+      return true;
+    }
+    return false;
+  }
+
+  function queueSummary() {
+    return queue.map((entry, index) => ({
+      messageId: entry.messageId,
+      conversationId: entry.conversationId,
+      priority: entry.priority,
+      queuedPosition: index + 1,
+    }));
   }
 
   function sendActiveEntryToPi(entry, reason) {
@@ -61,17 +96,26 @@ export function createInboundPromptBridge(options = {}) {
       }
 
       return new Promise((resolve) => {
-        if (activeEntry) context.markQueued?.();
+        const wasActive = Boolean(activeEntry);
         const entry = {
           envelope,
           messageId: envelope.id,
           conversationId: envelope.conversationId,
+          priority: normalizePriority(envelope?.body?.priority || envelope?.body?.metadata?.priority),
           context,
           resolve,
           timer: undefined,
           settled: false,
+          cancelRequested: false,
+          cancelReason: undefined,
+          cancelledAt: undefined,
+          cancelUnsubscribe: undefined,
         };
-        queue.push(entry);
+        entry.cancelUnsubscribe = typeof context.onCancel === "function"
+          ? context.onCancel((cancel) => cancelEntry(entry, cancel?.reason || "cancelled by sender"))
+          : undefined;
+        enqueueEntry(entry);
+        if (wasActive) context.markQueued?.({ queuedPosition: queue.indexOf(entry) + 1, queueLength: queue.length, priority: entry.priority });
         activateNext();
       });
     },
@@ -83,10 +127,13 @@ export function createInboundPromptBridge(options = {}) {
 
       if (!entry.settled) {
         const finalAssistantMessage = extractFinalAssistantText(event);
+        const cancelled = entry.cancelRequested === true;
+        const handoffEvidence = finalAssistantMessage ? parsePeerHandoffEvidence(finalAssistantMessage, { homeDir: options.homeDir }) : undefined;
         settleEntry(entry, normalizePeerMessageResponseBody({
-          status: finalAssistantMessage ? "OK" : "ERROR",
+          status: cancelled ? "CANCELLED" : finalAssistantMessage ? "OK" : "ERROR",
           finalAssistantMessage,
-          summary: finalAssistantMessage ? "Peer turn completed" : "agent_end did not include final assistant text",
+          ...(handoffEvidence?.present ? { handoffEvidence } : {}),
+          summary: cancelled ? entry.cancelReason || "cancelled by sender" : finalAssistantMessage ? "Peer turn completed" : "agent_end did not include final assistant text",
         }));
       }
       activateNext();
@@ -127,7 +174,11 @@ export function createInboundPromptBridge(options = {}) {
         lastNudgeAt: entry.lastNudgeAt,
         activationAttempts: entry.activationAttempts || 0,
         queuedCount: queue.length,
-      } : { queuedCount: queue.length };
+        queued: queueSummary(),
+        cancelling: entry.cancelRequested === true,
+        cancelReason: entry.cancelReason,
+        cancelledAt: entry.cancelledAt,
+      } : { queuedCount: queue.length, queued: queueSummary() };
     },
 
     pendingCount() {
@@ -186,7 +237,7 @@ function renderTaskHandoffGuidance(envelope) {
   const claimedPaths = envelope?.body?.metadata?.claimedPaths;
   const taskLike = intent === "task" || (Array.isArray(claimedPaths) && claimedPaths.length > 0);
   if (!taskLike) return "";
-  return `\n\nLong-running peer task guidance:\n- Use peer_progress to report meaningful checkpoints before final response when available.\n- Required final handoff for this peer task:\n  - Status: done | blocked | partial\n  - Files changed: path list or none\n  - Verification: command + exit status, or not run with reason\n  - Blockers/risks: concise bullets or none\n  - Safe for review: yes | no`;
+  return `\n\nLong-running peer task guidance:\n- Use peer_progress to report meaningful checkpoints before final response when available.\n- Required final handoff for this peer task:\n  - Status: done | blocked | partial\n  - Files changed: path list or none\n  - Verification: command + exit status, or not run with reason\n  - Blockers/risks: concise bullets or none\n  - Safe for review: yes | no\n- Use the exact headings above so structured evidence can be captured without changing your final assistant text.`;
 }
 
 function normalizeProgress(input = {}) {
@@ -273,9 +324,24 @@ function summarizeEnvelope(envelope) {
   };
 }
 
+function normalizePriority(value) {
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (["p0", "urgent", "high"].includes(text)) return "P0";
+  if (["p1", "normal", "medium"].includes(text)) return "P1";
+  if (["p2", "low", "background"].includes(text)) return "P2";
+  return "P1";
+}
+
+function priorityRank(priority) {
+  if (priority === "P0") return 0;
+  if (priority === "P2") return 2;
+  return 1;
+}
+
 function settleEntry(entry, response, options = {}) {
   if (entry.settled) return;
   entry.settled = true;
+  if (typeof entry.cancelUnsubscribe === "function") entry.cancelUnsubscribe();
   if (options.clearTimer !== false) clearTimeout(entry.timer);
   entry.resolve(response);
 }

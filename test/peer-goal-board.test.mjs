@@ -1,11 +1,12 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../src/peers/goal-board.mjs";
+import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch, validateGoalReadyToClose } from "../src/peers/goal-board.mjs";
+import { appendGoalJournalRecord, compactGoalJournal, goalJournalPath, replayGoalJournal } from "../src/peers/goal-store.mjs";
 
 async function withGoal(t, fn) {
   const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-test-"));
@@ -15,6 +16,82 @@ async function withGoal(t, fn) {
   const goal = await createPeerGoal(root, { objective: "test goal", peerId: "tester" });
   return fn(root, goal.id);
 }
+
+test("goal-store journal replays event records equivalent to current board semantics", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-store-source-"));
+  const journalRoot = await mkdtemp(join(tmpdir(), "pi-peer-goal-store-journal-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+    await rm(journalRoot, { recursive: true, force: true });
+  });
+
+  const goal = await createPeerGoal(root, { objective: "journal equivalence", peerId: "tester" });
+  const baseBoard = await loadPeerGoalBoard(root);
+  const claim = await appendPeerGoalEvent(root, goal.id, {
+    type: "claim",
+    peerId: "worker-a",
+    summary: "append-only replay claim",
+    mode: "read",
+    lane: "review",
+    workKey: "goal-store:replay",
+  });
+  const canonical = await loadPeerGoalBoard(root);
+
+  await appendGoalJournalRecord(journalRoot, { type: "snapshot", board: baseBoard });
+  await appendGoalJournalRecord(journalRoot, { type: "event", goalId: goal.id, event: claim.event });
+  const replayed = await replayGoalJournal(journalRoot);
+
+  assert.deepEqual(replayed.board, canonical);
+  assert.deepEqual(replayed.warnings, []);
+});
+
+test("goal-store compaction preserves migration-compatible snapshot semantics", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-store-compact-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const goal = await createPeerGoal(root, { objective: "compact journal", peerId: "tester" });
+  await appendPeerGoalEvent(root, goal.id, {
+    type: "proposal",
+    peerId: "planner",
+    summary: "compact this board",
+    lane: "implementation",
+    workKey: "goal-store:compact",
+  });
+  const canonical = await loadPeerGoalBoard(root);
+
+  await compactGoalJournal(root, canonical);
+  const replayed = await replayGoalJournal(root);
+
+  assert.deepEqual(replayed.board, canonical);
+  assert.deepEqual(replayed.warnings, []);
+});
+
+test("goal-store replay ignores corrupt trailing journal record but surfaces middle corruption", async (t) => {
+  const trailingRoot = await mkdtemp(join(tmpdir(), "pi-peer-goal-store-trailing-"));
+  const middleRoot = await mkdtemp(join(tmpdir(), "pi-peer-goal-store-middle-"));
+  t.after(async () => {
+    await rm(trailingRoot, { recursive: true, force: true });
+    await rm(middleRoot, { recursive: true, force: true });
+  });
+
+  const snapshot = { goals: { goal_a: { id: "goal_a", objective: "safe snapshot", status: "open", events: [] } }, currentGoalId: "goal_a" };
+  const validLine = `${JSON.stringify({ type: "snapshot", board: snapshot })}\n`;
+
+  await mkdir(dirname(goalJournalPath(trailingRoot)), { recursive: true });
+  await writeFile(goalJournalPath(trailingRoot), `${validLine}{"type":"event"`, "utf8");
+  const replayed = await replayGoalJournal(trailingRoot);
+  assert.deepEqual(replayed.board, snapshot);
+  assert.equal(replayed.warnings[0].type, "trailing-corrupt-record");
+
+  await mkdir(dirname(goalJournalPath(middleRoot)), { recursive: true });
+  await writeFile(goalJournalPath(middleRoot), `${validLine}{"type":"event"\n${validLine}`, "utf8");
+  await assert.rejects(
+    replayGoalJournal(middleRoot),
+    /corrupt peer goal journal record at line 2/,
+  );
+});
 
 test("repo-root write claims conflict with subpath write claims", async (t) => {
   await withGoal(t, async (root, goalId) => {
@@ -204,6 +281,104 @@ test("active read claims and running tasks block normal closure", async (t) => {
     assert.equal(state.activeTasks.length, 0);
     assert.equal(state.readyToClose, true);
   });
+});
+
+test("closure policy defaults preserve one-pass vote compatibility", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "Default closure still only needs a passing vote when no work is open" });
+
+    const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.closurePolicy, undefined);
+    assert.equal(state.closurePolicyStatus.satisfied, true);
+    assert.equal(state.readyToClose, true);
+    assert.doesNotThrow(() => validateGoalReadyToClose(state));
+  });
+});
+
+test("closure policy can require lane and role specific votes and evidence", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-policy-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, {
+    objective: "policy gated goal",
+    peerId: "planner",
+    closurePolicy: {
+      minPassingVotes: 2,
+      requiredVotes: [
+        { lane: "review", min: 1 },
+        { role: "qa", min: 1 },
+      ],
+      requiredEvidence: [
+        { type: "finding", lane: "implementation", min: 1 },
+        { type: "handoff", lane: "review", status: "done", min: 1 },
+      ],
+    },
+  });
+
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-a", verdict: "pass", lane: "review", summary: "review pass" });
+  let state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.readyToClose, false);
+  assert.equal(state.closurePolicyStatus.satisfied, false);
+  assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /2 passing votes required/);
+  assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /role=qa/);
+  assert.throws(() => validateGoalReadyToClose(state), /unmet closure policy requirements/);
+  await assert.rejects(closePeerGoal(root, created.id, { peerId: "planner" }), /unmet closure policy requirements/);
+
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "qa-a", verdict: "pass-with-risks", lane: "review", summary: "qa pass", metadata: { role: "qa" } });
+  await appendPeerGoalEvent(root, created.id, { type: "finding", peerId: "worker-a", lane: "implementation", summary: "Implementation evidence present" });
+  await appendPeerGoalEvent(root, created.id, { type: "handoff", peerId: "reviewer-a", lane: "review", status: "done", summary: "Review handoff complete" });
+
+  state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.closurePolicyStatus.satisfied, true);
+  assert.equal(state.readyToClose, true);
+  assert.doesNotThrow(() => validateGoalReadyToClose(state));
+});
+
+test("closure policy can be supplied through goal metadata", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-policy-metadata-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, {
+    objective: "metadata policy goal",
+    peerId: "planner",
+    metadata: { closurePolicy: { requiredEvidence: [{ type: "finding", lane: "security" }] } },
+  });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "pass" });
+
+  let state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.closurePolicy.requiredEvidence[0].lane, "security");
+  assert.equal(state.readyToClose, false);
+  await appendPeerGoalEvent(root, created.id, { type: "finding", peerId: "security-a", lane: "security", summary: "Security evidence present" });
+  state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.readyToClose, true);
+});
+
+test("failed votes and active work still block closure even when closure policy is satisfied", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-policy-blockers-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, { objective: "policy blockers", peerId: "planner", closurePolicy: { minPassingVotes: 1 } });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "pass" });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-b", verdict: "fail", summary: "not yet" });
+
+  let state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.closurePolicyStatus.satisfied, true);
+  assert.equal(state.readyToClose, false);
+  assert.throws(() => validateGoalReadyToClose(state), /failed peer votes/);
+
+  const claim = await appendPeerGoalEvent(root, created.id, { type: "claim", peerId: "worker-a", summary: "finish work", mode: "read", workKey: "policy:blocker" });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-b", verdict: "pass", summary: "supersede fail" });
+  state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.failedVotes.length, 0);
+  assert.equal(state.readyToClose, false);
+  assert.throws(() => validateGoalReadyToClose(state), /active claims/);
+
+  await appendPeerGoalEvent(root, created.id, { type: "release", peerId: "worker-a", resolves: claim.event.id, summary: "done" });
+  state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.readyToClose, true);
 });
 
 test("empty proposal summaries reject", async (t) => {

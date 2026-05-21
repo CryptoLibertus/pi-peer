@@ -190,7 +190,7 @@ export async function getPeerRuntimeValue(runtime, id) {
     const goal = goalId ? board.goals[goalId] : undefined;
     return goal ? { type: "goal", value: deriveGoalState(goal) } : { type: "missing", value: undefined };
   }
-  if (id === "tasks") return { type: "tasks", value: { active: await runtime.comms.listTasks({ active: true }), all: await runtime.comms.listTasks(), note: "Active tasks are queued/running peer messages; disconnected tasks were restored from the local message store and are not awaitable." } };
+  if (id === "tasks") return { type: "tasks", value: { active: await runtime.comms.listTasks({ active: true }), all: await runtime.comms.listTasks(), inbound: runtime.activeInboundState?.(), note: "Active tasks are queued/running/cancelling peer messages; disconnected tasks were restored from the local message store and are not awaitable." } };
   if (id === "fanout") {
     const peers = await runtime.comms.listPeers();
     const messages = await runtime.comms.listMessages();
