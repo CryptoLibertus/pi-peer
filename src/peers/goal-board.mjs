@@ -265,7 +265,7 @@ export function deriveGoalState(goal, options = {}) {
     failedVotes,
     passingVotes,
     tasks,
-    readyToClose: goal?.status === "open" && blockingObjections.length === 0 && failedVotes.length === 0 && activeWriteClaims.length === 0 && passingVotes.length > 0,
+    readyToClose: goal?.status === "open" && blockingObjections.length === 0 && failedVotes.length === 0 && activeWriteClaims.length === 0 && openProposals.length === 0 && passingVotes.length > 0,
   };
 }
 
@@ -358,7 +358,7 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
         workKey: derivePeerGoalWorkKey({ goalId: goal.id, lane: "coordination", objective: "triage open proposals", mode: "read" }),
       });
     }
-    if (state.readyToClose) {
+    if (state.readyToClose && !state.openProposals.length) {
       push("P1", "close", "Goal satisfies closure gates; close it or record a final note.");
       continue;
     }
@@ -372,7 +372,7 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
           rationale: "Multiple lane-specific suggestions let idle peers self-select complementary work and suppress duplicates by work key.",
         });
       }
-    } else if (!state.currentVotes.length && !state.activeWriteClaims.length) {
+    } else if (!state.currentVotes.length && !state.activeWriteClaims.length && !state.openProposals.length) {
       push("P2", "review", "No current peer vote; ask a peer for read-only review or record a pass/fail vote.");
     }
   }

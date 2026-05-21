@@ -98,7 +98,7 @@ test("heartbeats cannot revive stale write claims over an active overlapping cla
   });
 });
 
-test("proposal events are visible until resolved and do not block closure", async (t) => {
+test("proposal events are visible until resolved and block normal closure", async (t) => {
   await withGoal(t, async (root, goalId) => {
     const proposal = await appendPeerGoalEvent(root, goalId, {
       type: "proposal",
@@ -117,9 +117,14 @@ test("proposal events are visible until resolved and do not block closure", asyn
     assert.equal(state.openProposals.length, 1);
     assert.match(formatPeerGoal(state), /Open proposals:/);
     assert.match(formatPeerGoalList({ goals: { [goalId]: proposal.goal } }), /1 proposal/);
-    assert.equal(state.readyToClose, true);
+    assert.equal(state.readyToClose, false);
+    await assert.rejects(
+      closePeerGoal(root, goalId, { peerId: "tester", summary: "proposal must be resolved first" }),
+      /not ready to close/,
+    );
 
-    const closed = await closePeerGoal(root, goalId, { peerId: "tester", summary: "proposal is non-blocking" });
+    await appendPeerGoalEvent(root, goalId, { type: "resolve", peerId: "worker-b", resolves: proposal.event.id, summary: "Reviewer lane complete" });
+    const closed = await closePeerGoal(root, goalId, { peerId: "tester", summary: "proposal resolved" });
     assert.equal(closed.status, "closed");
 
     const secondRoot = await mkdtemp(join(tmpdir(), "pi-peer-goal-test-"));
@@ -309,6 +314,57 @@ test("scout stops re-emitting completed proposal lane work but keeps triage visi
     const implicitSuggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(implicitRoot));
     assert.equal(implicitSuggestions.some((suggestion) => suggestion.workKey === implicitKey && suggestion.summary.startsWith("Self-select proposed implementation lane")), false);
     assert.equal(implicitSuggestions.some((suggestion) => suggestion.summary.startsWith("Resolve fulfilled implementation proposal")), true);
+  });
+});
+
+test("scout keeps open proposals ahead of proactive close suggestions", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "proposal",
+      peerId: "planner",
+      summary: "Clarify human acceptance criteria",
+      lane: "coordination",
+      workKey: "acceptance-criteria",
+    });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "vote",
+      peerId: "reviewer",
+      verdict: "pass",
+      summary: "Implementation is otherwise safe",
+    });
+
+    const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.readyToClose, false);
+    const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+    assert.equal(suggestions.some((suggestion) => suggestion.kind === "close"), false);
+    assert.equal(suggestions.some((suggestion) => suggestion.summary.startsWith("Self-select proposed coordination lane")), true);
+    assert.equal(suggestions.some((suggestion) => suggestion.summary.startsWith("Triage 1 open proposal")), true);
+  });
+});
+
+test("stale-claim scout remains advisory and keeps unrelated lane work visible", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "worker-a",
+      summary: "Old review lane",
+      mode: "read",
+      lane: "review",
+      workKey: "old-review",
+      staleAfterMs: 1,
+    });
+    await delay(5);
+    await appendPeerGoalEvent(root, goalId, {
+      type: "proposal",
+      peerId: "planner",
+      summary: "Fresh research lane",
+      lane: "research",
+      workKey: "fresh-research",
+    });
+
+    const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+    assert.equal(suggestions.some((suggestion) => suggestion.kind === "stale-claim"), true);
+    assert.equal(suggestions.some((suggestion) => suggestion.workKey === "fresh-research"), true);
   });
 });
 
