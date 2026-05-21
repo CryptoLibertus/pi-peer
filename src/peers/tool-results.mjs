@@ -180,13 +180,15 @@ function extractHandoffSections(text) {
     ["limitations", /limitations?|assumptions?|uncertainty|unknowns?/i],
     ["confidence", /confidence/i],
   ];
-  const headingPattern = /^\s*(?:[-*]\s*)?(status|files\s+changed|files|artifacts|verification|tests?|blockers?\s*\/\s*risks?|blockers?|risks?|safe\s+for\s+review|citations?|sources?|references?|fact[-\s]?checks?|verified\s+claims?|limitations?|assumptions?|uncertainty|unknowns?|confidence)\s*:\s*(.*)$/gim;
-  const matches = [...text.matchAll(headingPattern)].map((match) => ({
-    index: match.index || 0,
-    length: match[0].length,
-    heading: match[1],
-    inline: match[2] || "",
-  }));
+  const headingPattern = /^\s*(?:[-*]\s*)?(#{1,6}\s*)?(status|files\s+changed|files|artifacts|verification|tests?|blockers?\s*\/\s*risks?|blockers?|risks?|safe\s+for\s+review|citations?(?:\s*\/\s*sources?)?|sources?(?:\s*\/\s*citations?)?|references?|fact[-\s]?checks?|verified\s+claims?|limitations?|assumptions?|uncertainty|unknowns?|confidence)\s*(?::\s*(.*))?$/gim;
+  const matches = [...text.matchAll(headingPattern)]
+    .filter((match) => match[1] || match[3] !== undefined)
+    .map((match) => ({
+      index: match.index || 0,
+      length: match[0].length,
+      heading: match[2],
+      inline: match[3] || "",
+    }));
   const sections = {};
   for (let i = 0; i < matches.length; i += 1) {
     const match = matches[i];

@@ -117,7 +117,8 @@ export async function beginPeerGoalTask(root, goalId, input = {}) {
     if (workKey && duplicatePolicy === "reuse") {
       const state = deriveGoalState(goal);
       const existingClaim = state.activeClaims.find((claim) => claim.workKey === workKey);
-      if (existingClaim) {
+      const existingTask = latestTaskForWorkKey(state.tasks, workKey);
+      if (existingClaim || existingTask) {
         return {
           goalId: id,
           goal: state,
@@ -125,7 +126,7 @@ export async function beginPeerGoalTask(root, goalId, input = {}) {
           duplicatePolicy,
           workKey,
           existingClaim,
-          existingTask: latestTaskForWorkKey(state.tasks, workKey),
+          existingTask,
         };
       }
     }
@@ -318,7 +319,7 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
     const state = deriveGoalState(goal);
     const push = (priority, kind, summary, extra = {}) => {
       const suggestion = enrichScoutSuggestion({ goalId: goal.id, priority, kind, summary, ...extra });
-      if (!hasActiveClaimForScoutSuggestion(state, suggestion)) suggestions.push(suggestion);
+      if (!hasActiveWorkForScoutSuggestion(state, suggestion)) suggestions.push(suggestion);
     };
     if (state.blockingObjections.length) {
       push("P0", "blocker", `Resolve ${state.blockingObjections.length} blocking objection${state.blockingObjections.length === 1 ? "" : "s"} before more work.`, { paths: uniqueEventPaths(state.blockingObjections) });
@@ -452,8 +453,10 @@ function validateClaim(goal, event) {
   if (event.mode === "write" && paths.length === 0) throw new Error("write claims require --path <path[,path]>");
   const state = deriveGoalState(goal);
   if (event.workKey && event.duplicatePolicy !== "allow-parallel") {
-    const duplicates = state.activeClaims.filter((claim) => claim.workKey === event.workKey);
-    if (duplicates.length) throw new Error(`claim duplicates active work key ${event.workKey} already held by ${duplicates.map((claim) => claim.id).join(", ")}`);
+    const duplicateClaims = state.activeClaims.filter((claim) => claim.workKey === event.workKey);
+    const duplicateTasks = state.activeTasks.filter((task) => task.workKey === event.workKey);
+    const duplicates = [...duplicateClaims, ...duplicateTasks];
+    if (duplicates.length) throw new Error(`claim duplicates active work key ${event.workKey} already held by ${duplicates.map((item) => item.id || item.taskId).join(", ")}`);
   }
   if (event.mode === "write") {
     const conflicts = state.activeClaims.filter((claim) => claim.mode === "write" && pathsOverlap(paths, claim.paths || []));
@@ -921,9 +924,9 @@ function suggestedIntentForLane(lane) {
   return normalizeLaneName(lane) === "implementation" ? "task" : "review";
 }
 
-function hasActiveClaimForScoutSuggestion(state, suggestion) {
+function hasActiveWorkForScoutSuggestion(state, suggestion) {
   if (!suggestion?.workKey) return false;
-  return state.activeClaims.some((claim) => claim.workKey === suggestion.workKey);
+  return state.activeClaims.some((claim) => claim.workKey === suggestion.workKey) || state.activeTasks.some((task) => task.workKey === suggestion.workKey);
 }
 
 function proposalLaneWorkCompleted(state, goalId, proposal) {
@@ -961,7 +964,7 @@ function proposalLaneActionability(state, goalId, proposal) {
   const lane = normalizeLaneName(proposal?.lane);
   const workKey = proposalLaneWorkKey(goalId, lane, proposal);
   if (proposalLaneWorkCompleted(state, goalId, proposal)) return "fulfilled";
-  if (workKey && state.activeClaims.some((claim) => claim.workKey === workKey)) return "owned";
+  if (workKey && (state.activeClaims.some((claim) => claim.workKey === workKey) || state.activeTasks.some((task) => task.workKey === workKey))) return "owned";
   return "unclaimed";
 }
 

@@ -37,12 +37,14 @@ test("goal dashboard groups proposal state and prints safe next actions", () => 
       { id: "c3", type: "claim", at: "2026-01-01T00:00:04.000Z", peerId: "reviewer", summary: "Finished lane", mode: "read", lane: "review", workKey: "review:done" },
       { id: "f3", type: "finding", at: "2026-01-01T00:00:05.000Z", peerId: "reviewer", summary: "done", lane: "review", workKey: "review:done" },
       { id: "r3", type: "release", at: "2026-01-01T00:00:06.000Z", peerId: "reviewer", summary: "done", resolves: "c3" },
+      { id: "p4", type: "proposal", at: "2026-01-01T00:00:07.000Z", peerId: "planner", summary: "Task-owned lane", lane: "review", workKey: "review:task" },
+      { id: "t4", type: "task", at: "2026-01-01T00:00:08.000Z", peerId: "planner", summary: "Task-owned lane", status: "running", taskId: "msg_task_owned", lane: "review", workKey: "review:task" },
     ],
   };
 
   const text = formatPeerGoalDashboard(goal, { now: "2026-01-01T00:05:00.000Z" });
   assert.match(text, /unclaimed: 1/);
-  assert.match(text, /active-owned: 1/);
+  assert.match(text, /active-owned: 2/);
   assert.match(text, /fulfilled-awaiting-resolve: 1/);
   assert.match(text, /\/peer goal claim goal_dash/);
   assert.match(text, /\/peer goal resolve goal_dash p3/);

@@ -190,7 +190,10 @@ export function formatPeerGoalDashboard(goal, options = {}) {
 
 function bucketOpenProposals(state = {}) {
   const buckets = { unclaimed: [], "active-owned": [], "fulfilled-awaiting-resolve": [] };
-  const activeKeys = new Set((state.activeClaims || []).map((claim) => claim.workKey).filter(Boolean));
+  const activeKeys = new Set([
+    ...(state.activeClaims || []).map((claim) => claim.workKey),
+    ...(state.activeTasks || []).map((task) => task.workKey),
+  ].filter(Boolean));
   for (const proposal of state.openProposals || []) {
     if (proposal.workKey && activeKeys.has(proposal.workKey)) buckets["active-owned"].push(proposal);
     else if (isProposalFulfilled(state, proposal)) buckets["fulfilled-awaiting-resolve"].push(proposal);

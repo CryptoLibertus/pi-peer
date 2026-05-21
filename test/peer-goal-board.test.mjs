@@ -899,6 +899,72 @@ test("beginPeerGoalTask reuses active work instead of creating duplicate dispatc
   });
 });
 
+test("beginPeerGoalTask reuses active task work keys even without an active claim", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    const workKey = derivePeerGoalWorkKey({ goalId, lane: "review", objective: "Review task-only duplicate prevention", mode: "read" });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "task",
+      peerId: "planner",
+      summary: "Review task-only duplicate prevention",
+      status: "running",
+      taskId: "msg_running_only",
+      lane: "review",
+      workKey,
+    });
+
+    const duplicate = await beginPeerGoalTask(root, goalId, {
+      targetPeerId: "reviewer-b",
+      prompt: "Review task-only duplicate prevention",
+      mode: "read",
+      lane: "review",
+      workKey,
+      duplicatePolicy: "reuse",
+    });
+
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(duplicate.existingClaim, undefined);
+    assert.equal(duplicate.existingTask.taskId, "msg_running_only");
+
+    const parallel = await beginPeerGoalTask(root, goalId, {
+      targetPeerId: "reviewer-c",
+      prompt: "Independent second opinion",
+      mode: "read",
+      lane: "review",
+      workKey,
+      duplicatePolicy: "allow-parallel",
+    });
+    assert.equal(parallel.duplicate, undefined);
+    assert.equal(parallel.claimEvent.workKey, workKey);
+  });
+});
+
+test("active task work keys prevent direct duplicate claims", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    const workKey = derivePeerGoalWorkKey({ goalId, lane: "review", objective: "Direct claim duplicate prevention", mode: "read" });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "task",
+      peerId: "planner",
+      summary: "Direct claim duplicate prevention",
+      status: "running",
+      taskId: "msg_direct_duplicate",
+      lane: "review",
+      workKey,
+    });
+
+    await assert.rejects(
+      appendPeerGoalEvent(root, goalId, {
+        type: "claim",
+        peerId: "reviewer-b",
+        summary: "Direct claim duplicate prevention too",
+        mode: "read",
+        lane: "review",
+        workKey,
+      }),
+      /duplicates active work key/,
+    );
+  });
+});
+
 test("scout suppresses suggestions whose work key is actively claimed", async (t) => {
   await withGoal(t, async (root, goalId) => {
     const summary = "No active work yet; propose a research, review, or implementation lane.";
@@ -913,6 +979,39 @@ test("scout suppresses suggestions whose work key is actively claimed", async (t
 
     const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
     assert.equal(suggestions.some((suggestion) => suggestion.kind === "next-step"), false);
+  });
+});
+
+test("scout suppresses proposal suggestions whose work key is actively running as a task", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "proposal",
+      peerId: "planner",
+      summary: "Task-owned review lane",
+      lane: "review",
+      workKey: "review:task-owned",
+    });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "proposal",
+      peerId: "planner",
+      summary: "Still unclaimed review lane",
+      lane: "review",
+      workKey: "review:unclaimed",
+    });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "task",
+      peerId: "planner",
+      summary: "Task-owned review lane",
+      status: "running",
+      taskId: "msg_task_owned",
+      lane: "review",
+      workKey: "review:task-owned",
+    });
+
+    const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+    assert.equal(suggestions.some((suggestion) => suggestion.workKey === "review:task-owned" && suggestion.summary.startsWith("Self-select")), false);
+    assert.equal(suggestions.some((suggestion) => suggestion.workKey === "review:unclaimed" && suggestion.summary.startsWith("Self-select")), true);
+    assert.equal(suggestions.some((suggestion) => /1 unclaimed actionable; 1 active-owned/.test(suggestion.summary)), true);
   });
 });
 

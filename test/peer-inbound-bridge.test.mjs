@@ -166,6 +166,64 @@ Safe for review: yes`;
   assert.equal(response.handoffEvidence.safeForReview, true);
 });
 
+test("inbound bridge captures handoff evidence from markdown headings", async () => {
+  const bridge = createInboundPromptBridge({
+    pi: { sendMessage: () => {} },
+    responseTimeoutMs: 60_000,
+  });
+
+  const responsePromise = bridge.handleEnvelope(envelope("msg_markdown_handoff"));
+  const finalText = `## Status
+
+done
+
+## Files changed
+
+none
+
+## Verification
+
+\`npm test\` — exit 0
+
+## Blockers/risks
+
+none
+
+## Safe for review
+
+yes
+
+## Citations/Sources
+
+README.md
+
+## Fact-checks
+
+heading parser regression covered
+
+## Limitations
+
+repo-local only
+
+## Confidence
+
+93%`;
+  bridge.handleAgentEnd({ finalAssistantText: finalText });
+  const response = await responsePromise;
+
+  assert.equal(response.status, "OK");
+  assert.equal(response.handoffEvidence.complete, true);
+  assert.equal(response.handoffEvidence.status, "done");
+  assert.deepEqual(response.handoffEvidence.filesChanged, ["none"]);
+  assert.deepEqual(response.handoffEvidence.verification, [{ command: "npm test", exitStatus: 0, raw: "`npm test` — exit 0" }]);
+  assert.deepEqual(response.handoffEvidence.blockersRisks, ["none"]);
+  assert.equal(response.handoffEvidence.safeForReview, true);
+  assert.deepEqual(response.handoffEvidence.citations, ["README.md"]);
+  assert.deepEqual(response.handoffEvidence.factChecks, ["heading parser regression covered"]);
+  assert.deepEqual(response.handoffEvidence.limitations, ["repo-local only"]);
+  assert.equal(response.handoffEvidence.confidence, 0.93);
+});
+
 test("inbound bridge captures optional research quality evidence", async () => {
   const sent = [];
   const bridge = createInboundPromptBridge({
