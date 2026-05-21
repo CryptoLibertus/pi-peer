@@ -241,6 +241,72 @@ test("scout suggestions turn lane proposals into self-selection work", async (t)
   });
 });
 
+test("scout stops re-emitting completed proposal lane work but keeps triage visible", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    const workKey = "fake-task:implementation:test-design";
+    await appendPeerGoalEvent(root, goalId, {
+      type: "proposal",
+      peerId: "planner",
+      summary: "Design a self-organization regression test",
+      lane: "implementation",
+      paths: ["test/peer-goal-board.test.mjs"],
+      workKey,
+    });
+    const claim = await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "worker-a",
+      summary: "Self-select proposed implementation lane",
+      mode: "read",
+      lane: "implementation",
+      paths: ["test/peer-goal-board.test.mjs"],
+      workKey,
+    });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "finding",
+      peerId: "worker-a",
+      summary: "Regression test design posted",
+      lane: "implementation",
+      paths: ["test/peer-goal-board.test.mjs"],
+      workKey,
+    });
+    await appendPeerGoalEvent(root, goalId, { type: "release", peerId: "worker-a", resolves: claim.event.id, summary: "lane complete" });
+
+    const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.openProposals.length, 1);
+    const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+    assert.equal(suggestions.some((suggestion) => suggestion.workKey === workKey && suggestion.summary.startsWith("Self-select proposed implementation lane")), false);
+    assert.equal(suggestions.some((suggestion) => suggestion.kind === "open-proposal" && suggestion.summary.startsWith("Triage 1 open proposal")), true);
+
+    const implicitRoot = await mkdtemp(join(tmpdir(), "pi-peer-goal-test-"));
+    t.after(async () => {
+      await rm(implicitRoot, { recursive: true, force: true });
+    });
+    const implicitGoal = await createPeerGoal(implicitRoot, { objective: "implicit completed proposal", peerId: "tester" });
+    const implicitSummary = "Design an implicit-key regression test";
+    const implicitKey = derivePeerGoalWorkKey({ goalId: implicitGoal.id, lane: "implementation", objective: implicitSummary, mode: "read", paths: ["test/peer-goal-board.test.mjs"] });
+    await appendPeerGoalEvent(implicitRoot, implicitGoal.id, {
+      type: "proposal",
+      peerId: "planner",
+      summary: implicitSummary,
+      lane: "implementation",
+      paths: ["test/peer-goal-board.test.mjs"],
+    });
+    const implicitClaim = await appendPeerGoalEvent(implicitRoot, implicitGoal.id, {
+      type: "claim",
+      peerId: "worker-a",
+      summary: "Self-select implicit proposed implementation lane",
+      mode: "read",
+      lane: "implementation",
+      paths: ["test/peer-goal-board.test.mjs"],
+      workKey: implicitKey,
+    });
+    await appendPeerGoalEvent(implicitRoot, implicitGoal.id, { type: "finding", peerId: "worker-a", summary: "Implicit-key work completed", lane: "implementation", workKey: implicitKey });
+    await appendPeerGoalEvent(implicitRoot, implicitGoal.id, { type: "release", peerId: "worker-a", resolves: implicitClaim.event.id, summary: "implicit lane complete" });
+    const implicitSuggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(implicitRoot));
+    assert.equal(implicitSuggestions.some((suggestion) => suggestion.workKey === implicitKey && suggestion.summary.startsWith("Self-select proposed implementation lane")), false);
+  });
+});
+
 test("semantic work keys prevent duplicate read claims unless explicitly parallel", async (t) => {
   await withGoal(t, async (root, goalId) => {
     const workKey = derivePeerGoalWorkKey({ goalId, lane: "review", objective: "Check finalization safety", mode: "read", paths: ["src"] });

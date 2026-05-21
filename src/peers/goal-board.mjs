@@ -326,7 +326,7 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
       push("P1", "stale-claim", `Ask owners to heartbeat or release ${state.staleClaims.length} stale claim${state.staleClaims.length === 1 ? "" : "s"}.`, { paths: uniqueEventPaths(state.staleClaims) });
     }
     if (state.openProposals.length) {
-      for (const proposal of state.openProposals.filter((item) => item.lane)) {
+      for (const proposal of state.openProposals.filter((item) => item.lane && !proposalLaneWorkCompleted(state, goal.id, item))) {
         const lane = normalizeLaneName(proposal.lane);
         const summary = `Self-select proposed ${lane} lane: ${proposal.summary}`;
         push("P1", "open-proposal", summary, {
@@ -336,7 +336,7 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
           claimMode: "read",
           suggestedIntent: suggestedIntentForLane(lane),
           rationale: "A peer proposed a lane; matching idle peers can claim or review it without planner assignment.",
-          workKey: proposal.workKey || derivePeerGoalWorkKey({ goalId: goal.id, lane, objective: proposal.summary, mode: "read", paths: proposal.paths }),
+          workKey: proposalLaneWorkKey(goal.id, lane, proposal),
           relatedEventId: proposal.id,
         });
       }
@@ -696,6 +696,20 @@ function suggestedIntentForLane(lane) {
 function hasActiveClaimForScoutSuggestion(state, suggestion) {
   if (!suggestion?.workKey) return false;
   return state.activeClaims.some((claim) => claim.workKey === suggestion.workKey);
+}
+
+function proposalLaneWorkCompleted(state, goalId, proposal) {
+  const lane = normalizeLaneName(proposal?.lane);
+  const workKey = proposalLaneWorkKey(goalId, lane, proposal);
+  if (!workKey) return false;
+  const proposalAt = String(proposal.at || "");
+  const releasedClaim = state.releasedClaims.some((claim) => claim.workKey === workKey && String(claim.at || "") >= proposalAt);
+  if (!releasedClaim) return false;
+  return state.events.some((event) => ["finding", "handoff", "note"].includes(event.type) && event.workKey === workKey && String(event.at || "") >= proposalAt);
+}
+
+function proposalLaneWorkKey(goalId, lane, proposal = {}) {
+  return proposal.workKey || derivePeerGoalWorkKey({ goalId, lane, objective: proposal.summary, mode: "read", paths: proposal.paths });
 }
 
 async function updatePeerGoalBoard(root, updater) {

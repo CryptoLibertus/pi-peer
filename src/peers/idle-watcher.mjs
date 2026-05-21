@@ -1,4 +1,4 @@
-import { derivePeerGoalScoutSuggestions, loadPeerGoalBoard } from "./goal-board.mjs";
+import { deriveGoalState, derivePeerGoalScoutSuggestions, loadPeerGoalBoard } from "./goal-board.mjs";
 
 export const DEFAULT_PEER_IDLE_WATCHER_INTERVAL_MS = 15_000;
 export const DEFAULT_PEER_IDLE_WATCHER_COOLDOWN_MS = 5 * 60 * 1000;
@@ -119,6 +119,7 @@ export function derivePeerIdleActivation(board, options = {}) {
   const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   for (const suggestion of suggestions) {
     if (!allowedKinds.has(suggestion.kind)) continue;
+    if (localPeerHasActiveGoalWork(board, suggestion.goalId, options.localPeerId)) continue;
     const activation = normalizeActivation(suggestion, options.localPeerId, options);
     if (!activation || !activationFitsPeer(activation, options)) continue;
     if (isActivationCoolingDown(options.state, activation, config, nowMs)) continue;
@@ -195,6 +196,15 @@ function activationFitsPeer(activation = {}, options = {}) {
   const fit = activation.personaFit || peerPersonaFit(activation, options);
   if (!fit.hasProfile) return true;
   return fit.matched.length > 0;
+}
+
+function localPeerHasActiveGoalWork(board = {}, goalId, localPeerId) {
+  const peerId = cleanString(localPeerId);
+  if (!peerId || !goalId) return false;
+  const goal = board?.goals?.[goalId];
+  if (!goal) return false;
+  const state = deriveGoalState(goal);
+  return state.activeClaims.some((claim) => claim.peerId === peerId);
 }
 
 function peerPersonaFit(suggestion = {}, options = {}) {

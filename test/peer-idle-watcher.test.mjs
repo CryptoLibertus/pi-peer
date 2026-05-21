@@ -128,6 +128,37 @@ test("derivePeerIdleActivation uses persona fit when suggestions prefer roles", 
   assert.equal(worker.personaFit.matched.includes("worker"), true);
 });
 
+test("derivePeerIdleActivation skips same-goal scout work when the local peer already has an active claim", () => {
+  const busyBoard = {
+    goals: {
+      goal_busy: {
+        id: "goal_busy",
+        objective: "Keep one peer from self-assigning two lanes",
+        status: "open",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        events: [
+          { id: "evt_proposal", type: "proposal", peerId: "planner", summary: "Research human intent", lane: "research", workKey: "goal_busy|research|intent|read" },
+          { id: "evt_claim", type: "claim", peerId: "worker-a", summary: "Already coordinating this goal", mode: "read", lane: "coordination", workKey: "goal_busy|coordination|audit|read", staleAfterMs: 100_000_000_000, at: "2026-01-01T00:00:00.000Z" },
+        ],
+      },
+    },
+  };
+
+  assert.equal(derivePeerIdleActivation(busyBoard, {
+    localPeerId: "worker-a",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  }), undefined);
+
+  const otherPeer = derivePeerIdleActivation(busyBoard, {
+    localPeerId: "generic-peer",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(otherPeer.goalId, "goal_busy");
+  assert.equal(otherPeer.kind, "open-proposal");
+});
+
 test("derivePeerIdleActivation does not suppress critical blockers for mismatched personas", () => {
   const blockerBoard = {
     goals: {
