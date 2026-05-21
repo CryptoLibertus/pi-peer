@@ -35,6 +35,7 @@ export function createPeerIdleWatcher(options = {}) {
     timer: undefined,
     activationCount: 0,
     lastActivationAtByKey: new Map(),
+    lastActivationByGoal: new Map(),
     checking: false,
   };
 
@@ -132,7 +133,9 @@ export function markPeerIdleActivation(state, activation, nowMs = Date.now()) {
   if (!state || !activation) return false;
   state.activationCount = (state.activationCount || 0) + 1;
   if (!state.lastActivationAtByKey) state.lastActivationAtByKey = new Map();
+  if (!state.lastActivationByGoal) state.lastActivationByGoal = new Map();
   state.lastActivationAtByKey.set(peerIdleActivationKey(activation), nowMs);
+  state.lastActivationByGoal.set(activation.goalId, { at: nowMs, priority: activation.priority || "P2" });
   return true;
 }
 
@@ -165,8 +168,18 @@ export function peerIdleActivationKey(activation = {}) {
 }
 
 function isActivationCoolingDown(state, activation, config, nowMs) {
-  const last = state?.lastActivationAtByKey?.get?.(peerIdleActivationKey(activation));
-  return Number.isFinite(last) && nowMs - last < config.cooldownMs;
+  const exactLast = state?.lastActivationAtByKey?.get?.(peerIdleActivationKey(activation));
+  if (Number.isFinite(exactLast) && nowMs - exactLast < config.cooldownMs) return true;
+  const goalLast = state?.lastActivationByGoal?.get?.(activation.goalId);
+  if (!goalLast || !Number.isFinite(goalLast.at) || nowMs - goalLast.at >= config.cooldownMs) return false;
+  return priorityRank(activation.priority) >= priorityRank(goalLast.priority);
+}
+
+function priorityRank(priority) {
+  const normalized = String(priority || "P2").toUpperCase();
+  if (normalized === "P0") return 0;
+  if (normalized === "P1") return 1;
+  return 2;
 }
 
 function normalizeActivation(suggestion = {}, localPeerId, options = {}) {

@@ -58,6 +58,60 @@ test("derivePeerIdleActivation picks scout suggestions and respects cooldown", (
   }).goalId, "goal_123");
 });
 
+test("derivePeerIdleActivation goal-cooldowns prevent one generic peer from sweeping every startup lane", () => {
+  const state = { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() };
+  const first = derivePeerIdleActivation(openGoalBoard, {
+    localPeerId: "generic-peer",
+    state,
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(first.recommendedLane, "research");
+  markPeerIdleActivation(state, first, 1_000);
+
+  assert.equal(derivePeerIdleActivation(openGoalBoard, {
+    localPeerId: "generic-peer",
+    state,
+    nowMs: 5_000,
+    config: { cooldownMs: 10_000 },
+  }), undefined);
+
+  assert.equal(derivePeerIdleActivation(openGoalBoard, {
+    localPeerId: "generic-peer",
+    state,
+    nowMs: 12_000,
+    config: { cooldownMs: 10_000 },
+  }).recommendedLane, "research");
+});
+
+test("derivePeerIdleActivation lets urgent blockers bypass same-goal cooldowns", () => {
+  const state = { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() };
+  const first = derivePeerIdleActivation(openGoalBoard, {
+    localPeerId: "generic-peer",
+    state,
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  markPeerIdleActivation(state, first, 1_000);
+
+  const blockerBoard = {
+    goals: {
+      goal_123: {
+        ...openGoalBoard.goals.goal_123,
+        events: [{ id: "evt_block", type: "objection", peerId: "reviewer-a", summary: "Needs attention", severity: "blocking" }],
+      },
+    },
+  };
+  const activation = derivePeerIdleActivation(blockerBoard, {
+    localPeerId: "generic-peer",
+    state,
+    nowMs: 5_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(activation.kind, "blocker");
+  assert.equal(activation.priority, "P0");
+});
+
 test("idle activation prompt tells peer to inspect state and avoid duplicate unsafe work", () => {
   const text = buildPeerIdleActivationPrompt({
     goalId: "goal_123",

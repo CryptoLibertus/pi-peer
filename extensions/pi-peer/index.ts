@@ -531,16 +531,20 @@ async function handlePeerGoalFanout(parsed: any, ctx: any, runtime: any, peerId:
   for (const targetPeerId of parsed.peers) {
     const mode = inferFanoutClaimMode(targetPeerId);
     const lane = inferFanoutWorkLane(targetPeerId, mode);
-    const summary = `${parsed.objective} [fanout:${targetPeerId}]`;
-    const task = await appendPeerGoalEvent(root, parsed.goalId, {
-      type: "task",
-      peerId,
-      summary,
-      paths: parsed.paths,
-      status: parsed.send ? "dispatching" : "planned",
-      metadata: { targetPeerId, fanout: true, claimMode: mode, workLane: lane },
-    });
-    planned.push({ peerId: targetPeerId, taskEventId: task.event.id, mode, lane });
+    const item: any = { peerId: targetPeerId, mode, lane };
+    if (!parsed.send) {
+      const summary = `${parsed.objective} [fanout:${targetPeerId}]`;
+      const task = await appendPeerGoalEvent(root, parsed.goalId, {
+        type: "task",
+        peerId,
+        summary,
+        paths: parsed.paths,
+        status: "planned",
+        metadata: { targetPeerId, fanout: true, claimMode: mode, workLane: lane },
+      });
+      item.taskEventId = task.event.id;
+    }
+    planned.push(item);
   }
   if (parsed.send) {
     await Promise.all(planned.map(async (item: any) => {
@@ -560,17 +564,19 @@ async function handlePeerGoalFanout(parsed: any, ctx: any, runtime: any, peerId:
           item.duplicate = true;
           item.messageId = goalLink.existingTask?.taskId || goalLink.existingTask?.metadata?.messageId;
           item.conversationId = goalLink.existingTask?.metadata?.conversationId;
-          await appendPeerGoalEvent(root, parsed.goalId, {
-            type: "handoff",
-            peerId: item.peerId,
-            summary: `Fan-out duplicate reused existing work key ${goalLink.workKey || "unknown"}`,
-            paths: parsed.paths,
-            taskId: item.taskEventId,
-            status: "done",
-            workKey: goalLink.workKey,
-            lane: item.lane,
-            metadata: { fanout: true, duplicate: true, targetPeerId: item.peerId, existingTaskId: item.messageId },
-          }).catch(() => {});
+          if (item.taskEventId) {
+            await appendPeerGoalEvent(root, parsed.goalId, {
+              type: "handoff",
+              peerId: item.peerId,
+              summary: `Fan-out duplicate reused existing work key ${goalLink.workKey || "unknown"}`,
+              paths: parsed.paths,
+              taskId: item.taskEventId,
+              status: "done",
+              workKey: goalLink.workKey,
+              lane: item.lane,
+              metadata: { fanout: true, duplicate: true, targetPeerId: item.peerId, existingTaskId: item.messageId },
+            }).catch(() => {});
+          }
           return;
         }
         const metadata = mergePeerMetadata({ fanout: true }, parsed.paths, parsed.goalId, { workKey: goalLink?.workKey, workLane: item.lane, duplicatePolicy: "reuse" });
@@ -590,12 +596,13 @@ async function handlePeerGoalFanout(parsed: any, ctx: any, runtime: any, peerId:
           await recordPeerSendGoalFailure(root, goalLink, { targetPeerId: item.peerId, prompt: parsed.objective, claimedPaths: parsed.paths, error });
         } else {
           await appendPeerGoalEvent(root, parsed.goalId, {
-            type: "handoff",
-            peerId: item.peerId,
+            type: item.taskEventId ? "handoff" : "task",
+            peerId: item.taskEventId ? item.peerId : peerId,
             summary: `Fan-out dispatch failed before claim: ${error?.message || String(error)}`,
             paths: parsed.paths,
             taskId: item.taskEventId,
             status: "blocked",
+            lane: item.lane,
             metadata: { fanout: true, targetPeerId: item.peerId },
           }).catch(() => {});
         }

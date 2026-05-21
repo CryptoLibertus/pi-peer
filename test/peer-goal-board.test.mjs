@@ -120,7 +120,7 @@ test("proposal events are visible until resolved and block normal closure", asyn
     assert.equal(state.readyToClose, false);
     await assert.rejects(
       closePeerGoal(root, goalId, { peerId: "tester", summary: "proposal must be resolved first" }),
-      /not ready to close/,
+      /unresolved open proposals/,
     );
 
     await appendPeerGoalEvent(root, goalId, { type: "resolve", peerId: "worker-b", resolves: proposal.event.id, summary: "Reviewer lane complete" });
@@ -146,6 +146,63 @@ test("proposal events are visible until resolved and block normal closure", asyn
     state = deriveGoalState(resolved.goal);
     assert.equal(state.proposals.length, 1);
     assert.equal(state.openProposals.length, 0);
+  });
+});
+
+test("active read claims and running tasks block normal closure", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    const claim = await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "reviewer-a",
+      summary: "Read-only review still in progress",
+      mode: "read",
+      lane: "review",
+      workKey: "closure-review",
+    });
+    await appendPeerGoalEvent(root, goalId, { type: "vote", peerId: "planner", verdict: "pass", summary: "Looks good after review" });
+
+    let state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.readyToClose, false);
+    await assert.rejects(
+      closePeerGoal(root, goalId, { peerId: "planner", summary: "should wait for read review" }),
+      /has active claims/,
+    );
+
+    await appendPeerGoalEvent(root, goalId, { type: "release", peerId: "reviewer-a", resolves: claim.event.id, summary: "review finished" });
+    state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.readyToClose, true);
+  });
+
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "task",
+      peerId: "planner",
+      summary: "Reviewer fanout is still running",
+      taskId: "msg_review",
+      status: "running",
+      workKey: "closure-task",
+    });
+    await appendPeerGoalEvent(root, goalId, { type: "vote", peerId: "planner", verdict: "pass", summary: "Looks good once fanout returns" });
+
+    let state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.activeTasks.length, 1);
+    assert.equal(state.readyToClose, false);
+    await assert.rejects(
+      closePeerGoal(root, goalId, { peerId: "planner", summary: "should wait for task handoff" }),
+      /has active tasks/,
+    );
+
+    await appendPeerGoalEvent(root, goalId, {
+      type: "handoff",
+      peerId: "reviewer-a",
+      summary: "Reviewer fanout complete",
+      taskId: "msg_review",
+      status: "done",
+      workKey: "closure-task",
+    });
+    state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.activeTasks.length, 0);
+    assert.equal(state.readyToClose, true);
   });
 });
 
@@ -285,6 +342,7 @@ test("scout stops re-emitting completed proposal lane work but keeps triage visi
     assert.equal(resolveSuggestion.recommendedLane, "coordination");
     assert.equal(resolveSuggestion.relatedEventId, state.openProposals[0].id);
     assert.equal(suggestions.some((suggestion) => suggestion.kind === "open-proposal" && suggestion.summary.startsWith("Triage 1 open proposal")), true);
+    assert.match(formatPeerGoalScout(await loadPeerGoalBoard(root)), new RegExp(`resolve: /peer goal resolve ${goalId} ${state.openProposals[0].id}`));
 
     const implicitRoot = await mkdtemp(join(tmpdir(), "pi-peer-goal-test-"));
     t.after(async () => {
@@ -342,6 +400,26 @@ test("scout keeps open proposals ahead of proactive close suggestions", async (t
   });
 });
 
+test("stale-only goals do not emit generic startup lane suggestions", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "worker-a",
+      summary: "Old implementation lane",
+      mode: "read",
+      lane: "implementation",
+      workKey: "old-implementation",
+      staleAfterMs: 1,
+    });
+    await delay(5);
+
+    const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+    assert.equal(suggestions.some((suggestion) => suggestion.kind === "stale-claim"), true);
+    assert.equal(suggestions.some((suggestion) => suggestion.kind === "next-step"), false);
+    assert.equal(suggestions.some((suggestion) => suggestion.kind === "review"), false);
+  });
+});
+
 test("stale-claim scout remains advisory and keeps unrelated lane work visible", async (t) => {
   await withGoal(t, async (root, goalId) => {
     await appendPeerGoalEvent(root, goalId, {
@@ -365,6 +443,32 @@ test("stale-claim scout remains advisory and keeps unrelated lane work visible",
     const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
     assert.equal(suggestions.some((suggestion) => suggestion.kind === "stale-claim"), true);
     assert.equal(suggestions.some((suggestion) => suggestion.workKey === "fresh-research"), true);
+  });
+});
+
+test("proposal triage stays quiet when every proposal already has an active owner", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    for (const workKey of ["loop-1", "loop-2", "loop-3"]) {
+      await appendPeerGoalEvent(root, goalId, {
+        type: "proposal",
+        peerId: "planner",
+        summary: `Owned ${workKey} work`,
+        lane: "review",
+        workKey,
+      });
+      await appendPeerGoalEvent(root, goalId, {
+        type: "claim",
+        peerId: `worker-${workKey}`,
+        summary: `Claim ${workKey}`,
+        mode: "read",
+        lane: "review",
+        workKey,
+      });
+    }
+
+    const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+    assert.equal(suggestions.some((suggestion) => suggestion.summary.startsWith("Triage")), false);
+    assert.equal(suggestions.some((suggestion) => suggestion.summary.startsWith("Self-select proposed review lane")), false);
   });
 });
 

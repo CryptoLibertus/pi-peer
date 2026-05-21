@@ -9,6 +9,7 @@ const EVENT_TYPES = new Set(["finding", "task", "proposal", "claim", "release", 
 const BLOCKING_SEVERITIES = new Set(["blocking", "blocker", "critical"]);
 const VOTE_VERDICTS = new Set(["pass", "fail", "pass-with-risks"]);
 const DUPLICATE_POLICIES = new Set(["error", "reuse", "allow-parallel"]);
+const ACTIVE_TASK_STATUSES = new Set(["queued", "dispatching", "planned", "running", "pending", "blocked"]);
 const DEFAULT_GOAL_CLAIM_STALE_MS = 45 * 60 * 1000;
 const SCOUT_LANES = Object.freeze({
   blocker: { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "review", rationale: "Blocking objections need a coordination/review lane before more work starts." },
@@ -249,6 +250,7 @@ export function deriveGoalState(goal, options = {}) {
   const passingVotes = currentVotes.filter((vote) => vote.verdict === "pass" || vote.verdict === "pass-with-risks");
   const activeWriteClaims = activeClaims.filter((claim) => claim.mode === "write");
   const tasks = events.filter((event) => event.type === "task").map((event) => projectTaskSummary(event, events));
+  const activeTasks = tasks.filter(isActiveTaskSummary);
   return {
     ...goal,
     events,
@@ -265,7 +267,8 @@ export function deriveGoalState(goal, options = {}) {
     failedVotes,
     passingVotes,
     tasks,
-    readyToClose: goal?.status === "open" && blockingObjections.length === 0 && failedVotes.length === 0 && activeWriteClaims.length === 0 && openProposals.length === 0 && passingVotes.length > 0,
+    activeTasks,
+    readyToClose: goal?.status === "open" && blockingObjections.length === 0 && failedVotes.length === 0 && activeClaims.length === 0 && activeTasks.length === 0 && openProposals.length === 0 && passingVotes.length > 0,
   };
 }
 
@@ -295,6 +298,8 @@ export function formatPeerGoalScout(board, options = {}) {
     lines.push(`- ${suggestion.priority} · ${suggestion.goalId} · ${suggestion.kind}: ${suggestion.summary}${laneText}${pathText}${keyText}`);
     const claim = formatScoutClaimCommand(suggestion);
     if (claim) lines.push(`  claim: ${claim}`);
+    const resolve = formatScoutResolveCommand(suggestion);
+    if (resolve) lines.push(`  resolve: ${resolve}`);
   }
   lines.push("", "Next: post one with `/peer goal propose <goal-id> <summary>` or claim the exact suggested lane with the printed `claim:` command/work key. Scout does not mutate the board.");
   return lines.join("\n");
@@ -353,16 +358,18 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
           relatedEventId: proposal.id,
         });
       }
-      push("P1", "open-proposal", formatOpenProposalTriageSummary(state, goal.id), {
-        paths: uniqueEventPaths(state.openProposals),
-        workKey: derivePeerGoalWorkKey({ goalId: goal.id, lane: "coordination", objective: "triage open proposals", mode: "read" }),
-      });
+      if (shouldSuggestOpenProposalTriage(state, goal.id)) {
+        push("P1", "open-proposal", formatOpenProposalTriageSummary(state, goal.id), {
+          paths: uniqueEventPaths(state.openProposals),
+          workKey: derivePeerGoalWorkKey({ goalId: goal.id, lane: "coordination", objective: "triage open proposals", mode: "read" }),
+        });
+      }
     }
     if (state.readyToClose && !state.openProposals.length) {
       push("P1", "close", "Goal satisfies closure gates; close it or record a final note.");
       continue;
     }
-    if (!state.activeClaims.length && !state.tasks.length && !state.openProposals.length) {
+    if (!state.activeClaims.length && !state.staleClaims.length && !state.tasks.length && !state.openProposals.length) {
       for (const lane of STARTUP_SCOUT_LANES) {
         push("P2", "next-step", lane.summary, {
           recommendedLane: lane.lane,
@@ -372,7 +379,7 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
           rationale: "Multiple lane-specific suggestions let idle peers self-select complementary work and suppress duplicates by work key.",
         });
       }
-    } else if (!state.currentVotes.length && !state.activeWriteClaims.length && !state.openProposals.length) {
+    } else if (!state.currentVotes.length && !state.activeWriteClaims.length && !state.staleClaims.length && !state.openProposals.length) {
       push("P2", "review", "No current peer vote; ask a peer for read-only review or record a pass/fail vote.");
     }
   }
@@ -468,10 +475,17 @@ function validateGoalReadyToClose(state) {
   if (state.failedVotes.length) {
     throw new Error(`peer goal ${state.id} has failed peer votes: ${state.failedVotes.map((item) => item.peerId || item.id).join(", ")}`);
   }
-  if (state.activeWriteClaims.length) {
-    throw new Error(`peer goal ${state.id} has active write claims: ${state.activeWriteClaims.map((item) => item.id).join(", ")}`);
+  if (state.activeClaims.length) {
+    throw new Error(`peer goal ${state.id} has active claims: ${state.activeClaims.map((item) => item.id).join(", ")}`);
   }
-  if (!state.readyToClose) throw new Error(`peer goal ${state.id} is not ready to close; record at least one passing vote or use --force`);
+  if (state.activeTasks?.length) {
+    throw new Error(`peer goal ${state.id} has active tasks: ${state.activeTasks.map((item) => item.taskId || item.id).join(", ")}`);
+  }
+  if (state.openProposals.length) {
+    throw new Error(`peer goal ${state.id} has unresolved open proposals: ${state.openProposals.map((item) => item.id).join(", ")}`);
+  }
+  if (!state.passingVotes.length) throw new Error(`peer goal ${state.id} is not ready to close; record at least one passing vote or use --force`);
+  if (!state.readyToClose) throw new Error(`peer goal ${state.id} is not ready to close; use --force to override readiness gates`);
 }
 
 function normalizeEvent(input = {}) {
@@ -523,10 +537,9 @@ function taskSummary(input = {}) {
 
 function latestTaskForWorkKey(tasks = [], workKey) {
   if (!workKey) return undefined;
-  const activeStatuses = new Set(["queued", "dispatching", "running", "pending"]);
   return [...tasks]
     .reverse()
-    .find((task) => task.workKey === workKey && (!task.status || activeStatuses.has(String(task.status).toLowerCase())));
+    .find((task) => task.workKey === workKey && isActiveTaskSummary(task));
 }
 
 function normalizeBoard(board = {}) {
@@ -591,6 +604,10 @@ function projectTaskSummary(task, events) {
     completedAt: handoff.at,
     handoffEventId: handoff.id,
   });
+}
+
+function isActiveTaskSummary(task = {}) {
+  return !task.status || ACTIVE_TASK_STATUSES.has(String(task.status).toLowerCase());
 }
 
 function taskMatchesHandoff(task, event, events) {
@@ -682,6 +699,11 @@ function formatScoutClaimCommand(suggestion = {}) {
   return `/peer goal claim ${shellQuote(suggestion.goalId)} ${shellQuote(suggestion.summary)} --mode read${lane} --key ${shellQuote(suggestion.workKey)}${paths}`;
 }
 
+function formatScoutResolveCommand(suggestion = {}) {
+  if (suggestion.kind !== "open-proposal" || !suggestion.relatedEventId || !String(suggestion.summary || "").startsWith("Resolve fulfilled")) return "";
+  return `/peer goal resolve ${shellQuote(suggestion.goalId)} ${shellQuote(suggestion.relatedEventId)} ${shellQuote("fulfilled lane complete")}`;
+}
+
 function shellQuote(value) {
   const text = String(value || "");
   if (/^[A-Za-z0-9_./:-]+$/.test(text)) return text;
@@ -724,11 +746,13 @@ function proposalLaneWorkCompleted(state, goalId, proposal) {
   return state.events.some((event) => ["finding", "handoff", "note"].includes(event.type) && event.workKey === workKey && String(event.at || "") >= proposalAt);
 }
 
+function shouldSuggestOpenProposalTriage(state, goalId) {
+  const counts = openProposalActionabilityCounts(state, goalId);
+  return counts.unclaimed > 0 || counts.fulfilled > 0;
+}
+
 function formatOpenProposalTriageSummary(state, goalId) {
-  const total = state.openProposals.length;
-  const actionable = state.openProposals.filter((proposal) => proposalLaneActionability(state, goalId, proposal) === "unclaimed").length;
-  const owned = state.openProposals.filter((proposal) => proposalLaneActionability(state, goalId, proposal) === "owned").length;
-  const fulfilled = state.openProposals.filter((proposal) => proposalLaneActionability(state, goalId, proposal) === "fulfilled").length;
+  const { total, unclaimed: actionable, owned, fulfilled } = openProposalActionabilityCounts(state, goalId);
   const detail = [];
   if (actionable !== total) detail.push(`${actionable} unclaimed actionable`);
   if (owned) detail.push(`${owned} active-owned`);
@@ -737,11 +761,17 @@ function formatOpenProposalTriageSummary(state, goalId) {
   return `Triage ${total} open proposal${total === 1 ? "" : "s"}${suffix}; claim one, resolve fulfilled work, or defer obsolete/ambiguous items.`;
 }
 
+function openProposalActionabilityCounts(state, goalId) {
+  const counts = { total: state.openProposals.length, unclaimed: 0, owned: 0, fulfilled: 0 };
+  for (const proposal of state.openProposals) counts[proposalLaneActionability(state, goalId, proposal)] += 1;
+  return counts;
+}
+
 function proposalLaneActionability(state, goalId, proposal) {
   const lane = normalizeLaneName(proposal?.lane);
   const workKey = proposalLaneWorkKey(goalId, lane, proposal);
-  if (workKey && state.activeClaims.some((claim) => claim.workKey === workKey)) return "owned";
   if (proposalLaneWorkCompleted(state, goalId, proposal)) return "fulfilled";
+  if (workKey && state.activeClaims.some((claim) => claim.workKey === workKey)) return "owned";
   return "unclaimed";
 }
 
