@@ -150,6 +150,8 @@ export function formatPeerHelp() {
     "- `/peer send <peer> <prompt> [--no-await] [--intent ask] [--goal <goal-id>] [--claim <path[,path]>] [--key <work-key>] [--duplicate-policy reuse|error|allow-parallel]` — send a prompt-first peer message",
     "- `/peer progress <summary> [--status running] [--phase <name>]` — send a structured checkpoint from an inbound long-running peer task",
     "- `/peer hive start <objective> [--constraint <a,b>] [--path <a,b>] [--lane research,review,implementation]` — create a goal, seed read-only self-selection proposals, and print scout commands without dispatching peers",
+    "- `/peer hive run <objective> --duration <5h|30m|300s> [--peer <id[,id]>] [--interval-ms <ms>] [--lane research,review,implementation]` — start a bounded closed-loop supervisor that dispatches read-only peer lanes until duration expires",
+    "- `/peer hive status|stop <goal-id>` — inspect or stop an in-process hive run supervisor",
     "- `/peer goals|ls`, `/peer current [goal-id]`, `/peer scout [goal-id]`, `/peer dashboard [goal-id]`, `/peer fanout`, `/peer propose`, `/peer take|claim`, `/peer complete|done`, `/peer objection|block`, `/peer unblock`, `/peer ping`, `/peer drop`, `/peer pass|fail` — short goal-board aliases",
     "- `/peer goal create <objective> [--constraint <a,b>]` — start a flat shared goal board",
     "- `/peer goal list|show [goal-id]` — inspect peer goals, active claims, blockers, proposals, and votes",
@@ -180,9 +182,16 @@ function parsePeerHiveCommand(parsed, flags, positionals) {
   const action = positionals[0] || "start";
   const rest = positionals.slice(1);
   const withAction = { ...parsed, hiveAction: action };
-  if (action !== "start") return { ...withAction, error: `Unknown /peer ${parsed.subcommand} action '${action}'` };
+  if (!["start", "run", "status", "stop"].includes(action)) return { ...withAction, error: `Unknown /peer ${parsed.subcommand} action '${action}'` };
+  if (["status", "stop"].includes(action)) {
+    const goalId = rest[0];
+    if (!goalId) return { ...withAction, error: `/peer ${parsed.subcommand} ${action} requires <goal-id>` };
+    return { ...withAction, goalId };
+  }
   const objective = rest.join(" ").trim();
-  if (!objective) return { ...withAction, error: `/peer ${parsed.subcommand} start requires <objective>` };
+  if (!objective) return { ...withAction, error: `/peer ${parsed.subcommand} ${action} requires <objective>` };
+  const durationMs = durationFlag(flags.duration || flags.for || flags.timebox);
+  if (action === "run" && !durationMs) return { ...withAction, error: `/peer ${parsed.subcommand} run requires --duration <5h|30m|300s>` };
   return {
     ...withAction,
     objective,
@@ -190,9 +199,27 @@ function parsePeerHiveCommand(parsed, flags, positionals) {
     paths: listFlag(flags.path || flags.paths),
     lanes: listFlag(flags.lane || flags.lanes),
     proposals: listFlag(flags.proposal || flags.proposals),
-    send: flagEnabled(flags.send),
+    peers: listFlag(flags.peer || flags.peers),
+    durationMs,
+    intervalMs: positiveIntegerFlag(flags.intervalMs) || positiveIntegerFlag(flags.interval),
+    awaitResponse: flagEnabled(flags.await),
+    send: action === "run" || flagEnabled(flags.send),
     write: flagEnabled(flags.write),
   };
+}
+
+function durationFlag(value) {
+  if (Array.isArray(value)) return durationFlag(value.at(-1));
+  if (value === undefined || value === true) return undefined;
+  const text = String(value).trim().toLowerCase();
+  const match = text.match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/);
+  if (!match) return undefined;
+  const number = Number(match[1]);
+  if (!Number.isFinite(number) || number <= 0) return undefined;
+  const unit = match[2];
+  const factor = unit === "d" ? 86_400_000 : unit === "h" ? 3_600_000 : unit === "m" ? 60_000 : unit === "s" ? 1_000 : 1;
+  const ms = Math.round(number * factor);
+  return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined;
 }
 
 function parsePeerGoalCommand(parsed, flags, positionals) {

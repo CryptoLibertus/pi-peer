@@ -146,8 +146,8 @@ export function derivePeerIdleActivation(board, options = {}) {
   const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   for (const suggestion of suggestions) {
     if (!allowedKinds.has(suggestion.kind)) continue;
-    if (localPeerHasActiveGoalWork(board, suggestion.goalId, options.localPeerId)) continue;
     const activation = normalizeActivation(suggestion, options.localPeerId, options);
+    if (localPeerHasActiveGoalWork(board, suggestion.goalId, options.localPeerId, activation)) continue;
     if (!activation || !activationFitsPeer(activation, options)) continue;
     if (isActivationCoolingDown(options.state, activation, config, nowMs)) continue;
     return activation;
@@ -173,7 +173,7 @@ export function buildPeerIdleActivationPrompt(activation, options = {}) {
   const suggestedClaim = buildSuggestedReadClaim(activation);
   const rationale = activation.rationale ? `\nRationale: ${activation.rationale}` : "";
   const fit = activation.personaFit?.matched?.length ? `\nPersona fit: matched ${activation.personaFit.matched.join(", ")}` : "";
-  return `[Pi peer idle watcher]\nYou are local peer '${peerId}' and Pi is idle. A proactive goal-board scout suggestion is available.\n\nGoal: ${activation.goalId}\nSuggestion: ${activation.kind} (${activation.priority}) — ${activation.summary}${lane}${workKey}${rationale}${fit}${paths}${suggestedClaim}\n\nInstructions:\n- First inspect current state with peer_get id '${activation.goalId}'.\n- If useful, take one small safe action that fits the recommended lane: claim a read-only lane with the work key above, post a proposal/finding/vote, or claim write work only when you intend to edit and can name the paths.\n- If the suggested claim fails as duplicate, inspect the board and stop with a brief handoff instead of starting parallel work.\n- Do not duplicate active claims, work keys, or proposals. If the board is no longer actionable, say so briefly and stop.\n- For write work, respect goal-board claims and end with the required peer handoff sections.\n- Keep the response concise.`;
+  return `[Pi peer idle watcher]\nYou are local peer '${peerId}' and Pi is idle. A proactive goal-board scout suggestion is available.\n\nGoal: ${activation.goalId}\nSuggestion: ${activation.kind} (${activation.priority}) — ${activation.summary}${lane}${workKey}${rationale}${fit}${paths}${suggestedClaim}\n\nInstructions:\n- First inspect current state with peer_get id '${activation.goalId}'.\n- If useful, take one small safe action that fits the recommended lane: claim a read-only lane with the work key above, post a proposal/finding/vote, or claim write work only when you intend to edit and can name the paths.\n- If you claim read-only work, post concrete goal-board evidence (finding, handoff, or note) and release the claim before your final response, unless you are blocked and say why.\n- If the suggested claim fails as duplicate, inspect the board and stop with a brief handoff instead of starting parallel work.\n- Do not duplicate active claims, work keys, or proposals. If the board is no longer actionable, say so briefly and stop.\n- For write work, respect goal-board claims and end with the required peer handoff sections.\n- Keep the response concise.`;
 }
 
 function buildSuggestedReadClaim(activation = {}) {
@@ -234,16 +234,25 @@ function activationFitsPeer(activation = {}, options = {}) {
   if (activation.priority === "P0" || !preferred.length) return true;
   const fit = activation.personaFit || peerPersonaFit(activation, options);
   if (!fit.hasProfile) return true;
-  return fit.matched.length > 0;
+  if (fit.matched.length > 0) return true;
+  const terms = peerProfileTerms(options);
+  const workerFallback = options.config?.workerFallback !== false;
+  return workerFallback && activation.kind !== "next-step" && activation.claimMode === "read" && terms.includes("worker") && ["P1", "P2"].includes(activation.priority || "P2");
 }
 
-function localPeerHasActiveGoalWork(board = {}, goalId, localPeerId) {
+function localPeerHasActiveGoalWork(board = {}, goalId, localPeerId, activation = {}) {
   const peerId = cleanString(localPeerId);
   if (!peerId || !goalId) return false;
   const goal = board?.goals?.[goalId];
   if (!goal) return false;
   const state = deriveGoalState(goal);
-  return state.activeClaims.some((claim) => claim.peerId === peerId);
+  return state.activeClaims.some((claim) => {
+    if (claim.peerId !== peerId) return false;
+    if (claim.mode === "write") return true;
+    if (activation.workKey && claim.workKey === activation.workKey) return true;
+    if (!activation.workKey && activation.recommendedLane && claim.lane === activation.recommendedLane) return true;
+    return false;
+  });
 }
 
 function peerPersonaFit(suggestion = {}, options = {}) {

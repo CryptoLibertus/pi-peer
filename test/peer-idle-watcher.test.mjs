@@ -134,6 +134,8 @@ test("idle activation prompt tells peer to inspect state and avoid duplicate uns
   assert.match(text, /--lane research/);
   assert.match(text, /--key 'goal_123\|research\|no-active-work\|read\|src'/);
   assert.match(text, /claim write work only when you intend to edit/);
+  assert.match(text, /post concrete goal-board evidence/);
+  assert.match(text, /release the claim before your final response/);
   assert.match(text, /If the suggested claim fails as duplicate/);
 });
 
@@ -164,8 +166,17 @@ test("derivePeerIdleActivation uses persona fit when suggestions prefer roles", 
     localPeerId: "worker-a",
     localRole: "worker",
     nowMs: 1_000,
-    config: { cooldownMs: 10_000 },
+    config: { cooldownMs: 10_000, workerFallback: false },
   }), undefined);
+
+  const fallbackWorker = derivePeerIdleActivation(proposalBoard, {
+    localPeerId: "worker-a",
+    localRole: "worker",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(fallbackWorker.kind, "open-proposal");
+  assert.equal(fallbackWorker.recommendedLane, "coordination");
 
   assert.equal(derivePeerIdleActivation(proposalBoard, {
     localPeerId: "generic-peer",
@@ -182,7 +193,7 @@ test("derivePeerIdleActivation uses persona fit when suggestions prefer roles", 
   assert.equal(worker.personaFit.matched.includes("worker"), true);
 });
 
-test("derivePeerIdleActivation skips same-goal scout work when the local peer already has an active claim", () => {
+test("derivePeerIdleActivation only suppresses duplicate local work keys or local write claims", () => {
   const busyBoard = {
     goals: {
       goal_busy: {
@@ -198,7 +209,26 @@ test("derivePeerIdleActivation skips same-goal scout work when the local peer al
     },
   };
 
-  assert.equal(derivePeerIdleActivation(busyBoard, {
+  const nextLane = derivePeerIdleActivation(busyBoard, {
+    localPeerId: "worker-a",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(nextLane.goalId, "goal_busy");
+  assert.equal(nextLane.workKey, "goal_busy|research|intent|read");
+
+  const duplicateClaimBoard = {
+    goals: {
+      goal_busy: {
+        ...busyBoard.goals.goal_busy,
+        events: [
+          busyBoard.goals.goal_busy.events[0],
+          { id: "evt_claim", type: "claim", peerId: "worker-a", summary: "Already researching", mode: "read", lane: "research", workKey: "goal_busy|research|intent|read", staleAfterMs: 100_000_000_000, at: "2026-01-01T00:00:00.000Z" },
+        ],
+      },
+    },
+  };
+  assert.equal(derivePeerIdleActivation(duplicateClaimBoard, {
     localPeerId: "worker-a",
     nowMs: 1_000,
     config: { cooldownMs: 10_000 },

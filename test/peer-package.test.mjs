@@ -14,7 +14,8 @@ test("package publishes bundled skills", () => {
 test("publish npm skill has required frontmatter and safety gates", () => {
   assert.match(publishSkill, /^---\nname: pi-peer-publish\n/m);
   assert.match(publishSkill, /^description: .+@cryptolibertus\/pi-peer.+npm/m);
-  assert.match(publishSkill, /Stop before `npm publish` unless the user has explicitly asked to publish now/);
+  assert.match(publishSkill, /Always stop before `npm publish`/);
+  assert.match(publishSkill, /Never run the final publish command from the agent/);
   assert.match(publishSkill, /npm publish --access public/);
   assert.match(publishSkill, /npm view @cryptolibertus\/pi-peer version/);
 });

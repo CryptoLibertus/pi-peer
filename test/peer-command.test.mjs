@@ -52,8 +52,27 @@ test("parses hive and swarm start as safe self-selection goal starters", () => {
   assert.equal(swarm.write, true);
 });
 
-test("hive start requires an objective", () => {
-  assert.match(parsePeerCommand("hive start").error, /requires <objective>/);
+test("parses hive run as a bounded closed-loop supervisor", () => {
+  const parsed = parsePeerCommand("hive run Research swarm loops --duration 5h --peer worker2,worker3 --interval-ms 60000 --lane research,review --await");
+  assert.equal(parsed.subcommand, "hive");
+  assert.equal(parsed.hiveAction, "run");
+  assert.equal(parsed.objective, "Research swarm loops");
+  assert.equal(parsed.durationMs, 18_000_000);
+  assert.deepEqual(parsed.peers, ["worker2", "worker3"]);
+  assert.equal(parsed.intervalMs, 60_000);
+  assert.deepEqual(parsed.lanes, ["research", "review"]);
+  assert.equal(parsed.send, true);
+  assert.equal(parsed.awaitResponse, true);
+});
+
+test("hive start, run, status, and stop validate required arguments", () => {
+  assert.match(parsePeerCommand("hive start").error, /start requires <objective>/);
+  assert.match(parsePeerCommand("hive run Research loops").error, /run requires --duration/);
+  assert.match(parsePeerCommand("hive run Research loops --duration nope").error, /run requires --duration/);
+  assert.match(parsePeerCommand("hive run Research loops --duration 5").error, /run requires --duration/);
+  assert.match(parsePeerCommand("hive status").error, /status requires <goal-id>/);
+  assert.equal(parsePeerCommand("hive status goal_123").goalId, "goal_123");
+  assert.equal(parsePeerCommand("swarm stop goal_123").hiveAction, "stop");
   assert.match(parsePeerCommand("swarm review something").error, /Unknown \/peer swarm action 'review'/);
 });
 
