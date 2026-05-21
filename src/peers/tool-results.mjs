@@ -120,6 +120,10 @@ export function parsePeerHandoffEvidence(text, options = {}) {
   const verificationText = sections.verification || "";
   const blockersText = sections.blockersRisks || "";
   const safeText = sections.safeForReview || "";
+  const citationsText = sections.citations || "";
+  const factChecksText = sections.factChecks || "";
+  const limitationsText = sections.limitations || "";
+  const confidenceText = sections.confidence || "";
   const present = Object.values(sections).some((value) => typeof value === "string" && value.trim());
   const evidence = normalizePeerHandoffEvidence({
     present,
@@ -128,7 +132,11 @@ export function parsePeerHandoffEvidence(text, options = {}) {
     verification: parseVerificationEvidence(verificationText),
     blockersRisks: parseListish(blockersText),
     safeForReview: parseSafeForReview(safeText),
-    raw: redactEvidence({ status: statusText, filesChanged: filesText, verification: verificationText, blockersRisks: blockersText, safeForReview: safeText }, options),
+    citations: parseListish(citationsText),
+    factChecks: parseListish(factChecksText),
+    limitations: parseListish(limitationsText),
+    confidence: parseConfidence(confidenceText),
+    raw: redactEvidence({ status: statusText, filesChanged: filesText, verification: verificationText, blockersRisks: blockersText, safeForReview: safeText, citations: citationsText, factChecks: factChecksText, limitations: limitationsText, confidence: confidenceText }, options),
   });
   return evidence;
 }
@@ -152,6 +160,10 @@ export function normalizePeerHandoffEvidence(input = {}) {
     verification: normalizeVerificationEvidence(input.verification),
     blockersRisks: normalizeEvidenceList(input.blockersRisks),
     ...(typeof input.safeForReview === "boolean" ? { safeForReview: input.safeForReview } : {}),
+    citations: normalizeEvidenceList(input.citations || input.sources),
+    factChecks: normalizeEvidenceList(input.factChecks || input.factCheck),
+    limitations: normalizeEvidenceList(input.limitations || input.assumptions || input.uncertainty),
+    ...(parseConfidence(input.confidence) !== undefined ? { confidence: parseConfidence(input.confidence) } : {}),
     ...(input.raw && typeof input.raw === "object" ? { raw: input.raw } : {}),
   };
 }
@@ -163,8 +175,12 @@ function extractHandoffSections(text) {
     ["verification", /verification|tests?/i],
     ["blockersRisks", /blockers?\s*\/\s*risks?|blockers?|risks?/i],
     ["safeForReview", /safe\s+for\s+review/i],
+    ["citations", /citations?|sources?|references?/i],
+    ["factChecks", /fact[-\s]?checks?|verified\s+claims?/i],
+    ["limitations", /limitations?|assumptions?|uncertainty|unknowns?/i],
+    ["confidence", /confidence/i],
   ];
-  const headingPattern = /^\s*(?:[-*]\s*)?(status|files\s+changed|files|artifacts|verification|tests?|blockers?\s*\/\s*risks?|blockers?|risks?|safe\s+for\s+review)\s*:\s*(.*)$/gim;
+  const headingPattern = /^\s*(?:[-*]\s*)?(status|files\s+changed|files|artifacts|verification|tests?|blockers?\s*\/\s*risks?|blockers?|risks?|safe\s+for\s+review|citations?|sources?|references?|fact[-\s]?checks?|verified\s+claims?|limitations?|assumptions?|uncertainty|unknowns?|confidence)\s*:\s*(.*)$/gim;
   const matches = [...text.matchAll(headingPattern)].map((match) => ({
     index: match.index || 0,
     length: match[0].length,
@@ -235,6 +251,20 @@ function parseSafeForReview(value) {
   return undefined;
 }
 
+function parseConfidence(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const text = String(value).trim();
+  const match = text.match(/[-+]?\d+(?:\.\d+)?\s*%?/);
+  const raw = (match ? match[0] : text).replace(/\s+/g, "");
+  if (raw.startsWith("-") || raw.startsWith("+")) return undefined;
+  if (raw.endsWith("%")) {
+    const percent = Number(raw.slice(0, -1));
+    return Number.isFinite(percent) && percent >= 0 && percent <= 100 ? percent / 100 : undefined;
+  }
+  const number = Number(raw);
+  return Number.isFinite(number) && number >= 0 && number <= 1 ? number : undefined;
+}
+
 function firstToken(value) {
   return String(value || "").trim().split(/[\s.;,]+/).find(Boolean) || "";
 }
@@ -248,7 +278,12 @@ function hasEvidenceField(input) {
     || (Array.isArray(input.filesChanged) && input.filesChanged.length > 0)
     || (Array.isArray(input.verification) && input.verification.length > 0)
     || (Array.isArray(input.blockersRisks) && input.blockersRisks.length > 0)
-    || typeof input.safeForReview === "boolean";
+    || typeof input.safeForReview === "boolean"
+    || (Array.isArray(input.citations) && input.citations.length > 0)
+    || (Array.isArray(input.sources) && input.sources.length > 0)
+    || (Array.isArray(input.factChecks) && input.factChecks.length > 0)
+    || (Array.isArray(input.limitations) && input.limitations.length > 0)
+    || input.confidence !== undefined;
 }
 
 function redactEvidence(value, options = {}) {

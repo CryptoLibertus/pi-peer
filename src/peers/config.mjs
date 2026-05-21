@@ -161,8 +161,47 @@ function normalizeClosureRequirement(input = {}, options = {}) {
   if (workKey) requirement.workKey = workKey;
   const status = normalizedString(input.status)?.toLowerCase();
   if (status) requirement.status = status;
+  const quality = normalizeClosureQualityRequirement(input.quality || input);
+  if (quality) requirement.quality = quality;
   requirement.min = positiveInteger(input.min) || 1;
   return requirement;
+}
+
+function normalizeClosureQualityRequirement(input = {}) {
+  if (!isPlainObject(input)) return undefined;
+  const citations = isPlainObject(input.citations) ? input.citations : {};
+  const factChecks = isPlainObject(input.factChecks) ? input.factChecks : isPlainObject(input.factCheck) ? input.factCheck : {};
+  const quality = {};
+  const minCitations = positiveInteger(input.minCitations ?? citations.min ?? citations.minPresent ?? citations.required);
+  if (minCitations !== undefined) quality.minCitations = minCitations;
+  const minFactChecks = positiveInteger(input.minFactChecks ?? factChecks.min ?? factChecks.minPresent ?? factChecks.required);
+  if (minFactChecks !== undefined) quality.minFactChecks = minFactChecks;
+  const requireLimitations = booleanOption(input.requireLimitations ?? input.limitations?.required ?? input.requireAssumptions ?? input.requireUncertainty);
+  if (requireLimitations !== undefined) quality.requireLimitations = requireLimitations;
+  const minConfidence = normalizedRatio(input.minConfidence ?? input.confidence?.min);
+  if (minConfidence !== undefined) quality.minConfidence = minConfidence;
+  return Object.keys(quality).length ? quality : undefined;
+}
+
+function booleanOption(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+  }
+  return undefined;
+}
+
+function normalizedRatio(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const text = String(value).trim();
+  if (text.endsWith("%")) {
+    const percent = Number(text.slice(0, -1));
+    return Number.isFinite(percent) && percent >= 0 && percent <= 100 ? percent / 100 : undefined;
+  }
+  const number = Number(text);
+  return Number.isFinite(number) && number >= 0 && number <= 1 ? number : undefined;
 }
 
 function normalizeStringList(value) {

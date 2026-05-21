@@ -355,6 +355,89 @@ test("closure policy can be supplied through goal metadata", async (t) => {
   assert.equal(state.readyToClose, true);
 });
 
+test("closure policy can require citation and fact-check quality evidence", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-quality-policy-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, {
+    objective: "research quality gated goal",
+    peerId: "planner",
+    closurePolicy: {
+      minPassingVotes: 1,
+      requiredEvidence: [
+        { type: "finding", lane: "research", minCitations: 2, minFactChecks: 1, requireLimitations: true, minConfidence: 0.7 },
+      ],
+    },
+  });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "structure looks good" });
+  await appendPeerGoalEvent(root, created.id, {
+    type: "finding",
+    peerId: "researcher-a",
+    lane: "research",
+    summary: "Insufficient quality evidence",
+    metadata: { quality: { citations: ["README.md"], factChecks: [], limitations: ["repo-only"], confidence: 0.8 } },
+  });
+
+  let state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.readyToClose, false);
+  assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /quality\(citations>=2, factChecks>=1, limitations required, confidence>=0\.7\)/);
+  assert.throws(() => validateGoalReadyToClose(state), /unmet closure policy requirements/);
+
+  await appendPeerGoalEvent(root, created.id, {
+    type: "finding",
+    peerId: "researcher-bad-confidence",
+    lane: "research",
+    summary: "Otherwise sufficient quality evidence with invalid confidence",
+    metadata: { quality: { citations: ["README.md", "test/peer-goal-board.test.mjs"], factChecks: ["closure gate claim verified against tests"], limitations: ["no external web sources checked"], confidence: 2 } },
+  });
+
+  state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.readyToClose, false);
+
+  await appendPeerGoalEvent(root, created.id, {
+    type: "finding",
+    peerId: "researcher-b",
+    lane: "research",
+    summary: "Source-grounded research finding with checked claims",
+    metadata: { quality: { citations: ["README.md", "test/peer-goal-board.test.mjs"], factChecks: ["closure gate claim verified against tests"], limitations: ["no external web sources checked"], confidence: 0.82 } },
+  });
+
+  state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.closurePolicyStatus.satisfied, true);
+  assert.equal(state.readyToClose, true);
+  assert.doesNotThrow(() => validateGoalReadyToClose(state));
+});
+
+test("closure quality policy can use parsed handoff evidence metadata", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-handoff-quality-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, {
+    objective: "docs handoff quality gated goal",
+    peerId: "planner",
+    closurePolicy: {
+      minPassingVotes: 1,
+      requiredEvidence: [
+        { type: "handoff", lane: "documentation", status: "done", quality: { minCitations: 1, minFactChecks: 1, requireLimitations: true } },
+      ],
+    },
+  });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "doc ready if quality evidence exists" });
+  await appendPeerGoalEvent(root, created.id, {
+    type: "handoff",
+    peerId: "doc-a",
+    lane: "documentation",
+    status: "done",
+    summary: "Generated doc handoff",
+    metadata: { handoffEvidence: { citations: ["README.md"], factChecks: ["template sections verified"], limitations: ["repo-local only"] } },
+  });
+
+  const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.readyToClose, true);
+});
+
 test("failed votes and active work still block closure even when closure policy is satisfied", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-policy-blockers-test-"));
   t.after(async () => {

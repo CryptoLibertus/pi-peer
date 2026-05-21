@@ -193,6 +193,8 @@ export async function completePeerGoalTask(root, goalId, input = {}) {
       claimEventId: cleanText(input.claimEventId),
       responseStatus: cleanText(input.responseStatus),
       workKey,
+      ...(plainObject(input.handoffEvidence) ? { handoffEvidence: input.handoffEvidence } : {}),
+      ...(plainObject(input.metadata) ? input.metadata : {}),
     }),
   });
   if (!input.claimEventId) return { goalId: id, goal: handoff.goal, handoffEvent: handoff.event };
@@ -494,6 +496,7 @@ function eventMatchesClosureRequirement(event = {}, requirement = {}, options = 
   if (requirement.peerId && event.peerId !== requirement.peerId) return false;
   if (requirement.workKey && normalizeWorkKey(event.workKey) !== requirement.workKey) return false;
   if (requirement.status && String(event.status || "").toLowerCase() !== requirement.status) return false;
+  if (requirement.quality && !eventMatchesQualityRequirement(event, requirement.quality)) return false;
   const verdicts = Array.isArray(requirement.verdicts) && requirement.verdicts.length ? requirement.verdicts : options.defaultVerdicts;
   if (verdicts && !verdicts.includes(String(event.verdict || "").toLowerCase())) return false;
   return true;
@@ -508,7 +511,74 @@ function describeClosureRequirement(requirement = {}, fallback = "requirement") 
   if (requirement.peerId) parts.push(`peer=${requirement.peerId}`);
   if (requirement.workKey) parts.push(`workKey=${requirement.workKey}`);
   if (requirement.status) parts.push(`status=${requirement.status}`);
+  if (requirement.quality) parts.push(describeQualityRequirement(requirement.quality));
   return parts.join(" ");
+}
+
+function eventMatchesQualityRequirement(event = {}, quality = {}) {
+  const evidence = extractEventQualityEvidence(event);
+  if (Number.isInteger(quality.minCitations) && evidence.citationCount < quality.minCitations) return false;
+  if (Number.isInteger(quality.minFactChecks) && evidence.factCheckCount < quality.minFactChecks) return false;
+  if (quality.requireLimitations === true && evidence.limitationCount < 1) return false;
+  if (quality.minConfidence !== undefined && (evidence.confidence === undefined || evidence.confidence < quality.minConfidence)) return false;
+  return true;
+}
+
+function extractEventQualityEvidence(event = {}) {
+  const metadata = plainObject(event.metadata) ? event.metadata : {};
+  const quality = plainObject(metadata.quality) ? metadata.quality : {};
+  const handoffEvidence = plainObject(metadata.handoffEvidence) ? metadata.handoffEvidence : {};
+  const citations = qualityList(quality.citations, quality.sources, metadata.citations, metadata.sources, handoffEvidence.citations, handoffEvidence.sources);
+  const factChecks = qualityList(quality.factChecks, quality.factCheck, metadata.factChecks, metadata.factCheck, handoffEvidence.factChecks, handoffEvidence.factCheck);
+  const limitations = qualityList(quality.limitations, quality.assumptions, quality.uncertainty, metadata.limitations, metadata.assumptions, handoffEvidence.limitations, handoffEvidence.assumptions);
+  return {
+    citationCount: qualityCount(quality.citationCount, quality.citations, quality.sources, metadata.citationCount, metadata.citations, metadata.sources, handoffEvidence.citationCount, handoffEvidence.citations, handoffEvidence.sources, citations.length),
+    factCheckCount: qualityCount(quality.factCheckCount, quality.factChecks, quality.factCheck, metadata.factCheckCount, metadata.factChecks, metadata.factCheck, handoffEvidence.factCheckCount, handoffEvidence.factChecks, handoffEvidence.factCheck, factChecks.length),
+    limitationCount: qualityCount(quality.limitationCount, quality.limitations, quality.assumptions, metadata.limitationCount, metadata.limitations, handoffEvidence.limitationCount, handoffEvidence.limitations, limitations.length),
+    confidence: firstConfidence(event.confidence, quality.confidence, metadata.confidence, handoffEvidence.confidence),
+  };
+}
+
+function qualityList(...values) {
+  return [...new Set(values.flatMap((value) => {
+    if (Array.isArray(value)) return value.map(cleanText).filter(Boolean);
+    if (typeof value === "string") return value.split(/\n+|[,;]+/).map(cleanText).filter(Boolean);
+    if (plainObject(value)) return qualityList(value.items, value.sources, value.claims, value.checked, value.presentItems);
+    return [];
+  }))];
+}
+
+function qualityCount(...values) {
+  for (const value of values) {
+    if (Number.isFinite(Number(value))) return Math.max(0, Math.floor(Number(value)));
+    if (Array.isArray(value)) return qualityList(value).length;
+    if (typeof value === "string" && value.trim()) return qualityList(value).length;
+    if (plainObject(value)) {
+      for (const key of ["present", "count", "checked", "total"]) {
+        if (Number.isFinite(Number(value[key]))) return Math.max(0, Math.floor(Number(value[key])));
+      }
+      const nested = qualityList(value.items, value.sources, value.claims, value.presentItems);
+      if (nested.length) return nested.length;
+    }
+  }
+  return 0;
+}
+
+function firstConfidence(...values) {
+  for (const value of values) {
+    const confidence = confidenceValue(value);
+    if (confidence !== undefined) return confidence;
+  }
+  return undefined;
+}
+
+function describeQualityRequirement(quality = {}) {
+  const parts = [];
+  if (Number.isInteger(quality.minCitations)) parts.push(`citations>=${quality.minCitations}`);
+  if (Number.isInteger(quality.minFactChecks)) parts.push(`factChecks>=${quality.minFactChecks}`);
+  if (quality.requireLimitations === true) parts.push("limitations required");
+  if (quality.minConfidence !== undefined) parts.push(`confidence>=${quality.minConfidence}`);
+  return parts.length ? `quality(${parts.join(", ")})` : "quality";
 }
 
 function validateRelease(goal, event) {
@@ -983,8 +1053,13 @@ function positiveNumber(value) {
 
 function confidenceValue(value) {
   if (value === undefined || value === null || value === "") return undefined;
-  const number = Number(value);
-  return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : undefined;
+  const text = String(value).trim();
+  if (text.endsWith("%")) {
+    const percent = Number(text.slice(0, -1));
+    return Number.isFinite(percent) && percent >= 0 && percent <= 100 ? percent / 100 : undefined;
+  }
+  const number = Number(text);
+  return Number.isFinite(number) && number >= 0 && number <= 1 ? number : undefined;
 }
 
 function addMsIso(value, ms) {

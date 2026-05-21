@@ -500,6 +500,7 @@ async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
       workKey: parsed.workKey,
       lane: parsed.workLane,
       duplicatePolicy: parsed.duplicatePolicy,
+      metadata: parsed.metadata,
     });
     return `Posted ${result.event.type} ${result.event.id} to ${result.goal.id}.\n\n${formatPeerGoal(result.goal)}`;
   }
@@ -838,6 +839,7 @@ function trackPeerSendGoalCompletion(root: string | undefined, goalLink: any, ha
       status: response?.status === "OK" || response?.status === "OK_WITH_NOTES" ? "done" : "blocked",
       responseStatus: response?.status,
       summary: summarizePeerGoalResponse(response),
+      handoffEvidence: peerResponseHandoffEvidence(response),
       releaseSummary: `Peer message ${handle.messageId} completed with ${response?.status || "unknown"}`,
       workKey: goalLink.workKey,
       mode: goalLink.claimEvent?.mode,
@@ -891,6 +893,7 @@ function withPeerGoalInstructions(prompt: string, goalLink: any) {
     ...(goalLink.claimEvent?.id ? [`- claimEventId: ${goalLink.claimEvent.id}`, `- If this takes a while, send heartbeats with /peer goal heartbeat ${goalLink.goalId} ${goalLink.claimEvent.id} "still working".`] : []),
     `- Before starting, inspect the goal board and stop if another active claim already owns the same work key.`,
     `- End with a concise handoff: status, files changed, verification, blockers.`,
+    `- For research/documentation work, include optional quality headings when relevant or requested: Citations/Sources, Fact-checks, Limitations, Confidence.`,
     ``,
     `Original prompt:`,
     prompt,
@@ -936,7 +939,13 @@ function summarizePeerGoalResponse(response: any) {
       : "missing";
     const blockers = evidence.blockersRisks?.length ? evidence.blockersRisks.join(", ") : "missing";
     const safe = typeof evidence.safeForReview === "boolean" ? (evidence.safeForReview ? "yes" : "no") : "missing";
-    return `${status}: Status ${evidence.status || "unknown"}; files changed: ${files}; verification: ${verification}; blockers/risks: ${blockers}; safe for review: ${safe}`.replace(/\s+/g, " ").slice(0, 500);
+    const quality = [
+      evidence.citations?.length ? `${evidence.citations.length} citation(s)` : "",
+      evidence.factChecks?.length ? `${evidence.factChecks.length} fact-check(s)` : "",
+      evidence.limitations?.length ? `${evidence.limitations.length} limitation(s)` : "",
+      evidence.confidence !== undefined ? `confidence ${evidence.confidence}` : "",
+    ].filter(Boolean).join("; ") || "not provided";
+    return `${status}: Status ${evidence.status || "unknown"}; files changed: ${files}; verification: ${verification}; blockers/risks: ${blockers}; safe for review: ${safe}; quality: ${quality}`.replace(/\s+/g, " ").slice(0, 500);
   }
   const text = typeof response?.summary === "string" && response.summary.trim()
     ? response.summary.trim()

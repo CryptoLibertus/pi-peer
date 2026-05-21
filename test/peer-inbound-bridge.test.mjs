@@ -166,6 +166,51 @@ Safe for review: yes`;
   assert.equal(response.handoffEvidence.safeForReview, true);
 });
 
+test("inbound bridge captures optional research quality evidence", async () => {
+  const sent = [];
+  const bridge = createInboundPromptBridge({
+    pi: { sendMessage: (message, options) => sent.push({ message, options }) },
+    responseTimeoutMs: 60_000,
+  });
+
+  const responsePromise = bridge.handleEnvelope(envelope("msg_quality"));
+  const finalText = `Status: done
+Files changed: none
+Verification: not run with reason: research synthesis only
+Blockers/risks: none
+Safe for review: yes
+Citations: README.md; test/peer-goal-board.test.mjs
+Fact-checks: claim "closure gates inspect evidence" verified against goal-board tests
+Limitations: repo-local evidence only
+Confidence: 82%`;
+  bridge.handleAgentEnd({ finalAssistantText: finalText });
+  const response = await responsePromise;
+
+  assert.equal(response.handoffEvidence.complete, true);
+  assert.deepEqual(response.handoffEvidence.citations, ["README.md", "test/peer-goal-board.test.mjs"]);
+  assert.deepEqual(response.handoffEvidence.factChecks, ["claim \"closure gates inspect evidence\" verified against goal-board tests"]);
+  assert.deepEqual(response.handoffEvidence.limitations, ["repo-local evidence only"]);
+  assert.equal(response.handoffEvidence.confidence, 0.82);
+
+  const invalidConfidence = createInboundPromptBridge({
+    pi: { sendMessage: () => {} },
+    responseTimeoutMs: 60_000,
+  });
+  const invalidPromise = invalidConfidence.handleEnvelope(envelope("msg_invalid_quality"));
+  invalidConfidence.handleAgentEnd({ finalAssistantText: finalText.replace("Confidence: 82%", "Confidence: 150%") });
+  const invalidResponse = await invalidPromise;
+  assert.equal(invalidResponse.handoffEvidence.confidence, undefined);
+
+  const negativeConfidence = createInboundPromptBridge({
+    pi: { sendMessage: () => {} },
+    responseTimeoutMs: 60_000,
+  });
+  const negativePromise = negativeConfidence.handleEnvelope(envelope("msg_negative_quality"));
+  negativeConfidence.handleAgentEnd({ finalAssistantText: finalText.replace("Confidence: 82%", "Confidence: -0.1") });
+  const negativeResponse = await negativePromise;
+  assert.equal(negativeResponse.handoffEvidence.confidence, undefined);
+});
+
 test("inbound bridge uses bounded priority ordering for queued work", async () => {
   const sent = [];
   const bridge = createInboundPromptBridge({

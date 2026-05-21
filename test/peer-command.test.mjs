@@ -66,6 +66,24 @@ test("parses proposal aliases as proposal events", () => {
   }
 });
 
+test("parses quality evidence flags on goal evidence events", () => {
+  const parsed = parsePeerCommand("goal finding goal_123 Synthesis ready --lane research --citation README.md --citation test/peer-goal-board.test.mjs --fact-check 'claim verified' --limitation repo-only --confidence 82%");
+  assert.equal(parsed.subcommand, "goal");
+  assert.equal(parsed.eventType, "finding");
+  assert.equal(parsed.workLane, "research");
+  assert.deepEqual(parsed.metadata, {
+    quality: {
+      citations: ["README.md", "test/peer-goal-board.test.mjs"],
+      factChecks: ["claim verified"],
+      limitations: ["repo-only"],
+      confidence: 0.82,
+    },
+  });
+
+  const invalid = parsePeerCommand("goal finding goal_123 Synthesis ready --citation README.md --confidence 2");
+  assert.deepEqual(invalid.metadata, { quality: { citations: ["README.md"] } });
+});
+
 test("proposal requires a goal id and summary", () => {
   assert.match(parsePeerCommand("goal propose").error, /requires <goal-id> <summary>/);
   assert.match(parsePeerCommand("proposal goal_123").error, /requires <goal-id> <summary>/);

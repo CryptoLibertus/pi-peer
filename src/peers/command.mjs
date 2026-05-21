@@ -230,7 +230,7 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
     const summary = rest.slice(1).join(" ").trim();
     if (!goalId || !summary) return { ...withAction, error: `/peer goal ${action} requires <goal-id> <summary>` };
     const eventType = action === "propose" ? "proposal" : ["item", "work-item"].includes(action) ? "work-item" : action;
-    return { ...withAction, goalId, eventType, summary, paths: listFlag(flags.path || flags.paths), severity: stringFlag(flags.severity, undefined), taskId: stringFlag(flags.taskId, undefined), itemId: stringFlag(flags.itemId || flags.item || flags.id, undefined), parentId: stringFlag(flags.parentId || flags.parent, undefined), dependsOn: listFlag(flags.dependsOn || flags.depends || flags.dependency || flags.dependencies), status: stringFlag(flags.status, undefined), workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined) };
+    return { ...withAction, goalId, eventType, summary, paths: listFlag(flags.path || flags.paths), severity: stringFlag(flags.severity, undefined), taskId: stringFlag(flags.taskId, undefined), itemId: stringFlag(flags.itemId || flags.item || flags.id, undefined), parentId: stringFlag(flags.parentId || flags.parent, undefined), dependsOn: listFlag(flags.dependsOn || flags.depends || flags.dependency || flags.dependencies), status: stringFlag(flags.status, undefined), workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined), metadata: qualityMetadataFromFlags(flags) };
   }
   if (action === "claim") {
     if (flagEnabled(flags.write) && flags.mode === undefined) flags.mode = "write";
@@ -293,6 +293,32 @@ function positiveIntegerFlag(value) {
   if (value === undefined || value === true) return undefined;
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : undefined;
+}
+
+function qualityMetadataFromFlags(flags = {}) {
+  const citations = listFlag(flags.citation || flags.citations || flags.source || flags.sources || flags.reference || flags.references);
+  const factChecks = listFlag(flags.factCheck || flags.factChecks || flags.verifiedClaim || flags.verifiedClaims);
+  const limitations = listFlag(flags.limitation || flags.limitations || flags.assumption || flags.assumptions || flags.uncertainty || flags.unknowns);
+  const confidence = ratioFlag(flags.confidence);
+  const quality = {
+    ...(citations.length ? { citations } : {}),
+    ...(factChecks.length ? { factChecks } : {}),
+    ...(limitations.length ? { limitations } : {}),
+    ...(confidence !== undefined ? { confidence } : {}),
+  };
+  return Object.keys(quality).length ? { quality } : undefined;
+}
+
+function ratioFlag(value) {
+  if (Array.isArray(value)) return ratioFlag(value.at(-1));
+  if (value === undefined || value === true) return undefined;
+  const text = String(value).trim();
+  if (text.endsWith("%")) {
+    const percent = Number(text.slice(0, -1));
+    return Number.isFinite(percent) && percent >= 0 && percent <= 100 ? percent / 100 : undefined;
+  }
+  const number = Number(text);
+  return Number.isFinite(number) && number >= 0 && number <= 1 ? number : undefined;
 }
 
 function metadataFromFlags(flags = {}, options = {}) {
