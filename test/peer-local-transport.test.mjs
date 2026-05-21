@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 
 import { createPeerComms, MemoryPeerRegistry } from "../src/peers/comms.mjs";
 import { LocalPeerTransport, createLocalPeerEndpoint, derivePeerProjectScope, discoverLocalPeerEndpoints } from "../src/peers/local-transport.mjs";
+import { createPeerEnvelope } from "../src/peers/protocol.mjs";
 
 async function withTempRoot(t, fn) {
   const root = await mkdtemp(join(tmpdir(), "pi-peer-local-transport-"));
@@ -79,6 +80,71 @@ test("discovery honors advertised projectScope when present", async (t) => {
     const peers = await discoverLocalPeerEndpoints({ discoveryDir, cwd: repo, excludePeerId: "local" });
     assert.deepEqual(peers.map((peer) => peer.peerId), ["scoped"]);
     assert.equal(peers[0].projectScope, scope);
+  });
+});
+
+test("local transport handles cancel signals already aborted before request delivery", async (t) => {
+  await withTempRoot(t, async (root) => {
+    const discoveryDir = join(root, "discovery");
+    const endpoint = createLocalPeerEndpoint({
+      peerId: "worker",
+      cwd: root,
+      discoveryDir,
+      handler: async (_envelope, _descriptor, context) => {
+        context.markActive();
+        return { status: context.cancelled ? "CANCELLED" : "OK", summary: context.cancelReason || "ok" };
+      },
+    });
+    const descriptor = await endpoint.start();
+    t.after(async () => endpoint.stop());
+
+    const envelope = createPeerEnvelope({
+      type: "message.send",
+      source: { peerId: "planner", transport: "coms" },
+      target: { peerId: "worker", transport: "coms" },
+      body: { prompt: "do cancellable work", intent: "task" },
+    });
+    const controller = new AbortController();
+    controller.abort("stop before delivery");
+
+    const response = await new LocalPeerTransport({ discoveryDir, timeoutMs: 1_000 })
+      .send(envelope, descriptor, { cancelSignal: controller.signal });
+
+    assert.equal(response.body.status, "CANCELLED");
+    assert.equal(response.body.summary, "stop before delivery");
+  });
+});
+
+test("authenticated local transport handles cancel signals already aborted before request delivery", async (t) => {
+  await withTempRoot(t, async (root) => {
+    const discoveryDir = join(root, "discovery");
+    const endpoint = createLocalPeerEndpoint({
+      peerId: "worker",
+      cwd: root,
+      discoveryDir,
+      authToken: "shared-secret",
+      handler: async (_envelope, _descriptor, context) => {
+        context.markActive();
+        return { status: context.cancelled ? "CANCELLED" : "OK", summary: context.cancelReason || "ok" };
+      },
+    });
+    const descriptor = await endpoint.start();
+    t.after(async () => endpoint.stop());
+
+    const envelope = createPeerEnvelope({
+      type: "message.send",
+      source: { peerId: "planner", transport: "coms" },
+      target: { peerId: "worker", transport: "coms" },
+      body: { prompt: "do authenticated cancellable work", intent: "task" },
+    });
+    const controller = new AbortController();
+    controller.abort("stop authenticated delivery");
+
+    const response = await new LocalPeerTransport({ discoveryDir, timeoutMs: 1_000 })
+      .send(envelope, { ...descriptor, authToken: "shared-secret" }, { cancelSignal: controller.signal });
+
+    assert.equal(response.body.status, "CANCELLED");
+    assert.equal(response.body.summary, "stop authenticated delivery");
   });
 });
 

@@ -290,17 +290,20 @@ async function sendEnvelopeToEndpoint(envelope, peer, options) {
     let settled = false;
     let buffer = "";
     let timer;
+    let removeCancelListener = () => {};
 
     socket.setEncoding("utf8");
-    socket.once("connect", () => socket.write(`${JSON.stringify(envelope)}\n`));
-    const removeCancelListener = bindCancelSignal(options.cancelSignal, () => {
-      writeLocalControlFrame(socket, "request.cancel", {
-        messageId: envelope.id,
-        conversationId: envelope.conversationId,
-        reason: cancelReason(options.cancelSignal),
+    socket.once("connect", () => socket.write(`${JSON.stringify(envelope)}\n`, () => {
+      if (settled) return;
+      removeCancelListener = bindCancelSignal(options.cancelSignal, () => {
+        writeLocalControlFrame(socket, "request.cancel", {
+          messageId: envelope.id,
+          conversationId: envelope.conversationId,
+          reason: cancelReason(options.cancelSignal),
+        });
+        armTimeout();
       });
-      armTimeout();
-    });
+    }));
     socket.on("data", (chunk) => {
       buffer += chunk;
       if (Buffer.byteLength(buffer, "utf8") > maxMessageBytes) {
@@ -374,15 +377,8 @@ async function sendAuthenticatedEnvelopeToEndpoint(envelope, peer, authToken, op
     let challenge;
     const clientNonce = createLocalAuthNonce();
     let timer;
+    let removeCancelListener = () => {};
 
-    const removeCancelListener = bindCancelSignal(options.cancelSignal, () => {
-      writeLocalControlFrame(socket, "request.cancel", {
-        messageId: envelope.id,
-        conversationId: envelope.conversationId,
-        reason: cancelReason(options.cancelSignal),
-      });
-      armTimeout();
-    });
     socket.setEncoding("utf8");
     socket.once("connect", () => {
       socket.write(`${JSON.stringify(createLocalAuthHelloFrame(peer.peerId, clientNonce))}\n`);
@@ -404,7 +400,17 @@ async function sendAuthenticatedEnvelopeToEndpoint(envelope, peer, authToken, op
           if (!challenge) {
             challenge = parseLocalAuthChallenge(line, peer.peerId, authToken, clientNonce);
             const authFrame = createLocalAuthMessageFrame(envelope, peer.peerId, authToken, challenge.nonce, clientNonce);
-            socket.write(`${JSON.stringify(authFrame)}\n`);
+            socket.write(`${JSON.stringify(authFrame)}\n`, () => {
+              if (settled) return;
+              removeCancelListener = bindCancelSignal(options.cancelSignal, () => {
+                writeLocalControlFrame(socket, "request.cancel", {
+                  messageId: envelope.id,
+                  conversationId: envelope.conversationId,
+                  reason: cancelReason(options.cancelSignal),
+                });
+                armTimeout();
+              });
+            });
             return;
           }
           const response = parseLocalAuthResponseFrame(line, peer.peerId, authToken, challenge.nonce, clientNonce);
@@ -458,6 +464,7 @@ function handleSocket(socket, handler, descriptor, options = {}) {
   socket.setEncoding("utf8");
   let buffer = "";
   let activeContext;
+  let pendingCancelFrame;
   const maxMessageBytes = options.maxMessageBytes || DEFAULT_MAX_MESSAGE_BYTES;
   const authState = options.authToken ? {} : undefined;
   socket.on("data", (chunk) => {
@@ -473,13 +480,20 @@ function handleSocket(socket, handler, descriptor, options = {}) {
       const line = buffer.slice(0, newline);
       buffer = buffer.slice(newline + 1);
       const controlFrame = parseJsonMaybe(line);
-      if (activeContext && isLocalCancelFrame(controlFrame)) {
-        activeContext.cancel(controlFrame);
+      if (isLocalCancelFrame(controlFrame)) {
+        if (activeContext) activeContext.cancel(controlFrame);
+        else pendingCancelFrame = controlFrame;
         continue;
       }
       const operation = handleSocketLine(socket, handler, descriptor, {
         ...options,
-        setActiveContext: (context) => { activeContext = context; },
+        setActiveContext: (context) => {
+          activeContext = context;
+          if (pendingCancelFrame) {
+            context.cancel(pendingCancelFrame);
+            pendingCancelFrame = undefined;
+          }
+        },
         clearActiveContext: (context) => { if (activeContext === context) activeContext = undefined; },
       }, line, authState);
       if (options.trackOperation) options.trackOperation(operation);
