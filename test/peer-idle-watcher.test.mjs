@@ -278,6 +278,39 @@ test("createPeerIdleWatcher only injects when context is idle and no peer messag
   assert.equal(busy.reason, "peer messages pending");
 });
 
+test("idle watcher pauses next task when context judgement requires compaction", async () => {
+  const sent = [];
+  const runtime = {
+    enabled: true,
+    localPeerId: "worker-a",
+    cwd: "/tmp/project",
+    contextBudget: { tokens: 96_000, contextWindow: 100_000 },
+    config: { idleWatcher: { intervalMs: 1_000, cooldownMs: 10_000 } },
+    comms: { listMessages: async () => [] },
+    pendingInboundCount: () => 0,
+  };
+  const watcher = createPeerIdleWatcher({
+    runtime,
+    pi: { sendMessage: (message, options) => sent.push({ message, options }) },
+    activeContext: () => ({ cwd: "/tmp/project", isIdle: () => true, hasPendingMessages: () => false }),
+    loadBoard: async () => openGoalBoard,
+    now: () => 1_000,
+    config: { intervalMs: 1_000, cooldownMs: 10_000 },
+  });
+
+  const result = await watcher.check("test");
+  assert.equal(result.activated, true);
+  assert.equal(result.activation.kind, "context-judgement");
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].message.content, /paused next peer task/);
+  assert.match(sent[0].message.content, /compact_or_delegate/);
+
+  const cooledDown = await watcher.check("test");
+  assert.equal(cooledDown.activated, false);
+  assert.equal(cooledDown.reason, "context judgement cooling down");
+  assert.equal(sent.length, 1);
+});
+
 test("idle watcher counts inbound nudges toward the per-session activation limit", async () => {
   let nudgeCount = 0;
   const runtime = {

@@ -1,4 +1,4 @@
-import { formatPeerContextBudget, normalizePeerContextBudget } from "./context-budget.mjs";
+import { derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement, normalizePeerContextBudget } from "./context-budget.mjs";
 import { deriveGoalState } from "./goal-board.mjs";
 import { redactPeerAuditValue } from "./protocol.mjs";
 
@@ -25,6 +25,7 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
   const localProfile = runtime.summary?.localPeerProfile || runtime.config?.localPeerProfile || endpoint || {};
   const localCapabilities = endpoint?.capabilities || runtime.config?.manifest?.capabilities || runtime.summary?.manifest?.capabilities || {};
   const contextBudget = normalizePeerContextBudget(options.contextBudget || runtime.contextBudget);
+  const contextJudgement = derivePeerContextJudgement(contextBudget);
 
   return {
     enabled,
@@ -36,6 +37,7 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
     localTrust: endpoint?.trust || runtime.config?.manifest?.trust || runtime.summary?.manifest?.trust,
     localCapabilities,
     contextBudget,
+    contextJudgement,
     localRole: safeStatusText(localProfile.role || endpoint?.role),
     localPersona: safeStatusText(localProfile.persona || endpoint?.persona),
     endpointStatus: enabled ? (endpoint ? "listening" : "not listening") : "disabled",
@@ -67,7 +69,8 @@ export function formatPeerStatusLines(status = {}) {
   ];
   if (status.contextBudget?.available) {
     const pressure = status.contextBudget.pressure;
-    lines.push(line("context", pressure === "critical" || pressure === "tight" ? "warning" : pressure === "watch" ? "accent" : "muted", formatPeerContextBudget(status.contextBudget)));
+    const judgement = status.contextJudgement || derivePeerContextJudgement(status.contextBudget);
+    lines.push(line("context", pressure === "critical" || pressure === "tight" ? "warning" : pressure === "watch" ? "accent" : "muted", `${formatPeerContextBudget(status.contextBudget)} · ${formatPeerContextJudgement(judgement)}`));
   }
   for (const task of (status.activeTasks || []).slice(0, 2)) lines.push(line("task", "accent", formatActiveTaskLine(task)));
   const extraTasks = (status.activeTasks || []).length - 2;

@@ -1,3 +1,4 @@
+import { derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement } from "./context-budget.mjs";
 import { deriveGoalState, derivePeerGoalScoutSuggestions, loadPeerGoalBoard } from "./goal-board.mjs";
 
 export const DEFAULT_PEER_IDLE_WATCHER_INTERVAL_MS = 15_000;
@@ -36,6 +37,7 @@ export function createPeerIdleWatcher(options = {}) {
     activationCount: 0,
     lastActivationAtByKey: new Map(),
     lastActivationByGoal: new Map(),
+    lastContextJudgementAt: undefined,
     checking: false,
   };
 
@@ -47,6 +49,11 @@ export function createPeerIdleWatcher(options = {}) {
       const idle = isContextIdle(ctx);
       if (!idle.ok) return { activated: false, reason: idle.reason };
       if (state.activationCount >= config.maxActivationsPerSession) return { activated: false, reason: "activation limit reached" };
+      const contextGate = maybeSendContextJudgement(pi, runtime, ctx, state, config, now(), options.messageType || "pi-peer", reason);
+      if (contextGate) {
+        await refresh(ctx).catch(() => {});
+        return contextGate;
+      }
       if (runtime?.pendingInboundCount?.() > 0) {
         const nudged = runtime?.nudgeInboundIfIdle?.({ reason: "idle-watcher", cooldownMs: Math.min(activationNudgeCooldownMs(config), config.cooldownMs) });
         if (nudged?.ok) {
@@ -110,6 +117,25 @@ export function createPeerIdleWatcher(options = {}) {
     },
     check,
   };
+}
+
+function maybeSendContextJudgement(pi, runtime, ctx, state, config, nowMs, messageType, reason) {
+  const judgement = derivePeerContextJudgement(runtime?.contextBudget);
+  if (judgement.safeForNewTask !== false) return undefined;
+  if (Number.isFinite(state.lastContextJudgementAt) && nowMs - state.lastContextJudgementAt < config.cooldownMs) {
+    return { activated: false, reason: "context judgement cooling down" };
+  }
+  state.lastContextJudgementAt = nowMs;
+  state.activationCount = (state.activationCount || 0) + 1;
+  const budgetLine = formatPeerContextBudget(runtime.contextBudget);
+  const judgementLine = formatPeerContextJudgement(judgement);
+  pi.sendMessage({
+    customType: messageType,
+    content: `Idle watcher paused next peer task (${reason}): context pressure ${judgement.pressure}\n\n[Pi peer context judgement]\n${budgetLine}\n${judgementLine}\n\nInstructions:\n- Do not take a new long-running peer task until context pressure is addressed.\n- Finish a concise handoff if needed.\n- If judgement recommends compacting, ask the local user to run /compact or use an explicit local compaction command; remote peers must not force compaction.\n- If judgement recommends a fresh context, start/delegate with a concise context brief rather than destructively clearing active work.`,
+    display: true,
+    details: { kind: "peer_context_judgement", contextBudget: runtime.contextBudget, contextJudgement: judgement },
+  }, { deliverAs: "followUp", triggerTurn: true });
+  return { activated: true, activation: { kind: "context-judgement", pressure: judgement.pressure, recommendedAction: judgement.recommendedAction } };
 }
 
 export function derivePeerIdleActivation(board, options = {}) {

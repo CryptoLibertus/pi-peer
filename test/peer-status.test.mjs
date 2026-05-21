@@ -27,8 +27,10 @@ test("fanout suggestion is suppressed while peer tasks are active", () => {
 test("peer status includes local context pressure when available", () => {
   const status = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test", contextBudget: { tokens: 95_000, contextWindow: 100_000 } }, { peers: [], messages: [] });
   assert.equal(status.contextBudget.pressure, "critical");
-  assert.match(formatPeerStatusText(status), /context critical/);
-  assert.match(formatPeerStatusText(status), /5\.0k left/);
+  const text = formatPeerStatusText(status);
+  assert.match(text, /context critical/);
+  assert.match(text, /5\.0k left/);
+  assert.match(text, /judgement compact_or_delegate/);
 });
 
 test("goal dashboard groups proposal state and prints safe next actions", () => {

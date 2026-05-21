@@ -5,7 +5,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { installPeerRuntimeLifecycle } from "../../src/peers/extension-lifecycle.mjs";
 import { initPeerConfig } from "../../src/peers/config.mjs";
 import { formatPeerCommandError, formatPeerHelp, formatPeerInitResult, parsePeerCommand } from "../../src/peers/command.mjs";
-import { capturePeerContextBudget, formatPeerContextBudget } from "../../src/peers/context-budget.mjs";
+import { capturePeerContextBudget, derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement } from "../../src/peers/context-budget.mjs";
 import { createPeerRuntime, getPeerRuntimeValue } from "../../src/peers/runtime.mjs";
 import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../../src/peers/goal-board.mjs";
 import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerGoalDashboard, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
@@ -195,10 +195,11 @@ export default function piPeerExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       const runtime = await runtimeFor(pi, ctx?.cwd);
       const budget = updatePeerContextBudget(runtime, ctx);
+      const judgement = derivePeerContextJudgement(budget);
       await refreshPeerUi(ctx, runtime);
       return {
-        content: [{ type: "text", text: formatPeerContextBudget(budget) }],
-        details: { ok: budget.available === true, kind: "peer_context", contextBudget: budget },
+        content: [{ type: "text", text: formatPeerContextReport(budget, judgement) }],
+        details: { ok: budget.available === true, kind: "peer_context", contextBudget: budget, contextJudgement: judgement },
       };
     },
   });
@@ -322,8 +323,9 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
     }
     if (parsed.subcommand === "context") {
       const budget = updatePeerContextBudget(runtime, ctx);
+      const judgement = derivePeerContextJudgement(budget);
       await refresh();
-      return sendPeerMessage(pi, formatPeerContextBudget(budget));
+      return sendPeerMessage(pi, formatPeerContextReport(budget, judgement));
     }
     if (parsed.subcommand === "doctor") {
       if (runtime.enabled) await runtime.refreshLocalPeers();
@@ -750,6 +752,10 @@ function attachPeerIdleWatcher(pi: ExtensionAPI, runtime: any, activeContext: ()
 function updatePeerContextBudget(runtime: any, ctx: any) {
   const budget = capturePeerContextBudget(ctx);
   return typeof runtime?.updateContextBudget === "function" ? runtime.updateContextBudget(budget) : budget;
+}
+
+function formatPeerContextReport(budget: any, judgement: any = derivePeerContextJudgement(budget)) {
+  return `${formatPeerContextBudget(budget)}\n${formatPeerContextJudgement(judgement)}`;
 }
 
 function schedulePeerIdleCheck(runtime: any, reason: string) {

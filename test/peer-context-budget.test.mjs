@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { capturePeerContextBudget, deriveContextPressure, formatPeerContextBudget, normalizePeerContextBudget } from "../src/peers/context-budget.mjs";
+import { capturePeerContextBudget, deriveContextPressure, derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement, normalizePeerContextBudget } from "../src/peers/context-budget.mjs";
 
 test("context budget normalizes usage and pressure", () => {
   const budget = normalizePeerContextBudget({ tokens: 90_000, contextWindow: 100_000 });
@@ -29,4 +29,36 @@ test("capturePeerContextBudget reads extension context when available", () => {
   assert.equal(budget.remainingTokens, 158_000);
 
   assert.equal(capturePeerContextBudget({}).available, false);
+});
+
+test("context judgement maps pressure to next-task decisions", () => {
+  assert.equal(derivePeerContextJudgement({ pressure: "unknown" }).recommendedAction, "continue");
+  assert.equal(derivePeerContextJudgement({ pressure: "not-real" }).recommendedAction, "continue");
+  assert.equal(derivePeerContextJudgement({ tokens: 50_000, contextWindow: 100_000 }).safeForNewTask, true);
+
+  assert.equal(derivePeerContextJudgement({ pressure: "watch" }).recommendedAction, "summarize");
+  assert.equal(derivePeerContextJudgement({ pressure: "tight" }).recommendedAction, "compact");
+  assert.equal(derivePeerContextJudgement({ pressure: "tight" }).safeForNewTask, false);
+  assert.equal(derivePeerContextJudgement({ pressure: "critical" }).recommendedAction, "compact_or_delegate");
+  assert.equal(derivePeerContextJudgement({ pressure: "critical" }).safeForNewTask, false);
+
+  const watch = derivePeerContextJudgement({ tokens: 72_000, contextWindow: 100_000 });
+  assert.equal(watch.pressure, "watch");
+  assert.equal(watch.recommendedAction, "summarize");
+  assert.equal(watch.safeForNewTask, true);
+  assert.equal(watch.safeForLongTask, false);
+
+  const tight = derivePeerContextJudgement({ tokens: 90_000, contextWindow: 100_000 });
+  assert.equal(tight.recommendedAction, "compact");
+  assert.equal(tight.safeForNewTask, false);
+  assert.equal(tight.shouldCompact, true);
+  assert.equal(tight.requiresUserApproval, true);
+  assert.match(formatPeerContextJudgement(tight), /compact/);
+
+  const critical = derivePeerContextJudgement({ remainingTokens: 3_000 });
+  assert.equal(critical.pressure, "critical");
+  assert.equal(critical.recommendedAction, "compact_or_delegate");
+  assert.equal(critical.safeForNewTask, false);
+  assert.equal(critical.shouldClearContext, false);
+  assert.equal(derivePeerContextJudgement({ remainingTokens: 3_000 }, { allowContextClear: true }).shouldClearContext, true);
 });
