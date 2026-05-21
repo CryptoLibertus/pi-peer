@@ -326,6 +326,19 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
       push("P1", "stale-claim", `Ask owners to heartbeat or release ${state.staleClaims.length} stale claim${state.staleClaims.length === 1 ? "" : "s"}.`, { paths: uniqueEventPaths(state.staleClaims) });
     }
     if (state.openProposals.length) {
+      for (const proposal of state.openProposals.filter((item) => item.lane && proposalLaneWorkCompleted(state, goal.id, item))) {
+        const lane = normalizeLaneName(proposal.lane);
+        push("P1", "open-proposal", `Resolve fulfilled ${lane} proposal or record why it remains open: ${proposal.summary}`, {
+          paths: proposal.paths,
+          recommendedLane: "coordination",
+          preferredRoles: preferredRolesForLane("coordination"),
+          claimMode: "read",
+          suggestedIntent: "coordinate",
+          rationale: "A peer posted completion evidence and released the lane; flat hierarchy works best when any suitable peer resolves or explicitly defers fulfilled proposals.",
+          workKey: derivePeerGoalWorkKey({ goalId: goal.id, lane: "coordination", objective: `resolve fulfilled proposal ${proposal.id}`, mode: "read", paths: proposal.paths }),
+          relatedEventId: proposal.id,
+        });
+      }
       for (const proposal of state.openProposals.filter((item) => item.lane && !proposalLaneWorkCompleted(state, goal.id, item))) {
         const lane = normalizeLaneName(proposal.lane);
         const summary = `Self-select proposed ${lane} lane: ${proposal.summary}`;

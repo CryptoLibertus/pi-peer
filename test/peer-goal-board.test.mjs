@@ -275,6 +275,10 @@ test("scout stops re-emitting completed proposal lane work but keeps triage visi
     assert.equal(state.openProposals.length, 1);
     const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
     assert.equal(suggestions.some((suggestion) => suggestion.workKey === workKey && suggestion.summary.startsWith("Self-select proposed implementation lane")), false);
+    const resolveSuggestion = suggestions.find((suggestion) => suggestion.summary.startsWith("Resolve fulfilled implementation proposal"));
+    assert.ok(resolveSuggestion);
+    assert.equal(resolveSuggestion.recommendedLane, "coordination");
+    assert.equal(resolveSuggestion.relatedEventId, state.openProposals[0].id);
     assert.equal(suggestions.some((suggestion) => suggestion.kind === "open-proposal" && suggestion.summary.startsWith("Triage 1 open proposal")), true);
 
     const implicitRoot = await mkdtemp(join(tmpdir(), "pi-peer-goal-test-"));
@@ -304,6 +308,7 @@ test("scout stops re-emitting completed proposal lane work but keeps triage visi
     await appendPeerGoalEvent(implicitRoot, implicitGoal.id, { type: "release", peerId: "worker-a", resolves: implicitClaim.event.id, summary: "implicit lane complete" });
     const implicitSuggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(implicitRoot));
     assert.equal(implicitSuggestions.some((suggestion) => suggestion.workKey === implicitKey && suggestion.summary.startsWith("Self-select proposed implementation lane")), false);
+    assert.equal(implicitSuggestions.some((suggestion) => suggestion.summary.startsWith("Resolve fulfilled implementation proposal")), true);
   });
 });
 
