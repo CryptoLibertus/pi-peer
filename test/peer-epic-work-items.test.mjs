@@ -89,6 +89,7 @@ test("work item updates can explicitly clear dependencies", async (t) => {
       peerId: "worker",
       itemId: "implementation",
       summary: "Implementation still preserves omitted dependencies",
+      dependsOn: undefined,
       status: "open",
     });
 

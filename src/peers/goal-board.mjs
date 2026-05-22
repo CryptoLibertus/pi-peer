@@ -695,7 +695,7 @@ function normalizeEvent(input = {}) {
   if (!EVENT_TYPES.has(type)) throw new Error(`unknown peer goal event type '${type}'`);
   const now = nowIso();
   const ttlMs = positiveNumber(input.ttlMs);
-  const dependsOnInputProvided = Object.prototype.hasOwnProperty.call(input, "dependsOn") || Object.prototype.hasOwnProperty.call(input, "dependencies") || Object.prototype.hasOwnProperty.call(input.metadata || {}, "dependsOn") || Object.prototype.hasOwnProperty.call(input.metadata || {}, "dependencies");
+  const dependsOnInputProvided = input.dependsOn !== undefined || input.dependencies !== undefined || input.metadata?.dependsOn !== undefined || input.metadata?.dependencies !== undefined;
   const event = {
     id: input.id || newEventId(type),
     type,

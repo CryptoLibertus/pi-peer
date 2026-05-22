@@ -126,6 +126,11 @@ test("parses epic work item events", () => {
   assert.equal(parsed.status, "open");
   assert.equal(parsed.workLane, "implementation");
   assert.deepEqual(parsed.paths, ["src"]);
+
+  const omittedDependencies = parsePeerCommand("goal item goal_123 Update item --item-id impl --status open");
+  assert.equal(omittedDependencies.dependsOn, undefined);
+  const clearedDependencies = parsePeerCommand("goal item goal_123 Clear deps --item-id impl --depends-on '' --status open");
+  assert.deepEqual(clearedDependencies.dependsOn, []);
 });
 
 test("repeated list-style flags append instead of replacing earlier values", () => {

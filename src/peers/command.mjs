@@ -258,7 +258,8 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
     const summary = rest.slice(1).join(" ").trim();
     if (!goalId || !summary) return { ...withAction, error: `/peer goal ${action} requires <goal-id> <summary>` };
     const eventType = action === "propose" ? "proposal" : ["item", "work-item"].includes(action) ? "work-item" : action;
-    return { ...withAction, goalId, eventType, summary, paths: listFlag(flags.path || flags.paths), severity: stringFlag(flags.severity, undefined), taskId: stringFlag(flags.taskId, undefined), itemId: stringFlag(flags.itemId || flags.item || flags.id, undefined), parentId: stringFlag(flags.parentId || flags.parent, undefined), dependsOn: listFlag(flags.dependsOn || flags.depends || flags.dependency || flags.dependencies), status: stringFlag(flags.status, undefined), workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined), metadata: qualityMetadataFromFlags(flags) };
+    const dependsFlag = firstDefined(flags.dependsOn, flags.depends, flags.dependency, flags.dependencies);
+    return { ...withAction, goalId, eventType, summary, paths: listFlag(flags.path || flags.paths), severity: stringFlag(flags.severity, undefined), taskId: stringFlag(flags.taskId, undefined), itemId: stringFlag(flags.itemId || flags.item || flags.id, undefined), parentId: stringFlag(flags.parentId || flags.parent, undefined), dependsOn: dependsFlag === undefined ? undefined : listFlag(dependsFlag), status: stringFlag(flags.status, undefined), workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined), metadata: qualityMetadataFromFlags(flags) };
   }
   if (action === "claim") {
     if (flagEnabled(flags.write) && flags.mode === undefined) flags.mode = "write";
@@ -320,6 +321,10 @@ function flagDefaultEnabled(value, fallback = false) {
   if (Array.isArray(value)) return flagDefaultEnabled(value.at(-1), fallback);
   if (value === undefined) return fallback;
   return flagEnabled(value);
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined);
 }
 
 function positiveIntegerFlag(value) {
