@@ -34,6 +34,62 @@ test("peer status includes local context pressure when available", () => {
   assert.match(text, /judgement compact_or_delegate/);
 });
 
+test("peer status includes idle watcher diagnostics", () => {
+  const status = derivePeerRuntimeStatus({
+    enabled: true,
+    localPeerId: "self",
+    source: "test",
+    __peerIdleWatcher: {
+      config: { enabled: true, maxActivationsPerSession: 20, protocolOffers: true },
+      state: {
+        running: true,
+        checkCount: 3,
+        activationCount: 1,
+        lastCheck: {
+          at: "2026-01-01T00:00:00.000Z",
+          reason: "goal-board-change",
+          activated: false,
+          noOpReason: "no idle activation",
+        },
+      },
+    },
+    __peerIdleOfferLastSweep: { reason: "agent_end", sent: 2, duplicate: 1, errors: 0, skipped: 0 },
+  }, { peers: [], messages: [] });
+
+  assert.equal(status.idleWatcher.running, true);
+  assert.equal(status.idleWatcher.lastCheck.noOpReason, "no idle activation");
+  const text = formatPeerStatusText(status);
+  assert.match(text, /idle watcher running/);
+  assert.match(text, /activations 1\/20/);
+  assert.match(text, /last no-op no idle activation \(goal-board-change\)/);
+  assert.match(text, /offers 2 sent, 1 duplicate, 0 errors/);
+});
+
+test("peer status summarizes the last idle activation", () => {
+  const status = derivePeerRuntimeStatus({
+    enabled: true,
+    localPeerId: "self",
+    source: "test",
+    __peerIdleWatcher: {
+      config: { enabled: true, maxActivationsPerSession: 5 },
+      state: {
+        running: true,
+        checkCount: 1,
+        activationCount: 1,
+        lastCheck: {
+          reason: "timer",
+          activated: true,
+          activation: { kind: "work-item", goalId: "goal_1", workKey: "run:loop:6" },
+        },
+      },
+    },
+  }, { peers: [], messages: [] });
+
+  const text = formatPeerStatusText(status);
+  assert.match(text, /idle watcher running/);
+  assert.match(text, /last work-item goal_1 key run:loop:6 \(timer\)/);
+});
+
 test("peer status can show visible unknown context after compaction", () => {
   const status = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test", contextBudget: { available: true, pressure: "unknown", source: "post-compaction" } }, { peers: [], messages: [] });
   const text = formatPeerStatusText(status);

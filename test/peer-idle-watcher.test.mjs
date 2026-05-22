@@ -211,7 +211,7 @@ test("derivePeerIdleActivation advances dependency-gated work item chains after 
   assert.equal(second.workKey, "goal_chain:loop-002");
 });
 
-test("derivePeerIdleActivation suppresses repeated read-only work-item triage after evidence", () => {
+test("derivePeerIdleActivation resolves evidenced open work items instead of stalling dependency chains", () => {
   const board = {
     goals: {
       goal_loop: {
@@ -221,6 +221,7 @@ test("derivePeerIdleActivation suppresses repeated read-only work-item triage af
         updatedAt: "2026-01-01T00:02:00.000Z",
         events: [
           { id: "loop_5", type: "work-item", peerId: "planner", summary: "Loop 5", itemId: "loop-005", status: "open", lane: "coordination", workKey: "loop:5", at: "2026-01-01T00:00:00.000Z" },
+          { id: "loop_6", type: "work-item", peerId: "planner", summary: "Loop 6", itemId: "loop-006", status: "open", dependsOn: ["loop-005"], lane: "coordination", workKey: "loop:6", at: "2026-01-01T00:00:01.000Z" },
           { id: "claim_5", type: "claim", peerId: "worker2", summary: "Triage loop 5", mode: "read", lane: "coordination", workKey: "loop:5", at: "2026-01-01T00:01:00.000Z" },
           { id: "finding_5", type: "finding", peerId: "worker2", summary: "Loop 5 triaged; next action needs scoped write work", lane: "coordination", workKey: "loop:5", at: "2026-01-01T00:01:01.000Z" },
           { id: "release_5", type: "release", peerId: "worker2", summary: "Released loop 5 triage", resolves: "claim_5", at: "2026-01-01T00:01:02.000Z" },
@@ -228,10 +229,21 @@ test("derivePeerIdleActivation suppresses repeated read-only work-item triage af
       },
     },
   };
-  assert.equal(derivePeerIdleActivation(board, {
+  const state = { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() };
+  const originalActivation = { goalId: "goal_loop", kind: "work-item", priority: "P1", workKey: "loop:5" };
+  markPeerIdleActivation(state, originalActivation, 1_000);
+
+  const activation = derivePeerIdleActivation(board, {
     localPeerId: "planner",
-    config: { allowedKinds: ["work-item"] },
-  }), undefined);
+    state,
+    nowMs: 5_000,
+    config: { allowedKinds: ["work-item"], cooldownMs: 10_000 },
+  });
+  assert.equal(activation.workKey, "loop:5:resolve-open");
+  assert.equal(activation.requiresWorkItemResolution, true);
+  assert.match(activation.summary, /Resolve\/update evidenced work item loop-005/);
+  assert.match(activation.rationale, /Dependency chains cannot advance/);
+  assert.match(buildPeerIdleActivationPrompt(activation), /Do not post another standalone finding as the only action/);
 });
 
 test("derivePeerIdleActivationOfferPlan routes one protocol offer per work key to active compatible peers", () => {
@@ -540,12 +552,18 @@ test("createPeerIdleWatcher only injects when context is idle and no peer messag
 
   const result = await watcher.check("test");
   assert.equal(result.activated, true);
+  assert.equal(watcher.state.checkCount, 1);
+  assert.equal(watcher.state.lastCheck.activated, true);
+  assert.equal(watcher.state.lastCheck.activation.kind, "next-step");
   assert.equal(sent.length, 1);
   assert.equal(sent[0].options.triggerTurn, true);
   assert.equal(sent[0].options.deliverAs, "followUp");
 
   const cooledDown = await watcher.check("test");
   assert.equal(cooledDown.activated, false);
+  assert.equal(watcher.state.checkCount, 2);
+  assert.equal(watcher.state.lastCheck.activated, false);
+  assert.equal(watcher.state.lastCheck.noOpReason, "no idle activation");
   assert.equal(sent.length, 1);
 
   const busyWatcher = createPeerIdleWatcher({
@@ -558,6 +576,21 @@ test("createPeerIdleWatcher only injects when context is idle and no peer messag
   const busy = await busyWatcher.check("test");
   assert.equal(busy.activated, false);
   assert.equal(busy.reason, "peer messages pending");
+});
+
+test("idle watcher skips overlapping checks without changing diagnostics", async () => {
+  const watcher = createPeerIdleWatcher({
+    runtime: { enabled: true, comms: { listMessages: async () => [] }, pendingInboundCount: () => 0, config: { idleWatcher: {} } },
+    pi: { sendMessage: () => {} },
+    activeContext: () => ({ isIdle: () => true, hasPendingMessages: () => false }),
+  });
+  watcher.state.checking = true;
+
+  const result = await watcher.check("overlap");
+  assert.equal(result.activated, false);
+  assert.equal(result.reason, "check already running");
+  assert.equal(watcher.state.checkCount, undefined);
+  assert.equal(watcher.state.lastCheck, undefined);
 });
 
 test("idle watcher auto-compacts when configured and context pressure blocks new work", async () => {

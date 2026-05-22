@@ -231,7 +231,7 @@ Configuration can be placed in `.pi/peers.json` as `idleWatcher` or in `.pi/sett
 
 Set `PI_PEER_IDLE_WATCHER=off` to disable it for a process. `PI_PEER_IDLE_WATCHER_INTERVAL_MS` and `PI_PEER_IDLE_WATCHER_COOLDOWN_MS` override timing for local testing. Set `PI_PEER_AUTO_COMPACT=off` or `idleWatcher.autoCompact: false` to keep the old pause-and-warn behavior. `idleWatcher.allowedKinds` accepts either an array or comma-separated string; set it to an empty array to leave the watcher enabled but suppress proactive scout activations.
 
-In addition to the local fallback interval, the extension watches goal-board changes and can push protocol-routed idle offers to active compatible peers (`idleWatcher.protocolOffers`, default on for planner/coordinator peers; `PI_PEER_IDLE_PROTOCOL_OFFERS=off` disables it for a process). Offers are normal goal-linked peer messages with read claims and work keys, so board claim validation remains the source of truth and duplicate offers are reused/suppressed.
+In addition to the local fallback interval, the extension watches goal-board changes and can push protocol-routed idle offers to active compatible peers (`idleWatcher.protocolOffers`, default on for planner/coordinator peers; `PI_PEER_IDLE_PROTOCOL_OFFERS=off` disables it for a process). Offers are normal goal-linked peer messages with read claims and work keys, so board claim validation remains the source of truth and duplicate offers are reused/suppressed. `/peer status` includes idle watcher diagnostics: whether the watcher is running, activation/check counts, the last activated or no-op reason, and the last protocol-offer sweep summary.
 
 ## Package checks
 

@@ -1250,11 +1250,15 @@ function shouldRunPeerIdleOfferCoordinator(runtime: any) {
 async function dispatchPeerIdleProtocolOffers(runtime: any, reason: string) {
   if (runtime.__peerIdleOfferDispatching) return [];
   runtime.__peerIdleOfferDispatching = true;
+  const at = new Date().toISOString();
   try {
     const root = runtime.cwd || process.cwd();
     await runtime.refreshLocalPeers?.();
     const peers = runtime.comms?.listPeers ? await runtime.comms.listPeers() : [];
-    if (!peers.length) return [];
+    if (!peers.length) {
+      runtime.__peerIdleOfferLastSweep = summarizePeerIdleOfferSweep(reason, [], { at, skipped: 0, noOpReason: "no peers" });
+      return [];
+    }
     const board = await loadPeerGoalBoard(root);
     if (!runtime.__peerIdleOfferStates) runtime.__peerIdleOfferStates = new Map();
     const config = runtime.__peerIdleWatcher?.config || runtime.config?.idleWatcher || {};
@@ -1267,10 +1271,26 @@ async function dispatchPeerIdleProtocolOffers(runtime: any, reason: string) {
     });
     const dispatches: any[] = [];
     for (const offer of offers) dispatches.push(await dispatchPeerIdleProtocolOffer(root, runtime, offer, reason));
+    runtime.__peerIdleOfferLastSweep = summarizePeerIdleOfferSweep(reason, dispatches, { at, skipped: Math.max(0, peers.length - offers.length), noOpReason: offers.length ? undefined : "no offers" });
     return dispatches;
+  } catch (error: any) {
+    runtime.__peerIdleOfferLastSweep = summarizePeerIdleOfferSweep(reason, [{ error: error?.message || String(error) }], { at });
+    throw error;
   } finally {
     runtime.__peerIdleOfferDispatching = false;
   }
+}
+
+function summarizePeerIdleOfferSweep(reason: string, dispatches: any[] = [], options: any = {}) {
+  return {
+    at: options.at || new Date().toISOString(),
+    reason,
+    sent: dispatches.filter((item) => item?.messageId).length,
+    duplicate: dispatches.filter((item) => item?.duplicate).length,
+    errors: dispatches.filter((item) => item?.error).length,
+    skipped: Number.isFinite(options.skipped) ? options.skipped : 0,
+    noOpReason: options.noOpReason,
+  };
 }
 
 async function dispatchPeerIdleProtocolOffer(root: string, runtime: any, offer: any, reason: string) {

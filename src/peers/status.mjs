@@ -1,5 +1,6 @@
 import { derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement, normalizePeerContextBudget } from "./context-budget.mjs";
 import { deriveGoalState, derivePeerGoalWorkKey } from "./goal-board.mjs";
+import { summarizePeerIdleWatcherState } from "./idle-watcher.mjs";
 import { redactPeerAuditValue } from "./protocol.mjs";
 
 export async function collectPeerRuntimeStatus(runtime, options = {}) {
@@ -26,6 +27,7 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
   const localCapabilities = endpoint?.capabilities || runtime.config?.manifest?.capabilities || runtime.summary?.manifest?.capabilities || {};
   const contextBudget = normalizePeerContextBudget(options.contextBudget || runtime.contextBudget);
   const contextJudgement = derivePeerContextJudgement(contextBudget);
+  const idleWatcher = summarizePeerRuntimeIdleWatcher(runtime);
 
   return {
     enabled,
@@ -38,6 +40,7 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
     localCapabilities,
     contextBudget,
     contextJudgement,
+    idleWatcher,
     localRole: safeStatusText(localProfile.role || endpoint?.role),
     localPersona: safeStatusText(localProfile.persona || endpoint?.persona),
     endpointStatus: enabled ? (endpoint ? "listening" : "not listening") : "disabled",
@@ -72,6 +75,7 @@ export function formatPeerStatusLines(status = {}) {
     const judgement = status.contextJudgement || derivePeerContextJudgement(status.contextBudget);
     lines.push(line("context", pressure === "critical" || pressure === "tight" ? "warning" : pressure === "watch" ? "accent" : "muted", `${formatPeerContextBudget(status.contextBudget)} · ${formatPeerContextJudgement(judgement)}`));
   }
+  if (status.idleWatcher) lines.push(line("idle", idleWatcherLineColor(status.idleWatcher), formatIdleWatcherLine(status.idleWatcher)));
   for (const task of (status.activeTasks || []).slice(0, 2)) lines.push(line("task", "accent", formatActiveTaskLine(task)));
   const extraTasks = (status.activeTasks || []).length - 2;
   if (extraTasks > 0) lines.push(line("task", "accent", `tasks +${extraTasks} more active`));
@@ -85,6 +89,46 @@ export function formatPeerStatusText(status = {}) {
 
 export function shouldShowPeerWidget(status = {}) {
   return status.enabled === true || (status.warnings || []).length > 0;
+}
+
+function summarizePeerRuntimeIdleWatcher(runtime = {}) {
+  const watcher = runtime.__peerIdleWatcher;
+  if (!watcher && !runtime.config?.idleWatcher && !runtime.__peerIdleOfferLastSweep) return undefined;
+  return {
+    ...summarizePeerIdleWatcherState(watcher || { config: runtime.config?.idleWatcher || {} }),
+    lastProtocolOfferSweep: runtime.__peerIdleOfferLastSweep || undefined,
+  };
+}
+
+function formatIdleWatcherLine(idle = {}) {
+  const state = idle.enabled === false ? "disabled" : idle.running ? "running" : "stopped";
+  const limit = idle.maxActivationsPerSession ? `/${idle.maxActivationsPerSession}` : "";
+  const last = idle.lastCheck ? ` · last ${idle.lastCheck.activated ? formatIdleActivationSummary(idle.lastCheck.activation) : `no-op ${safeStatusText(idle.lastCheck.noOpReason) || "unknown"}`} (${safeStatusText(idle.lastCheck.reason) || "unknown"})` : " · last none";
+  const offers = idle.lastProtocolOfferSweep ? ` · offers ${formatIdleOfferSweep(idle.lastProtocolOfferSweep)}` : "";
+  return `idle watcher ${state} · activations ${idle.activationCount || 0}${limit} · checks ${idle.checkCount || 0}${last}${offers}`;
+}
+
+function idleWatcherLineColor(idle = {}) {
+  if (idle.enabled === false) return "muted";
+  if (idle.lastCheck?.activated || (idle.lastProtocolOfferSweep?.sent || 0) > 0) return "accent";
+  return idle.running ? "muted" : "warning";
+}
+
+function formatIdleActivationSummary(activation = {}) {
+  const kind = safeStatusText(activation?.kind) || "activation";
+  const goal = activation?.goalId ? ` ${activation.goalId}` : "";
+  const key = activation?.workKey ? ` key ${truncateStatus(activation.workKey, 48)}` : "";
+  return `${kind}${goal}${key}`;
+}
+
+function formatIdleOfferSweep(sweep = {}) {
+  const sent = Number.isFinite(sweep.sent) ? sweep.sent : 0;
+  const duplicate = Number.isFinite(sweep.duplicate) ? sweep.duplicate : 0;
+  const errors = Number.isFinite(sweep.errors) ? sweep.errors : 0;
+  const skipped = Number.isFinite(sweep.skipped) ? sweep.skipped : 0;
+  const reason = sweep.reason ? ` (${safeStatusText(sweep.reason)})` : "";
+  const noOp = sweep.noOpReason ? ` · ${safeStatusText(sweep.noOpReason)}` : "";
+  return `${sent} sent, ${duplicate} duplicate, ${errors} errors, ${skipped} skipped${reason}${noOp}`;
 }
 
 function activeTaskSummary(message = {}) {

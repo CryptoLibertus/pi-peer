@@ -44,30 +44,36 @@ export function createPeerIdleWatcher(options = {}) {
   };
 
   async function check(reason = "timer") {
-    if (!runtime?.enabled || !config.enabled || state.checking) return { activated: false, reason: "disabled" };
+    const checkedAt = now();
+    const finish = (result) => {
+      recordPeerIdleCheck(state, reason, result, checkedAt);
+      return result;
+    };
+    if (!runtime?.enabled || !config.enabled) return finish({ activated: false, reason: "disabled" });
+    if (state.checking) return { activated: false, reason: "check already running" };
     state.checking = true;
     try {
       const ctx = activeContext();
       const idle = isContextIdle(ctx);
-      if (!idle.ok) return { activated: false, reason: idle.reason };
-      if (state.activationCount >= config.maxActivationsPerSession) return { activated: false, reason: "activation limit reached" };
+      if (!idle.ok) return finish({ activated: false, reason: idle.reason });
+      if (state.activationCount >= config.maxActivationsPerSession) return finish({ activated: false, reason: "activation limit reached" });
       const contextGate = handleContextJudgement(pi, runtime, ctx, state, config, now(), options.messageType || "pi-peer", reason, refresh);
       if (contextGate) {
         await refresh(ctx).catch(() => {});
-        return contextGate;
+        return finish(contextGate);
       }
       if (runtime?.pendingInboundCount?.() > 0) {
         const nudged = runtime?.nudgeInboundIfIdle?.({ reason: "idle-watcher", cooldownMs: Math.min(activationNudgeCooldownMs(config), config.cooldownMs) });
         if (nudged?.ok) {
           state.activationCount = (state.activationCount || 0) + 1;
           await refresh(ctx).catch(() => {});
-          return { activated: true, activation: { kind: "inbound-nudge", messageId: nudged.messageId, conversationId: nudged.conversationId, activationAttempts: nudged.activationAttempts } };
+          return finish({ activated: true, activation: { kind: "inbound-nudge", messageId: nudged.messageId, conversationId: nudged.conversationId, activationAttempts: nudged.activationAttempts } });
         }
-        return { activated: false, reason: nudged?.reason || "inbound peer task active" };
+        return finish({ activated: false, reason: nudged?.reason || "inbound peer task active" });
       }
       const messages = runtime?.comms?.listMessages ? await runtime.comms.listMessages() : [];
       const pendingMessages = messages.filter((message) => ["queued", "running"].includes(message.status));
-      if (pendingMessages.length) return { activated: false, reason: "peer messages pending" };
+      if (pendingMessages.length) return finish({ activated: false, reason: "peer messages pending" });
 
       const board = await loadBoard(runtime.cwd || ctx?.cwd || process.cwd());
       const activation = derivePeerIdleActivation(board, {
@@ -79,7 +85,7 @@ export function createPeerIdleWatcher(options = {}) {
         state,
         nowMs: now(),
       });
-      if (!activation) return { activated: false, reason: "no idle activation" };
+      if (!activation) return finish({ activated: false, reason: "no idle activation" });
 
       const prompt = buildPeerIdleActivationPrompt(activation, { localPeerId: runtime.localPeerId });
       pi.sendMessage({
@@ -90,7 +96,10 @@ export function createPeerIdleWatcher(options = {}) {
       }, { deliverAs: "followUp", triggerTurn: true });
       markPeerIdleActivation(state, activation, now());
       await refresh(ctx).catch(() => {});
-      return { activated: true, activation };
+      return finish({ activated: true, activation });
+    } catch (error) {
+      finish({ activated: false, reason: `error: ${error?.message || String(error)}` });
+      throw error;
     } finally {
       state.checking = false;
     }
@@ -210,9 +219,10 @@ export function derivePeerIdleActivation(board, options = {}) {
     const activation = normalizeActivation(suggestion, options.localPeerId, options);
     if (localPeerHasActiveGoalWork(board, suggestion.goalId, options.localPeerId, activation)) continue;
     if (!activation || !activationFitsPeer(activation, options)) continue;
-    if (readOnlyWorkItemAlreadyHasEvidence(board, activation)) continue;
-    if (isActivationCoolingDown(options.state, activation, config, nowMs, board)) continue;
-    return activation;
+    const evidencedWorkItem = readOnlyWorkItemEvidence(board, activation);
+    const candidate = evidencedWorkItem ? buildEvidencedOpenWorkItemActivation(activation, evidencedWorkItem) : activation;
+    if (isActivationCoolingDown(options.state, candidate, config, nowMs, board)) continue;
+    return candidate;
   }
   return undefined;
 }
@@ -265,6 +275,49 @@ export function markPeerIdleActivation(state, activation, nowMs = Date.now()) {
   return true;
 }
 
+export function recordPeerIdleCheck(state, reason, result = {}, nowMs = Date.now()) {
+  if (!state) return undefined;
+  const activation = result?.activation;
+  state.checkCount = (state.checkCount || 0) + 1;
+  state.lastCheck = {
+    at: new Date(nowMs).toISOString(),
+    reason: cleanString(reason) || "unknown",
+    activated: result?.activated === true,
+    noOpReason: result?.activated === true ? undefined : cleanString(result?.reason) || "no activation",
+    activation: activation ? summarizeIdleActivation(activation) : undefined,
+  };
+  return state.lastCheck;
+}
+
+export function summarizePeerIdleWatcherState(watcher = {}) {
+  const state = watcher?.state || {};
+  const config = watcher?.config || {};
+  return {
+    enabled: config.enabled !== false,
+    running: state.running === true,
+    checkCount: state.checkCount || 0,
+    activationCount: state.activationCount || 0,
+    maxActivationsPerSession: config.maxActivationsPerSession,
+    cooldownMs: config.cooldownMs,
+    intervalMs: config.intervalMs,
+    protocolOffers: config.protocolOffers !== false,
+    lastCheck: state.lastCheck || undefined,
+  };
+}
+
+function summarizeIdleActivation(activation = {}) {
+  return {
+    kind: activation.kind,
+    goalId: activation.goalId,
+    workKey: activation.workKey,
+    summary: activation.summary,
+    recommendedLane: activation.recommendedLane,
+    claimMode: activation.claimMode,
+    requiresWorkItemResolution: activation.requiresWorkItemResolution === true || undefined,
+    peerId: activation.peerId,
+  };
+}
+
 export function buildPeerIdleActivationPrompt(activation, options = {}) {
   const peerId = options.localPeerId || "this-peer";
   const paths = activation.paths?.length ? `\nPaths: ${activation.paths.join(", ")}` : "";
@@ -273,7 +326,10 @@ export function buildPeerIdleActivationPrompt(activation, options = {}) {
   const suggestedClaim = buildSuggestedReadClaim(activation);
   const rationale = activation.rationale ? `\nRationale: ${activation.rationale}` : "";
   const fit = activation.personaFit?.matched?.length ? `\nPersona fit: matched ${activation.personaFit.matched.join(", ")}` : "";
-  return `[Pi peer idle watcher]\nYou are local peer '${peerId}' and Pi is idle. A proactive goal-board scout suggestion is available.\n\nGoal: ${activation.goalId}\nSuggestion: ${activation.kind} (${activation.priority}) — ${activation.summary}${lane}${workKey}${rationale}${fit}${paths}${suggestedClaim}\n\nInstructions:\n- First inspect current state with peer_get id '${activation.goalId}'.\n- If useful, take one small safe action that fits the recommended lane: claim a read-only lane with the work key above, post a proposal/finding/vote, or claim write work only when you intend to edit and can name the paths.\n- If you claim read-only work, post concrete goal-board evidence (finding, handoff, or note) and release the claim before your final response, unless you are blocked and say why.\n- If the suggested claim fails as duplicate, inspect the board and stop with a brief handoff instead of starting parallel work.\n- Do not duplicate active claims, work keys, or proposals. If the board is no longer actionable, say so briefly and stop.\n- For write work, respect goal-board claims and end with the required peer handoff sections.\n- Keep the response concise.`;
+  const resolutionInstruction = activation.requiresWorkItemResolution
+    ? "\n- This work item already has evidence but is still open. Do not post another standalone finding as the only action; mark the work item done if the evidence is sufficient, create a follow-up work item/proposal/blocker if it is not, or take an explicit write claim with named paths if source edits are the next step."
+    : "";
+  return `[Pi peer idle watcher]\nYou are local peer '${peerId}' and Pi is idle. A proactive goal-board scout suggestion is available.\n\nGoal: ${activation.goalId}\nSuggestion: ${activation.kind} (${activation.priority}) — ${activation.summary}${lane}${workKey}${rationale}${fit}${paths}${suggestedClaim}\n\nInstructions:\n- First inspect current state with peer_get id '${activation.goalId}'.\n- If useful, take one small safe action that fits the recommended lane: claim a read-only lane with the work key above, post a proposal/finding/vote, or claim write work only when you intend to edit and can name the paths.${resolutionInstruction}\n- If you claim read-only work, post concrete goal-board evidence (finding, handoff, or note) and release the claim before your final response, unless you are blocked and say why.\n- If the suggested claim fails as duplicate, inspect the board and stop with a brief handoff instead of starting parallel work.\n- Do not duplicate active claims, work keys, or proposals. If the board is no longer actionable, say so briefly and stop.\n- For write work, respect goal-board claims and end with the required peer handoff sections.\n- Keep the response concise.`;
 }
 
 function buildSuggestedReadClaim(activation = {}) {
@@ -309,6 +365,11 @@ function isActivationCoolingDown(state, activation, config, nowMs, board) {
   // fulfilled, the next proposed lane should be able to continue immediately.
   if (activation.kind === "open-proposal" && activationRank === previousRank) return false;
 
+  // If a read-only work item produced evidence but stayed open, immediately route
+  // a resolution action. Waiting for the normal goal cooldown makes dependency
+  // chains look stopped even though the next required action is clear.
+  if (activation.kind === "work-item" && activation.requiresWorkItemResolution === true && activationRank === previousRank && goalLast.kind === "work-item" && activation.workKey && goalLast.workKey && activation.workKey !== goalLast.workKey) return false;
+
   // Work-item suggestions stay goal-cooled while previous work is still open, but
   // dependency-gated chains should advance as soon as the prior item is marked
   // done. Otherwise every peer can be idle for a full cooldown after each loop.
@@ -324,18 +385,42 @@ function previousWorkItemIsTerminal(board = {}, goalId, workKey) {
   return ["done", "closed", "cancelled", "canceled", "resolved"].includes(String(item?.status || "").toLowerCase());
 }
 
-function readOnlyWorkItemAlreadyHasEvidence(board = {}, activation = {}) {
-  if (activation.kind !== "work-item" || activation.claimMode !== "read" || !activation.workKey) return false;
+function readOnlyWorkItemEvidence(board = {}, activation = {}) {
+  if (activation.kind !== "work-item" || activation.claimMode !== "read" || !activation.workKey) return undefined;
   const goal = board?.goals?.[activation.goalId];
   const events = Array.isArray(goal?.events) ? goal.events : [];
   const itemEvent = events.find((event) => event?.id === activation.relatedEventId || (event?.type === "work-item" && event?.workKey === activation.workKey));
   const itemAt = Date.parse(itemEvent?.at || "") || Number.NEGATIVE_INFINITY;
-  return events.some((event) => {
+  const evidence = events.filter((event) => {
     if (event?.workKey !== activation.workKey) return false;
     if (!["finding", "handoff", "note", "vote"].includes(event.type)) return false;
     const eventAt = Date.parse(event.at || "") || Number.POSITIVE_INFINITY;
     return eventAt >= itemAt;
   });
+  if (!evidence.length) return undefined;
+  return { item: itemEvent, latest: evidence[evidence.length - 1], count: evidence.length };
+}
+
+function buildEvidencedOpenWorkItemActivation(activation = {}, evidence = {}) {
+  const itemId = cleanString(evidence.item?.itemId) || cleanString(activation.relatedEventId) || cleanString(activation.workKey) || "work item";
+  const latestSummary = cleanString(evidence.latest?.summary || evidence.latest?.verdict);
+  return {
+    ...activation,
+    summary: `Resolve/update evidenced work item ${itemId}: mark it done, create follow-up work, or record a blocker${latestSummary ? `; latest evidence: ${truncate(latestSummary, 120)}` : ""}`,
+    recommendedLane: "coordination",
+    preferredRoles: ["planner", "coordinator", "reviewer"],
+    suggestedIntent: "coordinate",
+    claimMode: "read",
+    rationale: "The work item already has read-only evidence but remains open. Dependency chains cannot advance until a peer updates the item status, creates follow-up work, or records why it is blocked.",
+    workKey: `${activation.workKey}:resolve-open`,
+    requiresWorkItemResolution: true,
+  };
+}
+
+function truncate(value, max = 120) {
+  const text = cleanString(value);
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1))}…`;
 }
 
 function priorityRank(priority) {
