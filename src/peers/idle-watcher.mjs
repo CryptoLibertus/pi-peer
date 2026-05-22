@@ -310,7 +310,7 @@ function localPeerHasActiveGoalWork(board = {}, goalId, localPeerId, activation 
     if (claim.peerId !== peerId) return false;
     if (claim.mode === "write") return true;
     if (activation.workKey && claim.workKey === activation.workKey) return true;
-    if (!activation.workKey && activation.recommendedLane && claim.lane === activation.recommendedLane) return true;
+    if (activation.recommendedLane && claim.lane === activation.recommendedLane) return true;
     return false;
   });
 }

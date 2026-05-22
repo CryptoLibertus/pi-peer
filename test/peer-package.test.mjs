@@ -11,6 +11,14 @@ test("package publishes bundled skills", () => {
   assert.deepEqual(packageJson.pi.skills, ["skills"]);
 });
 
+test("package files cover all declared pi and export entry points", () => {
+  for (const dir of ["extensions", "skills", "src"]) assert.ok(packageJson.files.includes(dir));
+  for (const extension of packageJson.pi.extensions) assert.ok(extension.startsWith("extensions/"));
+  assert.equal(packageJson.exports["."], "./src/peers/comms.mjs");
+  assert.equal(packageJson.exports["./extension"], "./extensions/pi-peer/index.ts");
+  assert.equal(packageJson.exports["./peers/*"], "./src/peers/*.mjs");
+});
+
 test("publish npm skill has required frontmatter and safety gates", () => {
   assert.match(publishSkill, /^---\nname: pi-peer-publish\n/m);
   assert.match(publishSkill, /^description: .+@cryptolibertus\/pi-peer.+npm/m);

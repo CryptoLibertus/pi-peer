@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { peerGetToolResult } from "../src/peers/tool-results.mjs";
+import { parsePeerHandoffEvidence, peerGetToolResult } from "../src/peers/tool-results.mjs";
 
 test("peer_get defaults to compact goal output without raw event dump", () => {
   const goal = {
@@ -60,6 +60,30 @@ test("peer_get compact message omits full prompt and final assistant body", () =
   assert.match(result.details.value.promptPreview, /^prompt prompt/);
   assert.ok(result.details.value.promptPreview.length < longPrompt.length);
   assert.ok(result.details.value.finalAssistantPreview.length < longFinal.length);
+});
+
+test("handoff evidence parser accepts plain section headings", () => {
+  const evidence = parsePeerHandoffEvidence(`Status
+Done
+
+Files changed
+none
+
+Verification
+npm test — exit 0
+
+Blockers/risks
+none
+
+Safe for review
+yes`);
+
+  assert.equal(evidence.complete, true);
+  assert.equal(evidence.status, "done");
+  assert.deepEqual(evidence.filesChanged, ["none"]);
+  assert.deepEqual(evidence.verification, [{ command: "npm test", exitStatus: 0, raw: "npm test — exit 0" }]);
+  assert.deepEqual(evidence.blockersRisks, ["none"]);
+  assert.equal(evidence.safeForReview, true);
 });
 
 test("peer_get missing value behavior is unchanged", () => {

@@ -1,5 +1,5 @@
 import { derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement, normalizePeerContextBudget } from "./context-budget.mjs";
-import { deriveGoalState } from "./goal-board.mjs";
+import { deriveGoalState, derivePeerGoalWorkKey } from "./goal-board.mjs";
 import { redactPeerAuditValue } from "./protocol.mjs";
 
 export async function collectPeerRuntimeStatus(runtime, options = {}) {
@@ -201,8 +201,9 @@ export function formatPeerGoalDashboard(goal, options = {}) {
 
   lines.push("", "Safe next actions:");
   if (state.readyToClose && state.status !== "closed") lines.push(`- close: /peer goal close ${shellQuote(state.id)} ${shellQuote("closure gates satisfied")}`);
-  if (!state.currentVotes.length && !state.openProposals.length && !state.activeClaims.length) lines.push(`- vote: /peer goal vote ${shellQuote(state.id)} pass ${shellQuote("reviewed and verified")}`);
-  if (!state.readyToClose && !state.openProposals.length && !state.activeClaims.length && !state.staleClaims.length && !state.unresolvedTaskHandoffs?.length) lines.push("- no mutation suggested; ask for a read-only review or claim an explicit implementation path.");
+  if (state.activeTasks.length) lines.push("- wait: active peer task(s) are still running; inspect /peer get tasks or await the message before mutating the goal.");
+  if (!state.currentVotes.length && !state.openProposals.length && !state.activeClaims.length && !state.activeTasks.length) lines.push(`- vote: /peer goal vote ${shellQuote(state.id)} pass ${shellQuote("reviewed and verified")}`);
+  if (!state.readyToClose && !state.openProposals.length && !state.activeClaims.length && !state.activeTasks.length && !state.staleClaims.length && !state.unresolvedTaskHandoffs?.length) lines.push("- no mutation suggested; ask for a read-only review or claim an explicit implementation path.");
   return lines.join("\n");
 }
 
@@ -213,7 +214,8 @@ function bucketOpenProposals(state = {}) {
     ...(state.activeTasks || []).map((task) => task.workKey),
   ].filter(Boolean));
   for (const proposal of state.openProposals || []) {
-    if (proposal.workKey && activeKeys.has(proposal.workKey)) buckets["active-owned"].push(proposal);
+    const workKey = dashboardProposalWorkKey(state, proposal);
+    if (workKey && activeKeys.has(workKey)) buckets["active-owned"].push(proposal);
     else if (isProposalFulfilled(state, proposal)) buckets["fulfilled-awaiting-resolve"].push(proposal);
     else buckets.unclaimed.push(proposal);
   }
@@ -221,11 +223,27 @@ function bucketOpenProposals(state = {}) {
 }
 
 function isProposalFulfilled(state = {}, proposal = {}) {
-  if (!proposal.workKey) return false;
+  const workKey = dashboardProposalWorkKey(state, proposal);
+  if (!workKey) return false;
   const proposalAt = String(proposal.at || "");
-  const released = (state.releasedClaims || []).some((claim) => claim.workKey === proposal.workKey && String(claim.at || "") >= proposalAt);
+  const released = (state.releasedClaims || []).some((claim) => claim.workKey === workKey && String(claim.at || "") >= proposalAt);
   if (!released) return false;
-  return (state.events || []).some((event) => ["finding", "handoff", "note"].includes(event.type) && event.workKey === proposal.workKey && String(event.at || "") >= proposalAt);
+  return (state.events || []).some((event) => ["finding", "handoff", "note"].includes(event.type) && event.workKey === workKey && String(event.at || "") >= proposalAt);
+}
+
+function dashboardProposalWorkKey(state = {}, proposal = {}) {
+  if (proposal.workKey) return proposal.workKey;
+  if (!state.id || !proposal.summary) return "";
+  return derivePeerGoalWorkKey({ goalId: state.id, lane: normalizeDashboardLaneName(proposal.lane), objective: proposal.summary, mode: "read", paths: proposal.paths });
+}
+
+function normalizeDashboardLaneName(value) {
+  const lane = (safeStatusText(value) || "").toLowerCase();
+  if (["qa", "quality", "test", "testing"].includes(lane)) return "review";
+  if (["implement", "implementation", "developer", "engineer", "worker", "code", "coding"].includes(lane)) return "implementation";
+  if (["coordinate", "coordinator", "planning", "planner", "orchestration"].includes(lane)) return "coordination";
+  if (["researcher", "scout", "investigation"].includes(lane)) return "research";
+  return lane || "review";
 }
 
 function dashboardProposalCommand(state = {}, proposal = {}, bucket = "") {
@@ -233,7 +251,8 @@ function dashboardProposalCommand(state = {}, proposal = {}, bucket = "") {
   if (bucket !== "unclaimed") return "";
   const lane = proposal.lane || "review";
   const paths = Array.isArray(proposal.paths) ? proposal.paths.map((path) => ` --path ${shellQuote(path)}`).join("") : "";
-  const key = proposal.workKey ? ` --key ${shellQuote(proposal.workKey)}` : "";
+  const workKey = dashboardProposalWorkKey(state, proposal);
+  const key = workKey ? ` --key ${shellQuote(workKey)}` : "";
   return `/peer goal claim ${shellQuote(state.id)} ${shellQuote(`Self-select proposed ${lane} lane: ${proposal.summary || "work"}`)} --mode read --lane ${shellQuote(lane)}${key}${paths}`;
 }
 

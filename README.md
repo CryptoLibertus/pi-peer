@@ -145,7 +145,7 @@ The runner is intentionally conservative:
 - It uses work keys to avoid duplicate dispatch.
 - It holds a coordinator read claim and heartbeats it while active.
 - It releases the coordinator claim and posts a handoff when stopped or when duration expires.
-- It is in-process today: the goal board persists across restarts, but the active timer does not auto-resume after Pi restarts.
+- It records supervisor lifecycle data to the control ledger; on session start Pi attempts to resume persisted hive supervisors whose deadlines have not elapsed.
 
 Use `/peer goal fanout ... --send` or `/peer goal claim ... --mode write` only after reviewing the scout suggestions.
 

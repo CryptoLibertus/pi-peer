@@ -245,7 +245,7 @@ test("derivePeerIdleActivation uses persona fit when suggestions prefer roles", 
   assert.equal(worker.personaFit.matched.includes("worker"), true);
 });
 
-test("derivePeerIdleActivation only suppresses duplicate local work keys or local write claims", () => {
+test("derivePeerIdleActivation only suppresses duplicate local lanes/work keys or local write claims", () => {
   const busyBoard = {
     goals: {
       goal_busy: {
@@ -285,6 +285,26 @@ test("derivePeerIdleActivation only suppresses duplicate local work keys or loca
     nowMs: 1_000,
     config: { cooldownMs: 10_000 },
   }), undefined);
+
+  const driftedKeyBoard = {
+    goals: {
+      goal_busy: {
+        ...busyBoard.goals.goal_busy,
+        events: [
+          busyBoard.goals.goal_busy.events[0],
+          { id: "evt_claim", type: "claim", peerId: "worker-a", summary: "Already researching under an older key", mode: "read", lane: "research", workKey: "self-improve:research:v1", staleAfterMs: 100_000_000_000, at: "2026-01-01T00:00:00.000Z" },
+        ],
+      },
+    },
+  };
+  const driftedActivation = derivePeerIdleActivation(driftedKeyBoard, {
+    localPeerId: "worker-a",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(driftedActivation.kind, "open-proposal");
+  assert.equal(driftedActivation.recommendedLane, "coordination");
+  assert.notEqual(driftedActivation.workKey, "goal_busy|research|intent|read");
 
   const otherPeer = derivePeerIdleActivation(busyBoard, {
     localPeerId: "generic-peer",

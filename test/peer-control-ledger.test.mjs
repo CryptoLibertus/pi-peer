@@ -64,6 +64,14 @@ test("control ledger derives active hive supervisors until stopped or deadline e
   });
 });
 
+test("control ledger rejects corrupt middle records", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { kind: "task", action: "dispatched", messageId: "msg_1" });
+    await writeFile(controlLedgerPath(root), `{"kind":"task","action":"dispatched","messageId":"msg_1"}\n{"kind"\n{"kind":"task","action":"completed","messageId":"msg_1"}\n`, "utf8");
+    await assert.rejects(loadPeerControlLedger(root), /corrupt peer control ledger record at line 2/);
+  });
+});
+
 test("control ledger ignores trailing partial record during load", async (t) => {
   await withRoot(t, async (root) => {
     await appendPeerControlRecord(root, { kind: "task", action: "dispatched", messageId: "msg_1" });

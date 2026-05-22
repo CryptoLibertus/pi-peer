@@ -257,8 +257,9 @@ function renderClaimedPaths(envelope, options = {}) {
 
 function renderTaskHandoffGuidance(envelope) {
   const intent = envelope?.body?.intent || "ask";
-  const claimedPaths = envelope?.body?.metadata?.claimedPaths;
-  const taskLike = intent === "task" || (Array.isArray(claimedPaths) && claimedPaths.length > 0);
+  const metadata = envelope?.body?.metadata || {};
+  const claimedPaths = metadata.claimedPaths;
+  const taskLike = intent === "task" || Boolean(metadata.goalId || metadata.goalClaimId) || (Array.isArray(claimedPaths) && claimedPaths.length > 0);
   if (!taskLike) return "";
   return `\n\nLong-running peer task guidance:\n- Use peer_progress to report meaningful checkpoints before final response when available.\n- Required final handoff for this peer task:\n  - Status: done | blocked | partial\n  - Files changed: path list or none\n  - Verification: command + exit status, or not run with reason\n  - Blockers/risks: concise bullets or none\n  - Safe for review: yes | no\n- Optional quality evidence for research/documentation tasks when relevant or requested:\n  - Citations/Sources: source list showing claim coverage\n  - Fact-checks: checked claims with verdict/source\n  - Limitations: uncertainty, assumptions, or missing evidence\n  - Confidence: 0-1 or percent\n- Use the exact headings above so structured evidence can be captured without changing your final assistant text.`;
 }
@@ -286,6 +287,7 @@ async function recordGoalProgress(entry, progress, options = {}) {
       conversationId: entry.conversationId,
       progress: true,
       ...(progress.status ? { status: progress.status } : {}),
+      ...(progress.detail !== undefined ? { detail: redactPeerAuditValue(progress.detail, { homeDir: options.homeDir || process.env.HOME || "" }) } : {}),
     },
   });
 }

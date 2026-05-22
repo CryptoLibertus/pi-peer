@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { derivePeerGoalWorkKey } from "../src/peers/goal-board.mjs";
 import { deriveFanoutSuggestion, derivePeerRuntimeStatus, formatPeerGoalDashboard, formatPeerStatusText } from "../src/peers/status.mjs";
 
 test("fanout suggestion groups available peers by persona-aware lanes", () => {
@@ -87,6 +88,65 @@ test("goal dashboard groups proposal state and prints safe next actions", () => 
   assert.match(text, /\/peer goal claim goal_dash/);
   assert.match(text, /\/peer goal resolve goal_dash p3/);
   assert.match(text, /Peer contribution\/load/);
+});
+
+test("goal dashboard groups implicit proposal work keys like scout", () => {
+  const goalId = "goal_dash_implicit";
+  const activeKey = derivePeerGoalWorkKey({ goalId, lane: "review", objective: "Implicit active lane", mode: "read", paths: ["README.md"] });
+  const aliasKey = derivePeerGoalWorkKey({ goalId, lane: "review", objective: "Implicit qa lane", mode: "read", paths: ["test"] });
+  const doneKey = derivePeerGoalWorkKey({ goalId, lane: "implementation", objective: "Implicit done lane", mode: "read", paths: ["src/x.mjs"] });
+  const goal = {
+    id: goalId,
+    objective: "Test implicit proposal dashboard",
+    status: "open",
+    events: [
+      { id: "p1", type: "proposal", at: "2026-01-01T00:00:00.000Z", peerId: "planner", summary: "Implicit active lane", lane: "review", paths: ["README.md"] },
+      { id: "c1", type: "claim", at: "2026-01-01T00:00:01.000Z", peerId: "reviewer", summary: "Implicit active lane", mode: "read", lane: "review", workKey: activeKey, paths: ["README.md"], staleAfterMs: 900000 },
+      { id: "p_alias", type: "proposal", at: "2026-01-01T00:00:02.000Z", peerId: "planner", summary: "Implicit qa lane", lane: "qa", paths: ["test"] },
+      { id: "t_alias", type: "task", at: "2026-01-01T00:00:02.500Z", peerId: "planner", summary: "Implicit qa lane", status: "running", taskId: "msg_alias", lane: "review", workKey: aliasKey },
+      { id: "p2", type: "proposal", at: "2026-01-01T00:00:03.000Z", peerId: "planner", summary: "Implicit done lane", lane: "implementation", paths: ["src/x.mjs"] },
+      { id: "c2", type: "claim", at: "2026-01-01T00:00:04.000Z", peerId: "worker", summary: "Implicit done lane", mode: "read", lane: "implementation", workKey: doneKey, paths: ["src/x.mjs"], staleAfterMs: 900000 },
+      { id: "h2", type: "handoff", at: "2026-01-01T00:00:05.000Z", peerId: "worker", summary: "done", lane: "implementation", status: "done", workKey: doneKey },
+      { id: "r2", type: "release", at: "2026-01-01T00:00:06.000Z", peerId: "worker", summary: "done", resolves: "c2" },
+    ],
+  };
+
+  const text = formatPeerGoalDashboard(goal, { now: "2026-01-01T00:05:00.000Z" });
+  assert.match(text, /active-owned: 2/);
+  assert.match(text, /fulfilled-awaiting-resolve: 1/);
+  assert.match(text, /\/peer goal resolve goal_dash_implicit p2/);
+  assert.doesNotMatch(text, /unclaimed:/);
+});
+
+test("goal dashboard derives implicit proposal keys when lane is omitted", () => {
+  const text = formatPeerGoalDashboard({
+    id: "goal_no_lane",
+    objective: "No lane implicit proposal",
+    status: "open",
+    events: [
+      { id: "p1", type: "proposal", at: "2026-01-01T00:00:00.000Z", peerId: "planner", summary: "No lane implicit", paths: ["README.md"] },
+    ],
+  }, { now: "2026-01-01T00:05:00.000Z" });
+
+  assert.match(text, /unclaimed: 1/);
+  assert.match(text, /--lane review/);
+  assert.match(text, /--key 'goal_no_lane\|review\|no lane implicit\|read\|readme\.md'/);
+});
+
+test("goal dashboard safe next actions wait for active tasks", () => {
+  const goal = {
+    id: "goal_active_task",
+    objective: "Do not suggest mutation while tasks run",
+    status: "open",
+    events: [
+      { id: "t1", type: "task", at: "2026-01-01T00:00:00.000Z", peerId: "planner", summary: "Running review", status: "running", taskId: "msg_active", lane: "review", workKey: "review:active" },
+    ],
+  };
+
+  const text = formatPeerGoalDashboard(goal, { now: "2026-01-01T00:05:00.000Z" });
+  assert.match(text, /wait: active peer task\(s\) are still running/);
+  assert.doesNotMatch(text, /no mutation suggested/);
+  assert.doesNotMatch(text, /\/peer goal vote goal_active_task pass/);
 });
 
 test("goal dashboard surfaces unresolved peer handoffs with resolve action", () => {

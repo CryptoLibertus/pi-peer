@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parsePeerCommand } from "../src/peers/command.mjs";
+import { formatPeerHelp, parsePeerCommand } from "../src/peers/command.mjs";
 
 test("parses top-level scout alias as read-only goal scout", () => {
   const parsed = parsePeerCommand("scout goal_123 --limit 3 --include-closed");
@@ -160,6 +160,14 @@ test("parses worktree isolation hints for peer send", () => {
   assert.equal(parsed.metadata.isolationMode, "worktree");
 });
 
+test("peer help documents claim lane, write shorthand, and stale flags", () => {
+  const help = formatPeerHelp();
+  assert.match(help, /goal claim .*--lane <lane>/);
+  assert.match(help, /--mode read\|write\|--write/);
+  assert.match(help, /duplicate-policy reuse\|error\|allow-parallel/);
+  assert.match(help, /--stale-after-ms <ms>/);
+});
+
 test("parses semantic work-key duplicate controls", () => {
   const send = parsePeerCommand("send reviewer Review this --goal goal_123 --key review:abc --lane review --duplicate-policy reuse");
   assert.equal(send.workKey, "review:abc");
@@ -167,9 +175,12 @@ test("parses semantic work-key duplicate controls", () => {
   assert.equal(send.duplicatePolicy, "reuse");
   assert.equal(send.metadata.workKey, "review:abc");
 
-  const claim = parsePeerCommand("goal claim goal_123 Review this --mode read --key review:abc --duplicate-policy allow-parallel");
+  const claim = parsePeerCommand("goal claim goal_123 Review this --write --lane review --key review:abc --duplicate-policy allow-parallel --stale-after-ms 900000");
+  assert.equal(claim.mode, "write");
   assert.equal(claim.workKey, "review:abc");
+  assert.equal(claim.workLane, "review");
   assert.equal(claim.duplicatePolicy, "allow-parallel");
+  assert.equal(claim.staleAfterMs, 900000);
 });
 
 test("repeated scalar flags keep last-value behavior", () => {

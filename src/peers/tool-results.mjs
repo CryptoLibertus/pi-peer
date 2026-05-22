@@ -402,7 +402,6 @@ function extractHandoffSections(text) {
   ];
   const headingPattern = /^\s*(?:[-*]\s*)?(#{1,6}\s*)?(status|files\s+changed|files|artifacts|verification|tests?|blockers?\s*\/\s*risks?|blockers?|risks?|safe\s+for\s+review|citations?(?:\s*\/\s*sources?)?|sources?(?:\s*\/\s*citations?)?|references?|fact[-\s]?checks?|verified\s+claims?|limitations?|assumptions?|uncertainty|unknowns?|confidence)\s*(?::\s*(.*))?$/gim;
   const matches = [...text.matchAll(headingPattern)]
-    .filter((match) => match[1] || match[3] !== undefined)
     .map((match) => ({
       index: match.index || 0,
       length: match[0].length,

@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
+import { appendPeerGoalEvent, createPeerGoal, loadPeerGoalBoard } from "../src/peers/goal-board.mjs";
 import { createInboundPromptBridge } from "../src/peers/inbound-bridge.mjs";
 
 function envelope(id = "msg_1", body = {}) {
@@ -56,6 +61,54 @@ test("inbound bridge initial activation and idle nudge use triggerTurn followUp"
   const response = await responsePromise;
   assert.equal(response.status, "OK");
   assert.equal(bridge.pendingCount(), 0);
+});
+
+test("inbound bridge includes handoff guidance for goal-linked review work", async () => {
+  const sent = [];
+  const bridge = createInboundPromptBridge({
+    pi: { sendMessage: (message, options) => sent.push({ message, options }) },
+    responseTimeoutMs: 60_000,
+  });
+
+  const responsePromise = bridge.handleEnvelope(envelope("msg_goal_review", {
+    intent: "review",
+    metadata: { goalId: "goal_1", goalClaimId: "evt_claim" },
+  }));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].message.content, /Long-running peer task guidance/);
+  assert.match(sent[0].message.content, /Safe for review: yes \| no/);
+
+  bridge.handleAgentEnd({ finalAssistantText: "Status: done\nFiles changed: none\nVerification: not run with reason: prompt rendering only\nBlockers/risks: none\nSafe for review: yes" });
+  assert.equal((await responsePromise).status, "OK");
+});
+
+test("inbound bridge redacts inbound prompts and cancellation reasons", async () => {
+  const sent = [];
+  const bridge = createInboundPromptBridge({
+    pi: { sendMessage: (message, options) => sent.push({ message, options }) },
+    responseTimeoutMs: 60_000,
+    homeDir: "/Users/alice",
+  });
+
+  const ctx = cancellableContext();
+  const responsePromise = bridge.handleEnvelope(envelope("msg_secret", {
+    prompt: "Inspect /Users/alice/project with token=super-secret and Bearer abc.def.ghi",
+    contextRefs: [{ type: "file", value: "/Users/alice/.config with sk-1234567890abcdef" }],
+  }), ctx);
+
+  assert.match(sent[0].message.content, /~\/project/);
+  assert.match(sent[0].message.content, /token=\[REDACTED\]/);
+  assert.match(sent[0].message.content, /Bearer \[REDACTED_TOKEN\]/);
+  assert.match(sent[0].message.content, /\[REDACTED_TOKEN\]/);
+  assert.doesNotMatch(sent[0].message.content, /super-secret|abc\.def\.ghi|sk-1234567890abcdef|\/Users\/alice/);
+
+  ctx.cancel("stop because password=hunter2 under /Users/alice");
+  assert.match(sent[1].message.content, /password=\[REDACTED\]/);
+  assert.match(sent[1].message.content, /under ~/);
+  assert.doesNotMatch(sent[1].message.content, /hunter2|\/Users\/alice/);
+
+  bridge.handleAgentEnd({ finalAssistantText: "cancelled" });
+  assert.equal((await responsePromise).status, "CANCELLED");
 });
 
 test("inbound bridge records redacted diagnostics when agent_end has no final assistant text", async () => {
@@ -296,6 +349,54 @@ Confidence: 82%`;
   negativeConfidence.handleAgentEnd({ finalAssistantText: finalText.replace("Confidence: 82%", "Confidence: -0.1") });
   const negativeResponse = await negativePromise;
   assert.equal(negativeResponse.handoffEvidence.confidence, undefined);
+});
+
+test("inbound bridge records redacted progress detail on goal heartbeats", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-progress-detail-test-"));
+  const goal = await createPeerGoal(root, { objective: "progress detail", peerId: "planner" });
+  const claim = await appendPeerGoalEvent(root, goal.id, {
+    type: "claim",
+    peerId: "worker",
+    summary: "Goal-linked review",
+    mode: "read",
+    lane: "review",
+    workKey: "review:progress-detail",
+    staleAfterMs: 60_000,
+  });
+  const bridge = createInboundPromptBridge({
+    pi: { sendMessage: () => {} },
+    responseTimeoutMs: 60_000,
+    cwd: root,
+    homeDir: "/Users/alice",
+  });
+
+  const responsePromise = bridge.handleEnvelope(envelope("msg_progress", {
+    intent: "review",
+    metadata: { goalId: goal.id, goalClaimId: claim.event.id },
+  }));
+  const progress = bridge.recordProgress({
+    summary: "scanned files",
+    status: "running",
+    phase: "scan",
+    detail: { path: "/Users/alice/project", token: "secret-token" },
+  });
+  assert.equal(progress.ok, true);
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const board = await loadPeerGoalBoard(root);
+    const heartbeat = board.goals[goal.id].events.find((event) => event.type === "heartbeat" && event.metadata?.progress);
+    if (heartbeat) {
+      assert.equal(heartbeat.metadata.detail.path, "~/project");
+      assert.equal(heartbeat.metadata.detail.token, "[REDACTED]");
+      break;
+    }
+    await sleep(5);
+  }
+  const board = await loadPeerGoalBoard(root);
+  assert.ok(board.goals[goal.id].events.some((event) => event.type === "heartbeat" && event.metadata?.detail?.token === "[REDACTED]"));
+
+  bridge.handleAgentEnd({ finalAssistantText: "Status: done\nFiles changed: none\nVerification: not run with reason: progress metadata only\nBlockers/risks: none\nSafe for review: yes" });
+  assert.equal((await responsePromise).status, "OK");
 });
 
 test("inbound bridge uses bounded priority ordering for queued work", async () => {
