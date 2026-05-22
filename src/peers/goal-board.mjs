@@ -68,6 +68,7 @@ export async function appendPeerGoalEvent(root, goalId, eventInput = {}) {
   return updatePeerGoalBoard(root, (board) => {
     const goal = resolveGoal(board, goalId);
     const event = normalizeEvent(eventInput);
+    validateProposalFulfillmentGuard(goal, event);
     if (event.type === "claim") validateClaim(goal, event);
     if (event.type === "proposal") validateProposal(event);
     if (event.type === "release") validateRelease(goal, event);
@@ -144,6 +145,7 @@ export async function beginPeerGoalTask(root, goalId, input = {}) {
       staleAfterMs: input.staleAfterMs,
       metadata: stripEmpty({ requesterPeerId: cleanText(input.requesterPeerId), targetPeerId: cleanText(input.targetPeerId), workKey, lane, duplicatePolicy }),
     });
+    validateProposalFulfillmentGuard(goal, event);
     validateClaim(goal, event);
     goal.events.push(event);
     goal.updatedAt = event.at;
@@ -466,6 +468,28 @@ function validateClaim(goal, event) {
 
 function validateProposal(event) {
   if (!event.summary) throw new Error("peer goal proposal requires a summary");
+}
+
+function validateProposalFulfillmentGuard(goal, event) {
+  if (event.type === "resolve" && event.resolves && eventAlreadyResolved(goal, event.resolves)) {
+    throw new Error(`peer goal event ${event.resolves} is already resolved`);
+  }
+  if (!event.workKey || event.duplicatePolicy === "allow-parallel") return;
+  if (!["claim", "task", "finding", "handoff", "note"].includes(event.type)) return;
+  const resolvedProposal = resolvedProposalForWorkKey(goal, event.workKey);
+  if (!resolvedProposal) return;
+  throw new Error(`work key ${event.workKey} already fulfilled by resolved proposal ${resolvedProposal.id}; use a fresh proposal or --duplicate-policy allow-parallel`);
+}
+
+function eventAlreadyResolved(goal, eventId) {
+  return Array.isArray(goal?.events) && goal.events.some((event) => event.type === "resolve" && event.resolves === eventId);
+}
+
+function resolvedProposalForWorkKey(goal, workKey) {
+  const normalizedWorkKey = normalizeWorkKey(workKey);
+  if (!normalizedWorkKey) return undefined;
+  const resolvedIds = new Set((goal.events || []).filter((event) => event.type === "resolve" && event.resolves).map((event) => event.resolves));
+  return (goal.events || []).find((event) => event.type === "proposal" && resolvedIds.has(event.id) && proposalLaneWorkKey(goal.id, normalizeLaneName(event.lane), event) === normalizedWorkKey);
 }
 
 function evaluateClosurePolicy(policy, context = {}) {

@@ -633,6 +633,87 @@ test("scout stops re-emitting completed proposal lane work but keeps triage visi
   });
 });
 
+test("resolved proposal work keys reject stale prompt fulfillment", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    const workKey = "proposal:idempotency";
+    const proposal = await appendPeerGoalEvent(root, goalId, {
+      type: "proposal",
+      peerId: "planner",
+      summary: "Review stale prompt idempotency",
+      lane: "review",
+      paths: ["src/peers/goal-board.mjs"],
+      workKey,
+    });
+    const claim = await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "reviewer-a",
+      summary: "Self-select proposal lane",
+      mode: "read",
+      lane: "review",
+      paths: ["src/peers/goal-board.mjs"],
+      workKey,
+    });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "finding",
+      peerId: "reviewer-a",
+      summary: "Proposal work completed",
+      lane: "review",
+      workKey,
+    });
+    await appendPeerGoalEvent(root, goalId, { type: "release", peerId: "reviewer-a", resolves: claim.event.id, summary: "review done" });
+    await appendPeerGoalEvent(root, goalId, { type: "resolve", peerId: "coordinator", resolves: proposal.event.id, summary: "proposal fulfilled", workKey });
+
+    await assert.rejects(
+      appendPeerGoalEvent(root, goalId, {
+        type: "claim",
+        peerId: "stale-reviewer",
+        summary: "Stale idle prompt claim",
+        mode: "read",
+        lane: "review",
+        paths: ["src/peers/goal-board.mjs"],
+        workKey,
+      }),
+      /already fulfilled by resolved proposal/,
+    );
+    await assert.rejects(
+      beginPeerGoalTask(root, goalId, {
+        targetPeerId: "stale-worker",
+        prompt: "Stale dispatched prompt",
+        mode: "read",
+        lane: "review",
+        workKey,
+        duplicatePolicy: "reuse",
+      }),
+      /already fulfilled by resolved proposal/,
+    );
+    await assert.rejects(
+      appendPeerGoalEvent(root, goalId, {
+        type: "finding",
+        peerId: "stale-reviewer",
+        summary: "Stale duplicate evidence",
+        lane: "review",
+        workKey,
+      }),
+      /already fulfilled by resolved proposal/,
+    );
+    await assert.rejects(
+      appendPeerGoalEvent(root, goalId, { type: "resolve", peerId: "stale-reviewer", resolves: proposal.event.id, summary: "duplicate resolve", workKey }),
+      /already resolved/,
+    );
+
+    const parallel = await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "reviewer-b",
+      summary: "Explicit parallel follow-up",
+      mode: "read",
+      lane: "review",
+      workKey,
+      duplicatePolicy: "allow-parallel",
+    });
+    assert.equal(parallel.event.duplicatePolicy, "allow-parallel");
+  });
+});
+
 test("scout keeps open proposals ahead of proactive close suggestions", async (t) => {
   await withGoal(t, async (root, goalId) => {
     await appendPeerGoalEvent(root, goalId, {
