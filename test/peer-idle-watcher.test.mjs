@@ -162,6 +162,51 @@ test("derivePeerIdleActivation still goal-cools equal-priority work-item churn",
   }), undefined);
 });
 
+test("derivePeerIdleActivation advances dependency-gated work item chains after completion", () => {
+  const initialBoard = {
+    goals: {
+      goal_chain: {
+        id: "goal_chain",
+        objective: "Run bounded loops",
+        status: "open",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        events: [
+          { id: "evt_item_1", type: "work-item", peerId: "planner", summary: "First loop", itemId: "loop-001", lane: "coordination", status: "open", workKey: "goal_chain:loop-001" },
+          { id: "evt_item_2", type: "work-item", peerId: "planner", summary: "Second loop", itemId: "loop-002", lane: "coordination", status: "open", dependsOn: ["loop-001"], workKey: "goal_chain:loop-002" },
+        ],
+      },
+    },
+  };
+  const state = { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() };
+  const first = derivePeerIdleActivation(initialBoard, {
+    localPeerId: "generic-peer",
+    state,
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(first.workKey, "goal_chain:loop-001");
+  markPeerIdleActivation(state, first, 1_000);
+
+  const advancedBoard = {
+    goals: {
+      goal_chain: {
+        ...initialBoard.goals.goal_chain,
+        events: [
+          ...initialBoard.goals.goal_chain.events,
+          { id: "evt_item_1_done", type: "work-item", peerId: "worker", summary: "First loop done", itemId: "loop-001", lane: "coordination", status: "done", workKey: "goal_chain:loop-001" },
+        ],
+      },
+    },
+  };
+  const second = derivePeerIdleActivation(advancedBoard, {
+    localPeerId: "generic-peer",
+    state,
+    nowMs: 5_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(second.workKey, "goal_chain:loop-002");
+});
+
 test("derivePeerIdleActivation lets urgent blockers bypass same-goal cooldowns", () => {
   const state = { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() };
   const first = derivePeerIdleActivation(openGoalBoard, {

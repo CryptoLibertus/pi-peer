@@ -378,8 +378,9 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
         });
       }
     }
-    if (state.blockedWorkItems.length) {
-      for (const item of state.blockedWorkItems) {
+    const actionableBlockedWorkItems = blockedWorkItemsNeedingTriage(state);
+    if (actionableBlockedWorkItems.length) {
+      for (const item of actionableBlockedWorkItems) {
         push("P1", "work-item", `Resolve dependencies for work item ${item.itemId}: ${item.blockedBy.join(", ")}`, {
           paths: item.paths,
           recommendedLane: "coordination",
@@ -425,6 +426,14 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
     }
   }
   return suggestions;
+}
+
+function blockedWorkItemsNeedingTriage(state) {
+  const unresolvedWorkItemIds = new Set((state.openWorkItems || []).map((item) => item.itemId).filter(Boolean));
+  return (state.blockedWorkItems || []).filter((item) => {
+    const blockers = Array.isArray(item.blockedBy) ? item.blockedBy : [];
+    return blockers.some((dependency) => !unresolvedWorkItemIds.has(dependency));
+  });
 }
 
 export function formatPeerGoal(goal) {

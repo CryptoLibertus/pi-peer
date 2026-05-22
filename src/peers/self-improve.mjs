@@ -186,9 +186,11 @@ export function formatSelfImproveRunResult(result = {}) {
     "",
     result.dispatched
       ? "Bounded supervisor dispatch may now run read-only peer lanes for this goal. Write work must still name paths and pass promotion gates."
-      : result.dispatchRequested && (!result.peers?.length || !result.durationMs)
-        ? "Dispatch requested but skipped: provide both --peer <id[,id]> and --duration <time>. The run was created in safe planning mode."
-        : "No peers dispatched. Add --dispatch with --peer and --duration, use `/peer hive run <objective> --duration <time> --peer <id[,id]>`, or let peers self-select from the goal board.",
+      : result.dispatchRequested && !result.durationMs
+        ? "Dispatch requested but skipped: provide --duration <time>. The run was created in safe planning mode."
+        : result.dispatchRequested && !result.peers?.length
+          ? "Dispatch requested but skipped: no active compatible peers were resolved. Start compatible peers or pass --peer <id[,id]> explicitly; the run was created in safe planning mode."
+          : "No peers dispatched. Add --dispatch with --duration (and optionally --peer <id[,id]>), use `/peer hive run <objective> --duration <time>`, or let peers self-select from the goal board.",
   ].join("\n");
 }
 

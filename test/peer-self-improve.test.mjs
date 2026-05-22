@@ -67,7 +67,9 @@ test("self-improve run creates bounded goal-board work and experiment record", a
     assert.match(experimentText, /"type":"run-started"/);
     assert.match(experimentText, /"autoCommit":true/);
     assert.match(formatSelfImproveRunResult(result), /Self-improvement run/);
-    assert.match(formatSelfImproveRunResult({ ...result, dispatchRequested: true, peers: [], durationMs: 60_000 }), /Dispatch requested but skipped/);
+    assert.match(formatSelfImproveRunResult({ ...result, dispatchRequested: true, peers: [], durationMs: 60_000 }), /no active compatible peers were resolved/);
+    assert.match(formatSelfImproveRunResult({ ...result, dispatchRequested: true, peers: ["worker2"], durationMs: undefined }), /provide --duration/);
+    assert.match(formatSelfImproveRunResult({ ...result, peers: [] }), /Add --dispatch with --duration/);
   });
 });
 

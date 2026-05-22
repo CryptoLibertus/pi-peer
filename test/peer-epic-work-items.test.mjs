@@ -111,6 +111,42 @@ test("work item updates can explicitly clear dependencies", async (t) => {
   });
 });
 
+test("scout avoids dependency churn for blocked work-item chains with open blockers", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "work-item",
+      peerId: "planner",
+      itemId: "loop-001",
+      summary: "Run the first bounded loop",
+      lane: "coordination",
+      status: "open",
+    });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "work-item",
+      peerId: "planner",
+      itemId: "loop-002",
+      dependsOn: ["loop-001"],
+      summary: "Run the second bounded loop",
+      lane: "coordination",
+      status: "open",
+    });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "work-item",
+      peerId: "planner",
+      itemId: "loop-003",
+      dependsOn: ["loop-002"],
+      summary: "Run the third bounded loop",
+      lane: "coordination",
+      status: "open",
+    });
+
+    const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root), { goalId });
+    assert.ok(suggestions.some((item) => item.kind === "work-item" && item.summary.includes("Self-select work item loop-001")));
+    assert.equal(suggestions.some((item) => item.kind === "work-item" && item.summary.includes("Resolve dependencies for work item loop-002")), false);
+    assert.equal(suggestions.some((item) => item.kind === "work-item" && item.summary.includes("Resolve dependencies for work item loop-003")), false);
+  });
+});
+
 test("epic work items cannot satisfy closure while dependencies are incomplete", async (t) => {
   await withGoal(t, async (root, goalId) => {
     await appendPeerGoalEvent(root, goalId, {

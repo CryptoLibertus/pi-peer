@@ -209,7 +209,7 @@ export function derivePeerIdleActivation(board, options = {}) {
     const activation = normalizeActivation(suggestion, options.localPeerId, options);
     if (localPeerHasActiveGoalWork(board, suggestion.goalId, options.localPeerId, activation)) continue;
     if (!activation || !activationFitsPeer(activation, options)) continue;
-    if (isActivationCoolingDown(options.state, activation, config, nowMs)) continue;
+    if (isActivationCoolingDown(options.state, activation, config, nowMs, board)) continue;
     return activation;
   }
   return undefined;
@@ -221,7 +221,12 @@ export function markPeerIdleActivation(state, activation, nowMs = Date.now()) {
   if (!state.lastActivationAtByKey) state.lastActivationAtByKey = new Map();
   if (!state.lastActivationByGoal) state.lastActivationByGoal = new Map();
   state.lastActivationAtByKey.set(peerIdleActivationKey(activation), nowMs);
-  state.lastActivationByGoal.set(activation.goalId, { at: nowMs, priority: activation.priority || "P2" });
+  state.lastActivationByGoal.set(activation.goalId, {
+    at: nowMs,
+    priority: activation.priority || "P2",
+    kind: activation.kind,
+    workKey: activation.workKey,
+  });
   return true;
 }
 
@@ -253,7 +258,7 @@ export function peerIdleActivationKey(activation = {}) {
   return [activation.goalId, activation.kind, activation.recommendedLane, activation.workKey, activation.summary, ...(activation.paths || [])].join("|");
 }
 
-function isActivationCoolingDown(state, activation, config, nowMs) {
+function isActivationCoolingDown(state, activation, config, nowMs, board) {
   const exactLast = state?.lastActivationAtByKey?.get?.(peerIdleActivationKey(activation));
   if (Number.isFinite(exactLast) && nowMs - exactLast < config.cooldownMs) return true;
   const goalLast = state?.lastActivationByGoal?.get?.(activation.goalId);
@@ -267,10 +272,21 @@ function isActivationCoolingDown(state, activation, config, nowMs) {
   // sweep research/review/implementation suggestions before other peers can fit
   // themselves. Equal-priority proposal siblings are different: after one lane is
   // fulfilled, the next proposed lane should be able to continue immediately.
-  // Keep work-item/dependency churn goal-cooled, since large chains can produce
-  // many same-priority suggestions.
   if (activation.kind === "open-proposal" && activationRank === previousRank) return false;
+
+  // Work-item suggestions stay goal-cooled while previous work is still open, but
+  // dependency-gated chains should advance as soon as the prior item is marked
+  // done. Otherwise every peer can be idle for a full cooldown after each loop.
+  if (activation.kind === "work-item" && activationRank === previousRank && goalLast.kind === "work-item" && activation.workKey && goalLast.workKey && activation.workKey !== goalLast.workKey && previousWorkItemIsTerminal(board, activation.goalId, goalLast.workKey)) return false;
   return true;
+}
+
+function previousWorkItemIsTerminal(board = {}, goalId, workKey) {
+  const goal = board?.goals?.[goalId];
+  if (!goal || !workKey) return false;
+  const state = deriveGoalState(goal);
+  const item = state.workItems?.find((workItem) => workItem.workKey === workKey);
+  return ["done", "closed", "cancelled", "canceled", "resolved"].includes(String(item?.status || "").toLowerCase());
 }
 
 function priorityRank(priority) {
