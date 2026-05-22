@@ -499,13 +499,20 @@ async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any)
   if (parsed.selfImproveAction === "status") return formatSelfImproveStatus(await loadSelfImproveState(root));
   if (parsed.selfImproveAction !== "run") throw new Error(`Unknown peer self-improve action '${parsed.selfImproveAction}'`);
 
+  let selfImprovePeers = parsed.peers;
+  if (parsed.dispatch && parsed.durationMs && !selfImprovePeers?.length) {
+    ensureEnabled(runtime);
+    await runtime.refreshLocalPeers();
+    selfImprovePeers = await resolveHiveRunPeers(runtime, []);
+  }
+
   const result = await startSelfImproveRun(root, {
     objective: parsed.objective,
     loops: parsed.loops,
     lanes: parsed.lanes,
     paths: parsed.paths,
     evals: parsed.evals,
-    peers: parsed.peers,
+    peers: selfImprovePeers,
     durationMs: parsed.durationMs,
     autoCommit: parsed.autoCommit,
     peerId,

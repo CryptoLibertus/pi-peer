@@ -258,7 +258,19 @@ function isActivationCoolingDown(state, activation, config, nowMs) {
   if (Number.isFinite(exactLast) && nowMs - exactLast < config.cooldownMs) return true;
   const goalLast = state?.lastActivationByGoal?.get?.(activation.goalId);
   if (!goalLast || !Number.isFinite(goalLast.at) || nowMs - goalLast.at >= config.cooldownMs) return false;
-  return priorityRank(activation.priority) >= priorityRank(goalLast.priority);
+
+  const activationRank = priorityRank(activation.priority);
+  const previousRank = priorityRank(goalLast.priority);
+  if (activationRank < previousRank) return false;
+
+  // Startup lanes are intentionally one-at-a-time so a generic idle peer does not
+  // sweep research/review/implementation suggestions before other peers can fit
+  // themselves. Equal-priority proposal siblings are different: after one lane is
+  // fulfilled, the next proposed lane should be able to continue immediately.
+  // Keep work-item/dependency churn goal-cooled, since large chains can produce
+  // many same-priority suggestions.
+  if (activation.kind === "open-proposal" && activationRank === previousRank) return false;
+  return true;
 }
 
 function priorityRank(priority) {

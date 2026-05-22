@@ -95,6 +95,73 @@ test("derivePeerIdleActivation goal-cooldowns prevent one generic peer from swee
   }).recommendedLane, "research");
 });
 
+test("derivePeerIdleActivation lets equal-priority proposal siblings continue after a lane finishes", () => {
+  const proposalBoard = {
+    goals: {
+      goal_multi: {
+        id: "goal_multi",
+        objective: "Self-organize across lanes",
+        status: "open",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        events: [
+          { id: "evt_research", type: "proposal", peerId: "planner", summary: "Research the plan", lane: "research", workKey: "goal_multi:research" },
+          { id: "evt_review", type: "proposal", peerId: "planner", summary: "Review the plan", lane: "review", workKey: "goal_multi:review" },
+        ],
+      },
+    },
+  };
+  const state = { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() };
+  const first = derivePeerIdleActivation(proposalBoard, {
+    localPeerId: "generic-peer",
+    state,
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(first.workKey, "goal_multi:research");
+  markPeerIdleActivation(state, first, 1_000);
+
+  const second = derivePeerIdleActivation(proposalBoard, {
+    localPeerId: "generic-peer",
+    state,
+    nowMs: 5_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(second.workKey, "goal_multi:review");
+});
+
+test("derivePeerIdleActivation still goal-cools equal-priority work-item churn", () => {
+  const workItemBoard = {
+    goals: {
+      goal_items: {
+        id: "goal_items",
+        objective: "Avoid dependency churn",
+        status: "open",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        events: [
+          { id: "evt_item_1", type: "work-item", peerId: "planner", summary: "First item", itemId: "item-1", lane: "coordination", status: "open", workKey: "goal_items:item-1" },
+          { id: "evt_item_2", type: "work-item", peerId: "planner", summary: "Second item", itemId: "item-2", lane: "coordination", status: "open", workKey: "goal_items:item-2" },
+        ],
+      },
+    },
+  };
+  const state = { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() };
+  const first = derivePeerIdleActivation(workItemBoard, {
+    localPeerId: "generic-peer",
+    state,
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(first.workKey, "goal_items:item-1");
+  markPeerIdleActivation(state, first, 1_000);
+
+  assert.equal(derivePeerIdleActivation(workItemBoard, {
+    localPeerId: "generic-peer",
+    state,
+    nowMs: 5_000,
+    config: { cooldownMs: 10_000 },
+  }), undefined);
+});
+
 test("derivePeerIdleActivation lets urgent blockers bypass same-goal cooldowns", () => {
   const state = { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() };
   const first = derivePeerIdleActivation(openGoalBoard, {

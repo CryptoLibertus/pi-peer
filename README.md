@@ -185,7 +185,7 @@ A run creates:
 - `.pi/self-improve/experiments.jsonl` — append-only run/experiment records
 - a peer goal with dependency-gated loop work items and lane proposals
 
-Self-improvement remains bounded: loops are capped at 100 per run, peer dispatch is off unless `--dispatch` is supplied with `--peer` and `--duration`, write work still needs explicit paths/worktree or branch isolation, promotion requires evals and peer review evidence, and destructive commands/npm publishing are forbidden. `--auto-commit` records an opt-in promotion policy for a future approved runner; it does not publish packages or bypass normal review gates.
+Self-improvement remains bounded: loops are capped at 100 per run, peer dispatch is off unless `--dispatch` is supplied with `--duration`; pass `--peer` to choose peers, or omit it to use active compatible peers. Write work still needs explicit paths/worktree or branch isolation, promotion requires evals and peer review evidence, and destructive commands/npm publishing are forbidden. `--auto-commit` records an opt-in promotion policy for a future approved runner; it does not publish packages or bypass normal review gates.
 
 ## Plan-to-board and isolated implementation lanes
 

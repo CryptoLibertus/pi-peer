@@ -34,7 +34,7 @@ What it creates:
 Safety expectations:
 
 - Runs are bounded; `--loops` is capped at 100.
-- Peer dispatch is off by default and requires `--dispatch` plus `--peer` and `--duration`.
+- Peer dispatch is off by default and requires `--dispatch` plus `--duration`; pass `--peer` to choose peers, or omit it to use active compatible peers.
 - Write work still needs explicit paths and should use worktree/branch isolation.
 - `--auto-commit` is policy metadata only; it does not automatically publish or bypass review gates.
 - Never run `npm publish`, force-push, destructive filesystem/database commands, or weaken tests as part of autonomous self-improvement.
