@@ -76,6 +76,32 @@ test("hive start, run, status, and stop validate required arguments", () => {
   assert.match(parsePeerCommand("swarm review something").error, /Unknown \/peer swarm action 'review'/);
 });
 
+test("parses bounded self-improve commands", () => {
+  const init = parsePeerCommand("self-improve init --overwrite");
+  assert.equal(init.subcommand, "self-improve");
+  assert.equal(init.selfImproveAction, "init");
+  assert.equal(init.overwrite, true);
+
+  const run = parsePeerCommand("improve run Improve peer safety --loops 12 --duration 30m --peer worker2,worker3 --dispatch --path src --eval 'npm test' --auto-commit --lane research,review");
+  assert.equal(run.subcommand, "improve");
+  assert.equal(run.selfImproveAction, "run");
+  assert.equal(run.objective, "Improve peer safety");
+  assert.equal(run.loops, 12);
+  assert.equal(run.durationMs, 1_800_000);
+  assert.deepEqual(run.peers, ["worker2", "worker3"]);
+  assert.deepEqual(run.paths, ["src"]);
+  assert.deepEqual(run.evals, ["npm test"]);
+  assert.deepEqual(run.lanes, ["research", "review"]);
+  assert.equal(run.dispatch, true);
+  assert.equal(run.autoCommit, true);
+
+  assert.equal(parsePeerCommand("self-improve run Improve safely --peer worker2 --duration 1m").dispatch, false);
+  assert.match(parsePeerCommand("self-improve run").error, /run requires <objective>/);
+  assert.match(parsePeerCommand("self-improve run Improve --loops 0").error, /positive integer/);
+  assert.match(parsePeerCommand("self-improve run Improve --loops 101").error, /bounded/);
+  assert.match(parsePeerCommand("self-improve forever").error, /Unknown \/peer self-improve action/);
+});
+
 test("parses proposal aliases as proposal events", () => {
   for (const raw of [
     "proposal goal_123 Add a reviewer lane --path src,README.md",
@@ -166,6 +192,7 @@ test("peer help documents claim lane, write shorthand, and stale flags", () => {
   assert.match(help, /--mode read\|write\|--write/);
   assert.match(help, /duplicate-policy reuse\|error\|allow-parallel/);
   assert.match(help, /--stale-after-ms <ms>/);
+  assert.match(help, /self-improve init\|status\|run/);
 });
 
 test("parses semantic work-key duplicate controls", () => {

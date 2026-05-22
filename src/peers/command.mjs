@@ -1,6 +1,6 @@
 import { flagEnabled, parseFlags, splitCommandLine } from "../utils.mjs";
 
-export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm"]);
+export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve"]);
 
 const PEER_GOAL_ALIASES = Object.freeze({
   goals: ["list"],
@@ -84,6 +84,9 @@ export function parsePeerCommand(rawArgs = "") {
   if (subcommand === "hive" || subcommand === "swarm") {
     return parsePeerHiveCommand(parsed, flags, positionals);
   }
+  if (subcommand === "self-improve" || subcommand === "improve") {
+    return parsePeerSelfImproveCommand(parsed, flags, positionals);
+  }
   if (subcommand === "progress") {
     const summary = positionals.join(" ").trim();
     if (!summary) return { ...parsed, error: "/peer progress requires <summary>" };
@@ -153,6 +156,7 @@ export function formatPeerHelp() {
     "- `/peer hive start <objective> [--constraint <a,b>] [--path <a,b>] [--lane research,review,implementation]` — create a goal, seed read-only self-selection proposals, and print scout commands without dispatching peers",
     "- `/peer hive run <objective> --duration <5h|30m|300s> [--peer <id[,id]>] [--interval-ms <ms>] [--lane research,review,implementation]` — start a bounded closed-loop supervisor that dispatches read-only peer lanes until duration expires",
     "- `/peer hive status|stop <goal-id>` — inspect or stop an in-process hive run supervisor",
+    "- `/peer self-improve init|status|run <objective> [--loops <1-100>] [--duration <5h|30m|300s>] [--peer <id[,id]>] [--dispatch] [--path <a,b>] [--eval <cmd>] [--auto-commit]` — initialize and run bounded recursive self-improvement experiments with safe defaults",
     "- `/peer goals|ls`, `/peer current [goal-id]`, `/peer scout [goal-id]`, `/peer dashboard [goal-id]`, `/peer fanout`, `/peer propose`, `/peer take|claim`, `/peer complete|done`, `/peer objection|block`, `/peer unblock`, `/peer ping`, `/peer drop`, `/peer pass|fail` — short goal-board aliases",
     "- `/peer goal create <objective> [--constraint <a,b>]` — start a flat shared goal board",
     "- `/peer goal list|show [goal-id]` — inspect peer goals, active claims, blockers, proposals, and votes",
@@ -222,6 +226,34 @@ function durationFlag(value) {
   const factor = unit === "d" ? 86_400_000 : unit === "h" ? 3_600_000 : unit === "m" ? 60_000 : unit === "s" ? 1_000 : 1;
   const ms = Math.round(number * factor);
   return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined;
+}
+
+function parsePeerSelfImproveCommand(parsed, flags, positionals) {
+  const action = positionals[0] || "status";
+  const rest = positionals.slice(1);
+  const withAction = { ...parsed, selfImproveAction: action };
+  if (!["init", "status", "run"].includes(action)) return { ...withAction, error: `Unknown /peer ${parsed.subcommand} action '${action}'` };
+  if (action === "init") return { ...withAction, overwrite: flagEnabled(flags.overwrite) };
+  if (action === "status") return withAction;
+  const objective = rest.join(" ").trim();
+  if (!objective) return { ...withAction, error: `/peer ${parsed.subcommand} run requires <objective>` };
+  const loopFlag = firstDefined(flags.loops, flags.loop);
+  const loops = loopFlag === undefined ? 10 : positiveIntegerFlag(loopFlag);
+  if (!loops) return { ...withAction, error: `/peer ${parsed.subcommand} run requires --loops to be a positive integer` };
+  if (loops > 100) return { ...withAction, error: `/peer ${parsed.subcommand} run is bounded to --loops 100 or fewer` };
+  return {
+    ...withAction,
+    objective,
+    loops,
+    durationMs: durationFlag(flags.duration || flags.for || flags.timebox),
+    intervalMs: positiveIntegerFlag(flags.intervalMs) || positiveIntegerFlag(flags.interval),
+    peers: listFlag(flags.peer || flags.peers),
+    paths: listFlag(flags.path || flags.paths),
+    lanes: listFlag(flags.lane || flags.lanes),
+    evals: listFlag(flags.eval || flags.evals || flags.check || flags.checks),
+    dispatch: flagEnabled(flags.dispatch || flags.send),
+    autoCommit: flagEnabled(flags.autoCommit || flags.commit),
+  };
 }
 
 function parsePeerGoalCommand(parsed, flags, positionals) {

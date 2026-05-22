@@ -22,6 +22,7 @@ import {
 import { PEER_TOOL_NAMES, PEER_TOOL_PROMPT_GUIDELINES } from "../../src/peers/guidance.mjs";
 import { createPeerIdleWatcher } from "../../src/peers/idle-watcher.mjs";
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcilePeerControlLedger } from "../../src/peers/control-ledger.mjs";
+import { formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
 
 const MESSAGE_TYPE = "pi-peer";
 const runtimeByCwd = new Map<string, Promise<any>>();
@@ -71,8 +72,8 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("peer", {
-    description: "Pi-to-Pi peers: setup, doctor, status, list, send, get, await, progress, goal, hive",
-    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
+    description: "Pi-to-Pi peers: setup, doctor, status, list, send, get, await, progress, goal, hive, self-improve",
+    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (rawArgs, ctx) => {
@@ -368,6 +369,11 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       await refresh();
       return sendPeerMessage(pi, text);
     }
+    if (parsed.subcommand === "self-improve" || parsed.subcommand === "improve") {
+      const text = await handlePeerSelfImproveCommand(parsed, ctx, runtime);
+      await refresh();
+      return sendPeerMessage(pi, text);
+    }
 
     ensureEnabled(runtime);
     if (parsed.subcommand === "progress") {
@@ -484,6 +490,73 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
     await refresh().catch(() => {});
     return sendPeerMessage(pi, formatPeerCommandError(error?.message || String(error)));
   }
+}
+
+async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any) {
+  const root = ctx?.cwd || process.cwd();
+  const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown";
+  if (parsed.selfImproveAction === "init") return formatSelfImproveInitResult(await initSelfImprove(root, { overwrite: parsed.overwrite }));
+  if (parsed.selfImproveAction === "status") return formatSelfImproveStatus(await loadSelfImproveState(root));
+  if (parsed.selfImproveAction !== "run") throw new Error(`Unknown peer self-improve action '${parsed.selfImproveAction}'`);
+
+  const result = await startSelfImproveRun(root, {
+    objective: parsed.objective,
+    loops: parsed.loops,
+    lanes: parsed.lanes,
+    paths: parsed.paths,
+    evals: parsed.evals,
+    peers: parsed.peers,
+    durationMs: parsed.durationMs,
+    autoCommit: parsed.autoCommit,
+    peerId,
+  });
+  result.dispatchRequested = parsed.dispatch === true;
+
+  if (parsed.dispatch && result.peers?.length && result.durationMs) {
+    ensureEnabled(runtime);
+    await runtime.refreshLocalPeers();
+    const intervalMs = parsed.intervalMs || defaultHiveRunIntervalMs(result.durationMs);
+    const coordinatorClaim = await appendPeerGoalEvent(root, result.goalId, {
+      type: "claim",
+      peerId,
+      summary: `Self-improvement coordinator for ${result.runId}`,
+      mode: "read",
+      lane: "coordination",
+      workKey: `self-improve:${result.runId}:coordinator`,
+      staleAfterMs: Math.max(intervalMs * 3, 60_000),
+      metadata: { selfImprove: { runId: result.runId } },
+    });
+    await appendPeerGoalEvent(root, result.goalId, {
+      type: "note",
+      peerId,
+      summary: `Self-improvement bounded supervisor started for ${formatDuration(result.durationMs)} with ${result.peers.length} peer${result.peers.length === 1 ? "" : "s"}; interval ${intervalMs}ms; autoCommit=${result.autoCommit ? "on" : "off"}.`,
+      lane: "coordination",
+      metadata: { selfImprove: { runId: result.runId }, durationMs: result.durationMs, intervalMs, peers: result.peers, coordinatorClaimId: coordinatorClaim.event.id },
+    });
+    const dispatches = await dispatchPeerHiveRunTick(root, runtime, {
+      goalId: result.goalId,
+      peers: result.peers,
+      lanes: result.lanes,
+      reason: "self-improve-initial",
+      objective: `Self-improve: ${parsed.objective}`,
+      durationMs: result.durationMs,
+      intervalMs,
+    });
+    result.dispatched = true;
+    schedulePeerHiveRun(root, runtime, {
+      goalId: result.goalId,
+      peers: result.peers,
+      lanes: result.lanes,
+      objective: `Self-improve: ${parsed.objective}`,
+      durationMs: result.durationMs,
+      intervalMs,
+      peerId,
+      coordinatorClaimId: coordinatorClaim.event.id,
+    });
+    return `${formatSelfImproveRunResult(result)}\n\n${formatHiveDispatchLines(dispatches).join("\n")}`;
+  }
+
+  return formatSelfImproveRunResult(result);
 }
 
 async function handlePeerHiveCommand(parsed: any, ctx: any, runtime: any) {

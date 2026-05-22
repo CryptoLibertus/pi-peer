@@ -27,6 +27,7 @@ Without coordination, parallel agents step on files, duplicate the same task, lo
 - **Compact peer context views:** `peer_get` and `/peer get` default to bounded summaries for goals, tasks, messages, runtime, and audit data, with `view: full` / `--full` / `--raw` for exact JSON when needed.
 - **Flat goal-board coordination:** peers can propose, claim, post findings, object, resolve, vote, and close without a central planner micromanaging every step.
 - **Closed-loop swarm experiments:** `/peer hive run` creates a bounded supervisor loop that repeatedly scouts the board, dispatches read-only lanes, and stops at a deadline.
+- **Bounded self-improvement runs:** `/peer self-improve init|run|status` creates a repo-local constitution, goal backlog, experiment ledger, and goal-board loops for recursive improvement experiments.
 - **Plan-to-board scheduler:** `/peer goal plan` expands an objective into dependency-gated work items plus lane proposals peers can self-select.
 - **Worktree isolation hints:** `/peer send ... --worktree` and `peer_send({ isolationMode: "worktree" })` tell implementation peers to work in an isolated git worktree and report merge/apply instructions.
 - **Idle progress:** idle peers can inspect scout suggestions and take small safe actions without being directly assigned.
@@ -41,13 +42,14 @@ pi install ./packages/pi-peer
 
 ## What it adds
 
-- `/peer help|setup|doctor|status|list|init|reconnect|resume|cancel|send|get|await|goal|scout|hive|swarm`
+- `/peer help|setup|doctor|status|list|init|reconnect|resume|cancel|send|get|await|goal|scout|hive|swarm|self-improve`
 - `peer_list`, `peer_send`, `peer_get`, `peer_await`, and `peer_progress` tools
 - Local peer discovery and transport using project `.pi/peers.json`
 - Repo-scoped discovery: only Pi sessions in the same git repo/project appear as local peers
 - Idle watcher daemon: idle peers nudge stuck inbound activations and proactively inspect open goal-board work
 - Persona-aware scout routing: goal-board suggestions include recommended lanes, preferred roles, claim mode, work keys, and rationale so proactive peers can self-select complementary work that fits their role/persona
 - Hive/swarm commands for safe goal seeding and bounded closed-loop dispatch
+- Self-improvement commands for bounded recursive improvement experiments with `.pi/self-improve/` constitution, goals, and experiment ledger
 - Protocol compatibility metadata (`protocolVersion`, min/max compatible versions), peer manifests, capabilities, and trust summaries in descriptors/status/list output
 - `PI_PEER_ID` runtime override for running multiple local Pi sessions
 - `pi-peer-publish` skill for safe npm release checks, version bumping, tag push, publish, and verification
@@ -165,6 +167,25 @@ Use the raw escape hatch when you need exact JSON:
 ```
 
 Tool callers can pass `{ "view": "full" }` or `{ "view": "raw" }`. Use `peer_get({ id: "control" })` to inspect the durable control-plane ledger summary, including active/disconnected tasks and active hive supervisors.
+
+## Bounded self-improvement runs
+
+`/peer self-improve` is a safety-first recursive improvement scaffold. It does not hand an unbounded agent the repository. Instead it writes a repo-local constitution, goal backlog, and append-only experiment ledger under `.pi/self-improve/`, then maps each bounded run onto the normal peer goal board.
+
+```bash
+/peer self-improve init
+/peer self-improve status
+/peer self-improve run "Improve peer coordination safety" --loops 10 --duration 30m --peer worker2,worker3 --dispatch --path src/peers --eval "npm test"
+```
+
+A run creates:
+
+- `.pi/self-improve/constitution.md` — philosophy, non-goals, and promotion rules for recursive improvement
+- `.pi/self-improve/goals.json` — high-level user-owned improvement targets
+- `.pi/self-improve/experiments.jsonl` — append-only run/experiment records
+- a peer goal with dependency-gated loop work items and lane proposals
+
+Self-improvement remains bounded: loops are capped at 100 per run, peer dispatch is off unless `--dispatch` is supplied with `--peer` and `--duration`, write work still needs explicit paths/worktree or branch isolation, promotion requires evals and peer review evidence, and destructive commands/npm publishing are forbidden. `--auto-commit` records an opt-in promotion policy for a future approved runner; it does not publish packages or bypass normal review gates.
 
 ## Plan-to-board and isolated implementation lanes
 
