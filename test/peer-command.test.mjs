@@ -143,6 +143,23 @@ test("repeated list-style flags append instead of replacing earlier values", () 
   assert.deepEqual(fanout.paths, ["src", "test"]);
 });
 
+test("parses plan-to-board scheduler command", () => {
+  const parsed = parsePeerCommand("goal plan goal_123 Ship durable lanes --lane research,implementation,review --path src --path test --prefix epic");
+  assert.equal(parsed.subcommand, "goal");
+  assert.equal(parsed.goalAction, "plan");
+  assert.equal(parsed.goalId, "goal_123");
+  assert.equal(parsed.objective, "Ship durable lanes");
+  assert.deepEqual(parsed.lanes, ["research", "implementation", "review"]);
+  assert.deepEqual(parsed.paths, ["src", "test"]);
+  assert.equal(parsed.workKeyPrefix, "epic");
+});
+
+test("parses worktree isolation hints for peer send", () => {
+  const parsed = parsePeerCommand("send worker Implement this --goal goal_123 --claim src --worktree");
+  assert.equal(parsed.isolationMode, "worktree");
+  assert.equal(parsed.metadata.isolationMode, "worktree");
+});
+
 test("parses semantic work-key duplicate controls", () => {
   const send = parsePeerCommand("send reviewer Review this --goal goal_123 --key review:abc --lane review --duplicate-policy reuse");
   assert.equal(send.workKey, "review:abc");

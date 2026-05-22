@@ -4,6 +4,7 @@ import { InMemoryPeerTransport, MemoryPeerRegistry, createPeerComms } from "./co
 import { applyLocalPeerIdOverride, loadLocalPeerProfile, loadPeerRuntimeConfig, summarizePeerRuntimeConfig } from "./config.mjs";
 import { normalizePeerContextBudget } from "./context-budget.mjs";
 import { deriveGoalState, loadPeerGoalBoard } from "./goal-board.mjs";
+import { derivePeerControlState, loadPeerControlLedger } from "./control-ledger.mjs";
 import { createInboundPromptBridge } from "./inbound-bridge.mjs";
 import { LocalPeerTransport, createLocalPeerEndpoint, derivePeerProjectScope, discoverLocalPeerEndpoints } from "./local-transport.mjs";
 import { createPeerMessageStore } from "./message-store.mjs";
@@ -195,7 +196,14 @@ export async function getPeerRuntimeValue(runtime, id) {
     const goal = goalId ? board.goals[goalId] : undefined;
     return goal ? { type: "goal", value: deriveGoalState(goal) } : { type: "missing", value: undefined };
   }
-  if (id === "tasks") return { type: "tasks", value: { active: await runtime.comms.listTasks({ active: true }), all: await runtime.comms.listTasks(), inbound: runtime.activeInboundState?.(), note: "Active tasks are queued/running/cancelling peer messages; disconnected tasks were restored from the local message store and are not awaitable." } };
+  if (id === "tasks") {
+    const ledger = await loadPeerControlLedger(runtime.cwd).catch(() => ({ records: [], warnings: [] }));
+    return { type: "tasks", value: { active: await runtime.comms.listTasks({ active: true }), all: await runtime.comms.listTasks(), inbound: runtime.activeInboundState?.(), control: derivePeerControlState(ledger.records), controlWarnings: ledger.warnings, note: "Active tasks are queued/running/cancelling peer messages; disconnected tasks were restored from the local message store and are not awaitable." } };
+  }
+  if (id === "control" || id === "ledger") {
+    const ledger = await loadPeerControlLedger(runtime.cwd).catch(() => ({ records: [], warnings: [] }));
+    return { type: "control", value: { ...derivePeerControlState(ledger.records), warnings: ledger.warnings } };
+  }
   if (id === "fanout") {
     const peers = await runtime.comms.listPeers();
     const messages = await runtime.comms.listMessages();

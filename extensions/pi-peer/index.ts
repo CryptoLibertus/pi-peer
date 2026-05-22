@@ -21,6 +21,7 @@ import {
 } from "../../src/peers/tool-results.mjs";
 import { PEER_TOOL_NAMES, PEER_TOOL_PROMPT_GUIDELINES } from "../../src/peers/guidance.mjs";
 import { createPeerIdleWatcher } from "../../src/peers/idle-watcher.mjs";
+import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcilePeerControlLedger } from "../../src/peers/control-ledger.mjs";
 
 const MESSAGE_TYPE = "pi-peer";
 const runtimeByCwd = new Map<string, Promise<any>>();
@@ -42,6 +43,8 @@ export default function piPeerExtension(pi: ExtensionAPI) {
     updatePeerContextBudget(runtime, ctx);
     attachPeerUi(runtime, () => activeContext, (current: any) => refreshPeerUi(current, runtime));
     attachPeerIdleWatcher(pi, runtime, () => activeContext, (current: any) => refreshPeerUi(current, runtime));
+    await reconcilePeerControlState(ctx.cwd || process.cwd(), runtime);
+    await resumePersistedHiveRuns(ctx.cwd || process.cwd(), runtime);
     await refreshPeerUi(ctx, runtime);
   });
 
@@ -119,13 +122,14 @@ export default function piPeerExtension(pi: ExtensionAPI) {
       workLane: Type.Optional(Type.String({ description: "Semantic work lane, e.g. research, review, coordination, or implementation" })),
       duplicatePolicy: Type.Optional(Type.String({ description: "Duplicate work policy: reuse (default), error, or allow-parallel" })),
       goalStaleAfterMs: Type.Optional(Type.Number({ description: "Milliseconds before this goal claim is considered stale without heartbeat" })),
+      isolationMode: Type.Optional(Type.String({ description: "Optional execution isolation hint, e.g. worktree" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const runtime = await runtimeFor(pi, ctx?.cwd);
       attachPeerUi(runtime, () => activeContext, (current: any) => refreshPeerUi(current, runtime));
       ensureEnabled(runtime);
       await runtime.refreshLocalPeers();
-      const metadata = mergePeerMetadata(params.metadata, params.claimedPaths, params.goalId, { workKey: params.workKey, workLane: params.workLane, duplicatePolicy: params.duplicatePolicy });
+      const metadata = mergePeerMetadata(params.metadata, params.claimedPaths, params.goalId, { workKey: params.workKey, workLane: params.workLane, duplicatePolicy: params.duplicatePolicy, isolationMode: params.isolationMode });
       const goalLink = await beginPeerSendGoalLink(ctx?.cwd, runtime, {
         goalId: params.goalId,
         targetPeerId: params.peer,
@@ -146,7 +150,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
       let handle: any;
       try {
         handle = await runtime.comms.sendMessage(params.peer, {
-          prompt: withPeerGoalInstructions(params.prompt, goalLink),
+          prompt: withPeerGoalInstructions(withPeerIsolationInstructions(params.prompt, metadata), goalLink),
           intent: params.intent || "ask",
           contextRefs: params.contextRefs || [],
           metadata,
@@ -245,6 +249,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
     promptGuidelines: PEER_TOOL_PROMPT_GUIDELINES[PEER_TOOL_NAMES.get],
     parameters: Type.Object({
       id: Type.String({ description: "Peer id, conversation id, message id, 'runtime', or 'audit'" }),
+      view: Type.Optional(Type.String({ description: "compact (default), full, or raw" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const runtime = await runtimeFor(pi, ctx?.cwd);
@@ -253,7 +258,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
       if (runtime.enabled) await runtime.refreshLocalPeers();
       const { type, value } = await getPeerRuntimeValue(runtime, params.id);
       await refreshPeerUi(ctx, runtime);
-      return peerGetToolResult(params.id, type, value);
+      return peerGetToolResult(params.id, type, value, { view: params.view });
     },
   });
 
@@ -372,7 +377,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
     }
     if (parsed.subcommand === "send") {
       await runtime.refreshLocalPeers();
-      const metadata = { ...(parsed.metadata || {}) };
+      const metadata = mergePeerMetadata(parsed.metadata, parsed.claimedPaths, parsed.goalId, { workKey: parsed.workKey, workLane: parsed.workLane, duplicatePolicy: parsed.duplicatePolicy, isolationMode: parsed.isolationMode });
       const goalLink = await beginPeerSendGoalLink(ctx?.cwd, runtime, {
         goalId: parsed.goalId,
         targetPeerId: parsed.peerId,
@@ -392,7 +397,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       if (goalLink?.workKey) metadata.workKey = goalLink.workKey;
       let handle: any;
       try {
-        handle = await runtime.comms.sendMessage(parsed.peerId, { prompt: withPeerGoalInstructions(parsed.prompt, goalLink), intent: parsed.intent, metadata }, { maxHopCount: parsed.maxHopCount, allowSelf: parsed.allowSelf });
+        handle = await runtime.comms.sendMessage(parsed.peerId, { prompt: withPeerGoalInstructions(withPeerIsolationInstructions(parsed.prompt, metadata), goalLink), intent: parsed.intent, metadata }, { maxHopCount: parsed.maxHopCount, allowSelf: parsed.allowSelf });
       } catch (error: any) {
         await recordPeerSendGoalFailure(ctx?.cwd, goalLink, {
           targetPeerId: parsed.peerId,
@@ -430,11 +435,29 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
     if (parsed.subcommand === "resume") {
       if (runtime.enabled) await runtime.refreshLocalPeers();
       const handle = await runtime.comms.resumeMessage(parsed.messageId);
+      await appendPeerControlRecord(ctx?.cwd || process.cwd(), {
+        kind: "task",
+        action: "resumed",
+        status: "running",
+        messageId: handle.messageId,
+        conversationId: handle.conversationId,
+        peerId: handle.peerId,
+        summary: "Peer message resumed",
+      }).catch(() => {});
       await refresh();
       return sendPeerMessage(pi, `Peer message resumed: ${handle.messageId} in ${handle.conversationId}. Use /peer await ${handle.messageId} to wait for completion.`);
     }
     if (parsed.subcommand === "cancel") {
       const message = await runtime.comms.cancelMessage(parsed.messageId, parsed.reason);
+      await appendPeerControlRecord(ctx?.cwd || process.cwd(), {
+        kind: "task",
+        action: "cancelled",
+        status: "cancelled",
+        messageId: parsed.messageId,
+        conversationId: message?.conversationId,
+        peerId: message?.peerId,
+        summary: parsed.reason,
+      }).catch(() => {});
       await refresh();
       return sendPeerMessage(pi, `Peer message cancelled: ${parsed.messageId}${message?.conversationId ? ` in ${message.conversationId}` : ""}.`);
     }
@@ -442,7 +465,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       if (runtime.enabled) await runtime.refreshLocalPeers();
       const { type, value } = await getPeerRuntimeValue(runtime, parsed.id);
       await refresh();
-      return sendPeerMessage(pi, peerGetToolResult(parsed.id, type, value).content[0].text);
+      return sendPeerMessage(pi, peerGetToolResult(parsed.id, type, value, { view: peerGetViewFromFlags(parsed.flags) }).content[0].text);
     }
     if (parsed.subcommand === "await") {
       const responses = [];
@@ -571,6 +594,15 @@ function schedulePeerHiveRun(root: string, runtime: any, options: any) {
   if (existing?.deadlineTimer) clearTimeout(existing.deadlineTimer);
   const intervalMs = options.intervalMs || defaultHiveRunIntervalMs(options.durationMs);
   const startedAt = Date.now();
+  const deadlineAt = options.deadlineAt || new Date(startedAt + (options.durationMs || 0)).toISOString();
+  void appendPeerControlRecord(root, {
+    kind: "hive",
+    action: options.recovered ? "resumed" : "started",
+    status: options.recovered ? "resumed" : "started",
+    goalId: options.goalId,
+    summary: options.recovered ? "Hive run supervisor resumed from durable ledger" : "Hive run supervisor started",
+    metadata: { key, deadlineAt, intervalMs, durationMs: options.durationMs, peers: options.peers, lanes: options.lanes, objective: options.objective, coordinatorClaimId: options.coordinatorClaimId },
+  }).catch(() => {});
   const stop = async (reason = "deadline") => {
     const current = hiveRunsByKey.get(key);
     if (current?.timer) clearInterval(current.timer);
@@ -592,6 +624,14 @@ function schedulePeerHiveRun(root: string, runtime: any, options: any) {
       status: "done",
       metadata: { hiveRun: true, reason, elapsedMs: Date.now() - startedAt },
     }).catch(() => {});
+    await appendPeerControlRecord(root, {
+      kind: "hive",
+      action: "stopped",
+      status: reason === "duration elapsed" ? "elapsed" : "stopped",
+      goalId: options.goalId,
+      summary: `Hive run supervisor stopped: ${reason}`,
+      metadata: { key, reason, elapsedMs: Date.now() - startedAt, deadlineAt },
+    }).catch(() => {});
   };
   const timer = setInterval(() => {
     if (options.coordinatorClaimId) {
@@ -604,6 +644,14 @@ function schedulePeerHiveRun(root: string, runtime: any, options: any) {
         metadata: { hiveRun: true },
       }).catch(() => {});
     }
+    void appendPeerControlRecord(root, {
+      kind: "hive",
+      action: "tick",
+      status: "tick",
+      goalId: options.goalId,
+      summary: "Hive run supervisor interval tick",
+      metadata: { key, deadlineAt, intervalMs },
+    }).catch(() => {});
     void dispatchPeerHiveRunTick(root, runtime, { ...options, reason: "interval" }).catch(async (error: any) => {
       await appendPeerGoalEvent(root, options.goalId, {
         type: "note",
@@ -615,14 +663,52 @@ function schedulePeerHiveRun(root: string, runtime: any, options: any) {
       }).catch(() => {});
     });
   }, intervalMs);
-  const deadlineTimer = setTimeout(() => void stop("duration elapsed"), options.durationMs);
+  const deadlineDelayMs = Math.max(1, Date.parse(deadlineAt) - Date.now());
+  const deadlineTimer = setTimeout(() => void stop("duration elapsed"), deadlineDelayMs);
   timer.unref?.();
   deadlineTimer.unref?.();
-  hiveRunsByKey.set(key, { timer, deadlineTimer, startedAt, stop, options: { ...options, intervalMs } });
+  hiveRunsByKey.set(key, { timer, deadlineTimer, startedAt, stop, options: { ...options, intervalMs, deadlineAt, durationMs: Math.max(1, Date.parse(deadlineAt) - startedAt) } });
 }
 
 function hiveRunKey(root: string, goalId: string) {
   return `${root}:${goalId}`;
+}
+
+function activeHiveRunKeysForRoot(root: string) {
+  const prefix = `${root}:`;
+  return [...hiveRunsByKey.keys()].filter((key) => key.startsWith(prefix));
+}
+
+async function reconcilePeerControlState(root: string, runtime: any) {
+  const messages = runtime?.comms?.listMessages ? await runtime.comms.listMessages().catch(() => []) : [];
+  return reconcilePeerControlLedger(root, { messages, activeHiveRunKeys: activeHiveRunKeysForRoot(root) }).catch(() => undefined);
+}
+
+async function resumePersistedHiveRuns(root: string, runtime: any) {
+  if (!runtime?.enabled) return [];
+  const loaded = await loadPeerControlLedger(root).catch(() => ({ records: [] }));
+  const state = derivePeerControlState(loaded.records);
+  const resumed: any[] = [];
+  for (const run of state.activeHiveRuns || []) {
+    if (!run.goalId || hiveRunsByKey.has(hiveRunKey(root, run.goalId))) continue;
+    const deadlineMs = Date.parse(run.deadlineAt || "");
+    if (Number.isFinite(deadlineMs) && deadlineMs <= Date.now()) continue;
+    const remainingMs = Number.isFinite(deadlineMs) ? Math.max(1, deadlineMs - Date.now()) : run.durationMs || 60_000;
+    schedulePeerHiveRun(root, runtime, {
+      goalId: run.goalId,
+      peers: run.peers || [],
+      lanes: run.lanes || ["research", "review", "implementation"],
+      objective: run.objective || "resumed hive run",
+      durationMs: remainingMs,
+      intervalMs: run.intervalMs,
+      peerId: runtime?.localPeerId || "unknown",
+      coordinatorClaimId: run.coordinatorClaimId,
+      deadlineAt: run.deadlineAt,
+      recovered: true,
+    });
+    resumed.push(run);
+  }
+  return resumed;
 }
 
 function formatPeerHiveRunStatus(root: string, goalId: string) {
@@ -727,6 +813,54 @@ function formatHiveDispatchLines(dispatches: any[] = []) {
   return ["Initial dispatch:", ...dispatches.map((item) => `- ${item.peerId}${item.lane ? ` · ${item.lane}` : ""}${item.messageId ? ` · ${item.messageId}` : ""}${item.duplicate ? " · duplicate reused" : ""}${item.error ? ` · error: ${item.error}` : ""}`)];
 }
 
+async function createPeerGoalPlan(root: string, parsed: any, peerId: string) {
+  const lanes = Array.isArray(parsed.lanes) && parsed.lanes.length ? parsed.lanes : ["research", "implementation", "review"];
+  const prefix = parsed.workKeyPrefix || `plan:${parsed.goalId}`;
+  const created: any[] = [];
+  const itemIds = new Map<string, string>();
+  const dependencyFor = (lane: string) => {
+    if (lane === "implementation" && itemIds.has("research")) return [itemIds.get("research")];
+    if ((lane === "review" || lane === "qa") && itemIds.has("implementation")) return [itemIds.get("implementation")];
+    if (lane === "coordination" && itemIds.has("review")) return [itemIds.get("review")];
+    return [];
+  };
+  for (const lane of lanes) {
+    const itemId = `${lane}-${sanitizePlanId(parsed.objective)}`.slice(0, 80);
+    itemIds.set(lane, itemId);
+    const dependsOn = dependencyFor(lane).filter(Boolean);
+    const workKey = `${prefix}:${lane}`;
+    const summary = `${lane} lane: ${parsed.objective}`;
+    const item = await appendPeerGoalEvent(root, parsed.goalId, {
+      type: "work-item",
+      peerId,
+      summary,
+      itemId,
+      status: "open",
+      dependsOn,
+      lane,
+      paths: parsed.paths,
+      workKey,
+      metadata: { planned: true },
+    });
+    created.push(item.event);
+    const proposal = await appendPeerGoalEvent(root, parsed.goalId, {
+      type: "proposal",
+      peerId,
+      summary: `Self-select planned ${lane} lane: ${parsed.objective}`,
+      lane,
+      paths: parsed.paths,
+      workKey,
+      metadata: { planned: true, itemId },
+    });
+    created.push(proposal.event);
+  }
+  return [`Planned ${lanes.length} lane${lanes.length === 1 ? "" : "s"} for ${parsed.goalId}: ${parsed.objective}`, ...created.map((event) => `- ${event.type} ${event.id} · ${event.lane || "lane"} · ${event.summary}${event.dependsOn?.length ? ` · depends ${event.dependsOn.join(",")}` : ""}`)].join("\n");
+}
+
+function sanitizePlanId(value: string) {
+  return String(value || "work").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "work";
+}
+
 async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
   const root = ctx?.cwd || process.cwd();
   const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown";
@@ -743,6 +877,7 @@ async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
     return formatPeerGoal(goal);
   }
   if (parsed.goalAction === "scout") return formatPeerGoalScout(await loadPeerGoalBoard(root), { goalId: parsed.goalId, limit: parsed.limit, includeClosed: parsed.includeClosed });
+  if (parsed.goalAction === "plan" || parsed.goalAction === "schedule") return createPeerGoalPlan(root, parsed, peerId);
   if (parsed.goalAction === "dashboard") {
     const board = await loadPeerGoalBoard(root);
     const goalId = parsed.goalId || board.currentGoalId;
@@ -1038,6 +1173,14 @@ function mergePeerMetadata(metadata: any, claimedPaths: unknown, goalId?: unknow
   return base;
 }
 
+function peerGetViewFromFlags(flags: any = {}) {
+  if (flags.raw === true) return "raw";
+  if (flags.full === true) return "full";
+  if (typeof flags.view === "string") return flags.view;
+  if (Array.isArray(flags.view)) return flags.view.at(-1);
+  return "compact";
+}
+
 function duplicatePeerSendToolResult(goalLink: any) {
   return {
     content: [{ type: "text", text: formatDuplicatePeerSend(goalLink) }],
@@ -1080,8 +1223,21 @@ async function beginPeerSendGoalLink(root: string | undefined, runtime: any, opt
 }
 
 async function recordPeerSendGoalDispatch(root: string | undefined, runtime: any, goalLink: any, handle: any, options: any) {
+  const ledgerRoot = root || process.cwd();
+  await appendPeerControlRecord(ledgerRoot, {
+    kind: "task",
+    action: "dispatched",
+    status: "running",
+    goalId: goalLink?.goalId,
+    messageId: handle?.messageId,
+    conversationId: handle?.conversationId,
+    peerId: options.targetPeerId,
+    workKey: goalLink?.workKey,
+    summary: options.prompt,
+    metadata: { claimEventId: goalLink?.claimEvent?.id, paths: options.claimedPaths, lane: goalLink?.claimEvent?.lane },
+  }).catch(() => {});
   if (!goalLink?.goalId) return;
-  await recordPeerGoalTaskDispatch(root || process.cwd(), goalLink.goalId, {
+  await recordPeerGoalTaskDispatch(ledgerRoot, goalLink.goalId, {
     requesterPeerId: runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown",
     targetPeerId: options.targetPeerId,
     prompt: options.prompt,
@@ -1097,8 +1253,19 @@ async function recordPeerSendGoalDispatch(root: string | undefined, runtime: any
 }
 
 async function recordPeerSendGoalFailure(root: string | undefined, goalLink: any, options: any) {
+  const ledgerRoot = root || process.cwd();
+  await appendPeerControlRecord(ledgerRoot, {
+    kind: "task",
+    action: "failed",
+    status: "blocked",
+    goalId: goalLink?.goalId,
+    peerId: options.targetPeerId,
+    workKey: goalLink?.workKey,
+    summary: `DISPATCH_ERROR: ${options.error?.message || String(options.error || "peer send failed")}`,
+    metadata: { claimEventId: goalLink?.claimEvent?.id, paths: options.claimedPaths },
+  }).catch(() => {});
   if (!goalLink?.goalId) return;
-  await completePeerGoalTask(root || process.cwd(), goalLink.goalId, {
+  await completePeerGoalTask(ledgerRoot, goalLink.goalId, {
     targetPeerId: options.targetPeerId,
     prompt: options.prompt,
     claimedPaths: options.claimedPaths,
@@ -1118,6 +1285,18 @@ function trackPeerSendGoalCompletion(root: string | undefined, goalLink: any, ha
   const boardRoot = root || process.cwd();
   const heartbeatTimer = startPeerGoalClaimHeartbeat(boardRoot, goalLink, handle, options);
   void handle.response.then(async (response: any) => {
+    await appendPeerControlRecord(boardRoot, {
+      kind: "task",
+      action: "completed",
+      status: response?.status === "OK" || response?.status === "OK_WITH_NOTES" ? "done" : "blocked",
+      goalId: goalLink.goalId,
+      messageId: handle.messageId,
+      conversationId: handle.conversationId,
+      peerId: options.targetPeerId,
+      workKey: goalLink.workKey,
+      summary: summarizePeerGoalResponse(response),
+      metadata: { responseStatus: response?.status, claimEventId: goalLink.claimEvent?.id },
+    }).catch(() => {});
     await completePeerGoalTask(boardRoot, goalLink.goalId, {
       targetPeerId: options.targetPeerId,
       prompt: options.prompt,
@@ -1171,6 +1350,20 @@ function startPeerGoalClaimHeartbeat(root: string, goalLink: any, handle: any, o
   }, intervalMs);
   if (typeof timer.unref === "function") timer.unref();
   return timer;
+}
+
+function withPeerIsolationInstructions(prompt: string, metadata: any = {}) {
+  if (metadata?.isolationMode !== "worktree") return prompt;
+  return [
+    `Peer isolation context:`,
+    `- isolationMode: worktree`,
+    `- Do implementation work in an isolated git worktree before editing files in the main checkout.`,
+    `- If you cannot create/use a worktree safely, stop and report the blocker instead of editing the shared checkout.`,
+    `- Include the worktree path and merge/apply instructions in your final handoff.`,
+    ``,
+    `Original prompt:`,
+    prompt,
+  ].join("\n");
 }
 
 function withPeerGoalInstructions(prompt: string, goalLink: any) {

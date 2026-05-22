@@ -73,8 +73,9 @@ export function parsePeerCommand(rawArgs = "") {
       workKey: stringFlag(flags.workKey || flags.key, undefined),
       workLane: stringFlag(flags.workLane || flags.lane, undefined),
       duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined),
+      isolationMode: isolationModeFromFlags(flags),
       claimedPaths,
-      metadata: metadataFromFlags(flags, { goalId, claimedPaths, workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined) }),
+      metadata: metadataFromFlags(flags, { goalId, claimedPaths, workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined), isolationMode: isolationModeFromFlags(flags) }),
     };
   }
   if (subcommand === "goal") {
@@ -158,6 +159,7 @@ export function formatPeerHelp() {
     "- `/peer goal fanout <goal-id> <objective> --peer <id[,id]> [--path <a,b>] [--send] [--no-await]` — plan or dispatch role-specific peer lanes",
     "- `/peer goal scout [goal-id] [--limit <n>] [--include-closed]` — read-only proactive suggestions with exact work keys and copyable claim commands for what peers could do next",
     "- `/peer goal task|finding|proposal|handoff|note <goal-id> <summary> [--path <a,b>] [--lane research|review|implementation] [--status done]` — post goal-board events; lane-tagged proposals become scout suggestions peers can self-select",
+    "- `/peer goal plan <goal-id> <objective> [--lane research,implementation,review] [--path <a,b>]` — expand an objective into dependency-gated work items and lane proposals",
     "- `/peer goal item <goal-id> <summary> --item-id <id> [--status open|done] [--depends-on <id[,id]>] [--parent <id>]` — add/update first-class epic work items that gate closure until done and dependencies are satisfied",
     "- `/peer goal claim <goal-id> <task> --mode read|write --path <a,b> [--key <work-key>] [--duplicate-policy error|allow-parallel] [--ttl-ms <ms>]` — lease work without hierarchy",
     "- `/peer goal heartbeat <goal-id> <claim-event-id> [summary] [--ttl-ms <ms>] [--stale-after-ms <ms>]` — refresh a live or stale claim",
@@ -252,6 +254,12 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
       timeoutMs: positiveIntegerFlag(flags.timeoutMs),
       staleAfterMs: positiveIntegerFlag(flags.staleAfterMs),
     };
+  }
+  if (action === "plan" || action === "schedule") {
+    const goalId = rest[0];
+    const objective = rest.slice(1).join(" ").trim();
+    if (!goalId || !objective) return { ...withAction, error: `/peer goal ${action} requires <goal-id> <objective>` };
+    return { ...withAction, goalId, objective, lanes: listFlag(flags.lane || flags.lanes), paths: listFlag(flags.path || flags.paths), workKeyPrefix: stringFlag(flags.keyPrefix || flags.prefix, undefined) };
   }
   if (["task", "finding", "proposal", "propose", "handoff", "note", "item", "work-item"].includes(action)) {
     const goalId = rest[0];
@@ -366,13 +374,20 @@ function metadataFromFlags(flags = {}, options = {}) {
   const workKey = options.workKey || stringFlag(flags.workKey || flags.key, undefined);
   const workLane = options.workLane || stringFlag(flags.workLane || flags.lane, undefined);
   const duplicatePolicy = options.duplicatePolicy || stringFlag(flags.duplicatePolicy, undefined);
+  const isolationMode = options.isolationMode || isolationModeFromFlags(flags);
   return {
     ...(claimedPaths.length ? { claimedPaths } : {}),
     ...(goalId ? { goalId } : {}),
     ...(workKey ? { workKey } : {}),
     ...(workLane ? { workLane } : {}),
     ...(duplicatePolicy ? { duplicatePolicy } : {}),
+    ...(isolationMode ? { isolationMode } : {}),
   };
+}
+
+function isolationModeFromFlags(flags = {}) {
+  if (flagEnabled(flags.worktree)) return "worktree";
+  return stringFlag(flags.isolation || flags.isolationMode, undefined);
 }
 
 function claimedPathsFlag(value) {

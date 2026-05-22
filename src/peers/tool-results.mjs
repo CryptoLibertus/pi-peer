@@ -79,19 +79,239 @@ export function peerSendTimeoutToolResult(handle, error, message) {
   };
 }
 
-export function peerGetToolResult(id, type, value) {
+export function peerGetToolResult(id, type, value, options = {}) {
   const found = value !== undefined;
+  const view = normalizePeerGetView(options.view);
+  const compact = found && view === "compact";
+  const outputValue = compact ? compactPeerGetValue(type, value) : value;
   return {
-    content: [{ type: "text", text: found ? JSON.stringify(value, null, 2) : `No peer state found for ${id}` }],
+    content: [{ type: "text", text: found ? JSON.stringify(outputValue, null, 2) : `No peer state found for ${id}` }],
     details: {
       ok: found,
       kind: "peer_get",
       id,
       type,
       found,
-      value,
+      view,
+      compacted: compact,
+      rawAvailable: found && compact,
+      value: outputValue,
     },
   };
+}
+
+export function normalizePeerGetView(value) {
+  const view = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return ["full", "raw"].includes(view) ? view : "compact";
+}
+
+export function compactPeerGetValue(type, value) {
+  if (value === undefined) return value;
+  if (type === "goal") return compactPeerGoalState(value);
+  if (type === "goals") return compactPeerGoalBoard(value);
+  if (type === "message") return compactPeerMessage(value);
+  if (type === "conversation") return compactPeerConversation(value);
+  if (type === "tasks") return compactPeerTasks(value);
+  if (type === "audit") return compactPeerAudit(value);
+  if (type === "runtime") return compactPeerRuntime(value);
+  if (type === "control") return compactPeerControl(value);
+  if (type === "peer") return compactPeer(value);
+  return value;
+}
+
+export function compactPeerGoalBoard(board = {}) {
+  const goals = Object.values(board?.goals || {}).map(compactPeerGoalState).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  return {
+    version: board?.version,
+    currentGoalId: board?.currentGoalId,
+    count: goals.length,
+    goals: goals.slice(0, 25),
+    truncated: goals.length > 25,
+  };
+}
+
+export function compactPeerGoalState(goal = {}) {
+  const events = Array.isArray(goal?.events) ? goal.events : [];
+  return stripEmpty({
+    id: goal.id,
+    objective: truncateText(goal.objective, 240),
+    status: goal.status || "open",
+    createdAt: goal.createdAt,
+    updatedAt: goal.updatedAt,
+    closedAt: goal.closedAt,
+    readyToClose: goal.readyToClose,
+    counts: {
+      events: events.length,
+      activeClaims: goal.activeClaims?.length || 0,
+      staleClaims: goal.staleClaims?.length || 0,
+      activeTasks: goal.activeTasks?.length || 0,
+      unresolvedTaskHandoffs: goal.unresolvedTaskHandoffs?.length || 0,
+      openProposals: goal.openProposals?.length || 0,
+      openWorkItems: goal.openWorkItems?.length || 0,
+      blockers: goal.blockingObjections?.length || 0,
+      passingVotes: goal.passingVotes?.length || 0,
+      failedVotes: goal.failedVotes?.length || 0,
+    },
+    activeClaims: compactEvents(goal.activeClaims, 8),
+    staleClaims: compactEvents(goal.staleClaims, 8),
+    activeTasks: compactTasks(goal.activeTasks, 8),
+    unresolvedTaskHandoffs: compactTasks(goal.unresolvedTaskHandoffs, 8),
+    openProposals: compactEvents(goal.openProposals, 8),
+    openWorkItems: compactEvents(goal.openWorkItems, 8),
+    blockingObjections: compactEvents(goal.blockingObjections, 8),
+    currentVotes: compactEvents(goal.currentVotes, 8),
+    recentEvents: compactEvents(events.slice(-12), 12),
+  });
+}
+
+export function compactPeerMessage(message = {}) {
+  const body = message?.request?.body || {};
+  const response = message?.response || {};
+  return stripEmpty({
+    messageId: message.messageId,
+    conversationId: message.conversationId,
+    peerId: message.peerId,
+    status: message.status,
+    priority: message.priority,
+    createdAt: message.createdAt,
+    updatedAt: message.updatedAt,
+    recoveredAt: message.recoveredAt,
+    intent: body.intent,
+    goalId: body.metadata?.goalId,
+    workKey: body.metadata?.workKey,
+    claimedPaths: body.metadata?.claimedPaths,
+    promptPreview: truncateText(body.prompt, 300),
+    responseStatus: response.status,
+    finalAssistantPreview: truncateText(response.finalAssistantMessage, 500),
+    eventCount: Array.isArray(message.events) ? message.events.length : 0,
+    recentEvents: compactEvents(message.events?.slice(-8), 8),
+    error: message.error ? { message: truncateText(message.error.message || message.error, 240), code: message.error.code } : undefined,
+  });
+}
+
+export function compactPeerConversation(conversation = {}) {
+  return stripEmpty({
+    conversationId: conversation.conversationId,
+    status: conversation.status,
+    peerIds: conversation.peerIds,
+    messageIds: conversation.messageIds,
+    createdAt: conversation.createdAt,
+    updatedAt: conversation.updatedAt,
+  });
+}
+
+export function compactPeerTasks(value = {}) {
+  return stripEmpty({
+    activeCount: value.active?.length || 0,
+    allCount: value.all?.length || 0,
+    inbound: value.inbound,
+    note: value.note,
+    active: compactTasks(value.active, 20),
+    recent: compactTasks((value.all || []).slice(-20), 20),
+  });
+}
+
+export function compactPeerAudit(value = []) {
+  const entries = Array.isArray(value) ? value : [];
+  return { count: entries.length, recent: compactEvents(entries.slice(-25), 25), truncated: entries.length > 25 };
+}
+
+export function compactPeerControl(value = {}) {
+  return stripEmpty({
+    records: value.records,
+    activeTasks: compactTasks(value.activeTasks, 20),
+    disconnectedTasks: compactTasks(value.disconnectedTasks, 20),
+    completedCount: value.completedTasks?.length || 0,
+    activeHiveRuns: compactEvents(value.activeHiveRuns, 20),
+    hiveRunCount: value.hiveRuns?.length || 0,
+    warnings: value.warnings,
+  });
+}
+
+export function compactPeerRuntime(value = {}) {
+  return stripEmpty({
+    enabled: value.enabled,
+    source: value.source,
+    localPeerId: value.localPeerId,
+    endpointStatus: value.endpointStatus,
+    authStatus: value.authStatus,
+    protocolVersion: value.protocolVersion,
+    peerCount: value.peerCount,
+    activeCount: value.activeCount,
+    pendingCount: value.pendingCount,
+    contextBudget: value.contextBudget,
+    contextJudgement: value.contextJudgement,
+    fanoutSuggestion: value.fanoutSuggestion,
+    warnings: value.warnings,
+    activeTasks: compactTasks(value.activeTasks, 8),
+    peers: Array.isArray(value.peers) ? value.peers.map(compactPeer).slice(0, 25) : undefined,
+  });
+}
+
+export function compactPeer(peer = {}) {
+  return stripEmpty({
+    peerId: peer.peerId,
+    role: peer.role,
+    persona: peer.persona,
+    status: peer.status,
+    transport: peer.transport,
+    trust: peer.trust,
+    current: peer.current,
+    compatible: peer.compatible,
+    protocolVersion: peer.protocolVersion,
+    capabilities: peer.capabilities,
+    discoveredAt: peer.discoveredAt,
+  });
+}
+
+function compactTasks(tasks = [], limit = 8) {
+  return Array.isArray(tasks) ? tasks.slice(0, limit).map((task) => stripEmpty({
+    id: task.id,
+    taskId: task.taskId || task.messageId,
+    messageId: task.messageId,
+    conversationId: task.conversationId,
+    peerId: task.peerId,
+    status: task.status,
+    intent: task.intent,
+    lane: task.lane,
+    workKey: task.workKey,
+    goalId: task.goalId,
+    paths: task.paths || task.claimedPaths,
+    summary: truncateText(task.summary || task.handoffSummary || task.lastEvent?.summary, 240),
+    updatedAt: task.updatedAt,
+    completedAt: task.completedAt,
+    handoffEventId: task.handoffEventId,
+  })) : [];
+}
+
+function compactEvents(events = [], limit = 8) {
+  return Array.isArray(events) ? events.slice(0, limit).map((event) => stripEmpty({
+    id: event.id,
+    type: event.type || event.kind,
+    at: event.at,
+    peerId: event.peerId,
+    status: event.status,
+    verdict: event.verdict,
+    lane: event.lane,
+    mode: event.mode,
+    workKey: event.workKey,
+    taskId: event.taskId || event.messageId,
+    paths: event.paths,
+    summary: truncateText(event.summary || event.error || event.message, 240),
+  })) : [];
+}
+
+function truncateText(value, limit = 240) {
+  const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : value == null ? "" : String(value).replace(/\s+/g, " ").trim();
+  return text.length > limit ? `${text.slice(0, Math.max(0, limit - 1))}…` : text;
+}
+
+function stripEmpty(object) {
+  return Object.fromEntries(Object.entries(object).filter(([, value]) => {
+    if (value === undefined || value === "") return false;
+    if (Array.isArray(value) && value.length === 0) return false;
+    return true;
+  }));
 }
 
 export function peerAwaitToolResult(results) {
