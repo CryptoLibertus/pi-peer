@@ -141,6 +141,67 @@ test("root-ish paths normalize to repo root for write-claim conflicts", async (t
   });
 });
 
+test("write claim paths canonicalize dot segments and reject escapes", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "worker-a",
+      summary: "claim readme",
+      mode: "write",
+      paths: ["README.md"],
+    });
+
+    for (const samePath of ["src/../README.md", "src\\..\\README.md"]) {
+      await assert.rejects(
+        appendPeerGoalEvent(root, goalId, {
+          type: "claim",
+          peerId: "worker-b",
+          summary: `claim same readme through ${samePath}`,
+          mode: "write",
+          paths: [samePath],
+        }),
+        /claim conflicts with active write claim/,
+      );
+    }
+  });
+
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "worker-a",
+      summary: "claim normalized child",
+      mode: "write",
+      paths: ["a/b"],
+    });
+
+    await assert.rejects(
+      appendPeerGoalEvent(root, goalId, {
+        type: "claim",
+        peerId: "worker-b",
+        summary: "claim same child through current segment",
+        mode: "write",
+        paths: ["a/./b"],
+      }),
+      /claim conflicts with active write claim/,
+    );
+  });
+
+  await withGoal(t, async (root, goalId) => {
+    for (const invalidPath of ["../outside", "/tmp/file", "C:\\tmp\\file", "C:tmp\\file", "C:/../foo"]) {
+      await assert.rejects(
+        appendPeerGoalEvent(root, goalId, {
+          type: "claim",
+          peerId: "worker-a",
+          summary: `claim invalid ${invalidPath}`,
+          mode: "write",
+          paths: [invalidPath],
+        }),
+        /write claim paths must be project-relative/,
+      );
+    }
+  });
+});
+
 test("heartbeats cannot revive stale write claims over an active overlapping claim", async (t) => {
   await withGoal(t, async (root, goalId) => {
     const staleClaim = await appendPeerGoalEvent(root, goalId, {

@@ -29,11 +29,19 @@ test("idle watcher config supports env disable and timing overrides", () => {
   assert.equal(config.cooldownMs, 456);
   assert.equal(config.maxActivationsPerSession, 2);
   assert.equal(config.autoCompact, true);
+  assert.deepEqual(normalizePeerIdleWatcherConfig({ allowedKinds: "close,review" }, { env: {} }).allowedKinds, ["close", "review"]);
+  assert.deepEqual(normalizePeerIdleWatcherConfig({ allowedKinds: [] }, { env: {} }).allowedKinds, []);
   assert.equal(normalizePeerIdleWatcherConfig({ autoCompact: false }, { env: {} }).autoCompact, false);
   assert.equal(normalizePeerIdleWatcherConfig({}, { env: { PI_PEER_AUTO_COMPACT: "off" } }).autoCompact, false);
 });
 
 test("derivePeerIdleActivation picks scout suggestions and respects cooldown", () => {
+  assert.equal(derivePeerIdleActivation(openGoalBoard, {
+    localPeerId: "worker-a",
+    nowMs: 1_000,
+    config: { allowedKinds: [] },
+  }), undefined);
+
   const state = { activationCount: 0, lastActivationAtByKey: new Map() };
   const activation = derivePeerIdleActivation(openGoalBoard, {
     localPeerId: "worker-a",
@@ -113,6 +121,47 @@ test("derivePeerIdleActivation lets urgent blockers bypass same-goal cooldowns",
   });
   assert.equal(activation.kind, "blocker");
   assert.equal(activation.priority, "P0");
+});
+
+test("derivePeerIdleActivation includes unresolved handoffs and work items by default", () => {
+  const handoffActivation = derivePeerIdleActivation({
+    goals: {
+      goal_handoff: {
+        id: "goal_handoff",
+        objective: "Resolve handoff",
+        status: "open",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        events: [
+          { id: "evt_task", type: "task", at: "2026-01-01T00:00:00.000Z", peerId: "planner", summary: "Review failed task", taskId: "msg_1", status: "running" },
+          { id: "evt_handoff", type: "handoff", at: "2026-01-01T00:00:01.000Z", peerId: "worker", summary: "Blocked before completion", taskId: "msg_1", status: "blocked" },
+        ],
+      },
+    },
+  }, {
+    localPeerId: "generic-peer",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(handoffActivation.kind, "task-handoff");
+  assert.equal(handoffActivation.priority, "P0");
+
+  const workItemActivation = derivePeerIdleActivation({
+    goals: {
+      goal_item: {
+        id: "goal_item",
+        objective: "Complete item",
+        status: "open",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        events: [{ id: "evt_item", type: "work-item", peerId: "planner", summary: "Add focused test", itemId: "item-test", lane: "review", status: "open" }],
+      },
+    },
+  }, {
+    localPeerId: "generic-peer",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(workItemActivation.kind, "work-item");
+  assert.match(workItemActivation.summary, /item-test/);
 });
 
 test("idle activation prompt tells peer to inspect state and avoid duplicate unsafe work", () => {

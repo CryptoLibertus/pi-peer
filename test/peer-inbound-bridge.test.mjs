@@ -152,12 +152,15 @@ test("inbound bridge marks active cancellation without settling or activating th
   assert.equal(bridge.activeState().messageId, "msg_active");
   assert.equal(bridge.activeState().cancelling, true);
   assert.equal(bridge.activeState().cancelReason, "stop active");
-  assert.equal(sent.length, 1);
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].options.triggerTurn, true);
+  assert.match(sent[1].message.content, /cancelled inbound task msg_active/i);
+  assert.match(sent[1].message.content, /stop active/);
   assert.equal(await Promise.race([active.then(() => "settled"), new Promise((resolve) => setTimeout(() => resolve("pending"), 10))]), "pending");
 
   bridge.handleAgentEnd({ finalAssistantText: "active done" });
   assert.equal((await active).status, "CANCELLED");
-  assert.equal(sent[1].message.envelope.messageId, "msg_queued");
+  assert.equal(sent[2].message.envelope.messageId, "msg_queued");
   bridge.handleAgentEnd({ finalAssistantText: "queued done" });
   assert.equal((await queued).status, "OK");
 });

@@ -63,7 +63,7 @@ export function parsePeerCommand(rawArgs = "") {
       peerId,
       prompt,
       intent: stringFlag(flags.intent, "ask"),
-      awaitResponse: !flagEnabled(flags.noAwait) && stringFlag(flags.await, "true") !== "false",
+      awaitResponse: !flagEnabled(flags.noAwait) && flagDefaultEnabled(flags.await, true),
       timeoutMs: positiveIntegerFlag(flags.timeoutMs),
       maxHopCount: positiveIntegerFlag(flags.maxHopCount),
       allowSelf: flagEnabled(flags.allowSelf),
@@ -248,7 +248,7 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
       peers,
       paths: listFlag(flags.path || flags.paths),
       send: flagEnabled(flags.send),
-      awaitResponse: !flagEnabled(flags.noAwait) && stringFlag(flags.await, "true") !== "false",
+      awaitResponse: !flagEnabled(flags.noAwait) && flagDefaultEnabled(flags.await, true),
       timeoutMs: positiveIntegerFlag(flags.timeoutMs),
       staleAfterMs: positiveIntegerFlag(flags.staleAfterMs),
     };
@@ -314,6 +314,12 @@ function stringFlag(value, fallback) {
   if (Array.isArray(value)) return stringFlag(value.at(-1), fallback);
   if (typeof value === "string" && value.trim()) return value.trim();
   return fallback;
+}
+
+function flagDefaultEnabled(value, fallback = false) {
+  if (Array.isArray(value)) return flagDefaultEnabled(value.at(-1), fallback);
+  if (value === undefined) return fallback;
+  return flagEnabled(value);
 }
 
 function positiveIntegerFlag(value) {

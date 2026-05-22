@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, posix as pathPosix } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { normalizePeerGoalClosurePolicy } from "./config.mjs";
 import { goalBoardPath, loadGoalBoardSnapshot, PEER_GOAL_BOARD_RELATIVE_PATH as STORE_PEER_GOAL_BOARD_RELATIVE_PATH, saveGoalBoardSnapshot } from "./goal-store.mjs";
@@ -378,25 +378,39 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
         });
       }
     }
+    if (state.blockedWorkItems.length) {
+      for (const item of state.blockedWorkItems) {
+        push("P1", "work-item", `Resolve dependencies for work item ${item.itemId}: ${item.blockedBy.join(", ")}`, {
+          paths: item.paths,
+          recommendedLane: "coordination",
+          preferredRoles: preferredRolesForLane("coordination"),
+          claimMode: "read",
+          suggestedIntent: "coordinate",
+          rationale: "Dependency-blocked work items need dependency triage before implementation self-selection.",
+          workKey: derivePeerGoalWorkKey({ goalId: goal.id, lane: "coordination", objective: `resolve dependencies for ${item.itemId}`, mode: "read", paths: item.paths }),
+          relatedEventId: item.id,
+        });
+      }
+    }
     if (state.openWorkItems.length) {
-      for (const item of state.openWorkItems) {
+      for (const item of state.openWorkItems.filter((workItem) => !workItem.blockedBy?.length)) {
         push("P1", "work-item", `Self-select work item ${item.itemId}: ${item.summary}`, {
           paths: item.paths,
           recommendedLane: item.lane || "implementation",
           preferredRoles: preferredRolesForLane(item.lane || "implementation"),
           claimMode: "read",
           suggestedIntent: suggestedIntentForLane(item.lane || "implementation"),
-          rationale: item.blockedBy?.length ? `Work item is waiting on dependencies: ${item.blockedBy.join(", ")}` : "First-class work items can be claimed or updated without planner assignment.",
+          rationale: "First-class work items can be claimed or updated without planner assignment.",
           workKey: item.workKey || derivePeerGoalWorkKey({ goalId: goal.id, lane: item.lane || "implementation", objective: item.summary, mode: "read", paths: item.paths }),
           relatedEventId: item.id,
         });
       }
     }
-    if (state.readyToClose && !state.openProposals.length && !state.openWorkItems.length) {
+    if (state.readyToClose && !state.openProposals.length && !state.openWorkItems.length && !state.blockedWorkItems.length) {
       push("P1", "close", "Goal satisfies closure gates; close it or record a final note.");
       continue;
     }
-    if (!state.activeClaims.length && !state.staleClaims.length && !state.tasks.length && !state.openProposals.length) {
+    if (!state.activeClaims.length && !state.staleClaims.length && !state.tasks.length && !state.openProposals.length && !state.blockedWorkItems.length) {
       for (const lane of STARTUP_SCOUT_LANES) {
         push("P2", "next-step", lane.summary, {
           recommendedLane: lane.lane,
@@ -474,6 +488,7 @@ function validateClaim(goal, event) {
     if (duplicates.length) throw new Error(`claim duplicates active work key ${event.workKey} already held by ${duplicates.map((item) => item.id || item.taskId).join(", ")}`);
   }
   if (event.mode === "write") {
+    validateProjectRelativeWritePaths(paths);
     const conflicts = state.activeClaims.filter((claim) => claim.mode === "write" && pathsOverlap(paths, claim.paths || []));
     if (conflicts.length) throw new Error(`claim conflicts with active write claim ${conflicts.map((claim) => claim.id).join(", ")}`);
   }
@@ -680,6 +695,7 @@ function normalizeEvent(input = {}) {
   if (!EVENT_TYPES.has(type)) throw new Error(`unknown peer goal event type '${type}'`);
   const now = nowIso();
   const ttlMs = positiveNumber(input.ttlMs);
+  const dependsOnInputProvided = Object.prototype.hasOwnProperty.call(input, "dependsOn") || Object.prototype.hasOwnProperty.call(input, "dependencies") || Object.prototype.hasOwnProperty.call(input.metadata || {}, "dependsOn") || Object.prototype.hasOwnProperty.call(input.metadata || {}, "dependencies");
   const event = {
     id: input.id || newEventId(type),
     type,
@@ -711,6 +727,7 @@ function normalizeEvent(input = {}) {
     if (!event.summary) throw new Error("peer goal work-item requires a summary");
     if (!event.itemId) event.itemId = event.workKey || event.id;
     if (!event.status) event.status = "open";
+    if (dependsOnInputProvided && !event.dependsOn?.length) event.metadata = { ...event.metadata, clearDependsOn: true };
   }
   if (event.type === "vote" && !VOTE_VERDICTS.has(event.verdict)) {
     throw new Error("peer goal vote verdict must be pass, fail, or pass-with-risks");
@@ -812,7 +829,7 @@ function projectWorkItems(events = []) {
       firstEventId: previous?.firstEventId || event.id,
       firstAt: previous?.firstAt || event.at,
       status: cleanText(event.status || previous?.status || "open").toLowerCase(),
-      dependsOn: normalizeList(event.dependsOn?.length ? event.dependsOn : previous?.dependsOn),
+      dependsOn: normalizeList(event.dependsOn?.length || event.metadata?.clearDependsOn ? event.dependsOn : previous?.dependsOn),
       parentId: cleanText(event.parentId || previous?.parentId),
     }));
   }
@@ -1073,10 +1090,17 @@ function normalizePaths(value) {
 }
 
 function normalizePath(value) {
-  let path = cleanText(value).replace(/\/+/g, "/");
+  let path = cleanText(value).replace(/[\\/]+/g, "/");
   if (path === "" || path === "." || path === "/") return ".";
   path = path.replace(/^\.\//, "").replace(/\/$/, "");
-  return path === "" || path === "." || path === "/" ? "." : path;
+  if (/^[A-Za-z]:/.test(path)) return path;
+  path = pathPosix.normalize(path);
+  return path === "" || path === "." || path === "/" ? "." : path.replace(/^\.\//, "");
+}
+
+function validateProjectRelativeWritePaths(paths = []) {
+  const invalid = paths.filter((path) => path !== "." && (path.startsWith("/") || path === ".." || path.startsWith("../") || /^[A-Za-z]:/.test(path)));
+  if (invalid.length) throw new Error(`write claim paths must be project-relative: ${invalid.join(", ")}`);
 }
 
 function normalizeList(value) {

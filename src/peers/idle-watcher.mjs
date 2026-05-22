@@ -7,7 +7,7 @@ export const DEFAULT_PEER_IDLE_WATCHER_MAX_PER_SESSION = 20;
 
 const FALSE_VALUES = new Set(["0", "false", "off", "no", "disabled"]);
 const TRUE_VALUES = new Set(["1", "true", "on", "yes", "enabled"]);
-const DEFAULT_ALLOWED_KINDS = ["blocker", "failed-vote", "stale-claim", "open-proposal", "close", "next-step", "review"];
+const DEFAULT_ALLOWED_KINDS = ["blocker", "task-handoff", "failed-vote", "stale-claim", "open-proposal", "work-item", "close", "next-step", "review"];
 
 export function normalizePeerIdleWatcherConfig(input = {}, options = {}) {
   const env = options.env || process.env;
@@ -357,9 +357,10 @@ function activationNudgeCooldownMs(config = {}) {
 }
 
 function normalizeAllowedKinds(value) {
-  if (!Array.isArray(value)) return DEFAULT_ALLOWED_KINDS;
-  const kinds = value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim());
-  return kinds.length ? [...new Set(kinds)] : DEFAULT_ALLOWED_KINDS;
+  if (value === undefined) return DEFAULT_ALLOWED_KINDS;
+  const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : undefined;
+  if (!raw) return DEFAULT_ALLOWED_KINDS;
+  return [...new Set(raw.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()))];
 }
 
 function parseBoolean(value) {

@@ -967,6 +967,7 @@ async function readDescriptor(path) {
 }
 
 function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   if (pid === process.pid) return true;
   try {
     process.kill(pid, 0);

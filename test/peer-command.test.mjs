@@ -158,3 +158,12 @@ test("repeated scalar flags keep last-value behavior", () => {
   const scout = parsePeerCommand("scout goal_123 --include-closed --include-closed=false");
   assert.equal(scout.includeClosed, false);
 });
+
+test("await flags honor false aliases for send and fanout", () => {
+  for (const value of ["false", "0", "off", "no"]) {
+    assert.equal(parsePeerCommand(`send worker Do work --await ${value}`).awaitResponse, false);
+    assert.equal(parsePeerCommand(`goal fanout goal_123 Review this --peer worker --await ${value}`).awaitResponse, false);
+  }
+  assert.equal(parsePeerCommand("send worker Do work --await").awaitResponse, true);
+  assert.equal(parsePeerCommand("send worker Do work --no-await --await true").awaitResponse, false);
+});

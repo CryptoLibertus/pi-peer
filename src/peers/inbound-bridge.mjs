@@ -49,6 +49,7 @@ export function createInboundPromptBridge(options = {}) {
       entry.cancelRequested = true;
       entry.cancelReason = reason;
       entry.cancelledAt = entry.cancelledAt || Date.now();
+      if (!entry.cancelNotifiedAt) sendCancellationToPi(entry, reason);
       return true;
     }
     return false;
@@ -76,6 +77,20 @@ export function createInboundPromptBridge(options = {}) {
       details: {
         activationReason: reason,
         activationAttempts: entry.activationAttempts,
+      },
+    }, { deliverAs: "followUp", triggerTurn: true });
+  }
+
+  function sendCancellationToPi(entry, reason) {
+    entry.cancelNotifiedAt = Date.now();
+    pi.sendMessage({
+      customType: PI_PEER_INBOUND_CUSTOM_TYPE,
+      content: renderInboundPeerCancellationPrompt(entry.envelope, reason, { homeDir: options.homeDir }),
+      display: true,
+      envelope: summarizeEnvelope(entry.envelope),
+      details: {
+        activationReason: "cancelled",
+        cancelReason: reason,
       },
     }, { deliverAs: "followUp", triggerTurn: true });
   }
@@ -197,6 +212,12 @@ export function createInboundPromptBridge(options = {}) {
       }
     },
   };
+}
+
+export function renderInboundPeerCancellationPrompt(envelope, reason = "cancelled by sender", options = {}) {
+  const source = envelope?.source?.peerId || "unknown-peer";
+  const messageId = envelope?.id || "unknown-message";
+  return `[Pi peer cancellation]\nPeer '${source}' cancelled inbound task ${messageId}.\nReason: ${redactForPrompt(reason, options)}\n\nInstructions:\n- Stop the cancelled work as soon as safely possible.\n- Do not start queued follow-up work in this turn.\n- If you have partial state worth preserving, end with a concise cancelled/blocked handoff.\n- Required final status should be cancelled or blocked; the sender will receive CANCELLED after your turn ends.`;
 }
 
 export function renderInboundPeerPrompt(envelope, options = {}) {

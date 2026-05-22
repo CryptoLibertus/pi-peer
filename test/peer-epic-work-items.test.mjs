@@ -73,6 +73,43 @@ test("epic work items are first-class closure gates with dependency status", asy
   });
 });
 
+test("work item updates can explicitly clear dependencies", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "work-item",
+      peerId: "planner",
+      itemId: "implementation",
+      dependsOn: ["research"],
+      summary: "Implementation depends on research",
+      lane: "implementation",
+      status: "open",
+    });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "work-item",
+      peerId: "worker",
+      itemId: "implementation",
+      summary: "Implementation still preserves omitted dependencies",
+      status: "open",
+    });
+
+    let state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.deepEqual(state.workItems[0].dependsOn, ["research"]);
+    assert.deepEqual(state.workItems[0].blockedBy, ["research"]);
+
+    await appendPeerGoalEvent(root, goalId, {
+      type: "work-item",
+      peerId: "planner",
+      itemId: "implementation",
+      dependsOn: [],
+      summary: "Implementation no longer depends on research",
+      status: "open",
+    });
+    state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.workItems[0].dependsOn, undefined);
+    assert.equal(state.workItems[0].blockedBy, undefined);
+  });
+});
+
 test("epic work items cannot satisfy closure while dependencies are incomplete", async (t) => {
   await withGoal(t, async (root, goalId) => {
     await appendPeerGoalEvent(root, goalId, {
@@ -92,6 +129,12 @@ test("epic work items cannot satisfy closure while dependencies are incomplete",
     assert.deepEqual(state.blockedWorkItems[0].blockedBy, ["research"]);
     assert.equal(state.readyToClose, false);
     assert.throws(() => validateGoalReadyToClose(state), /dependency-blocked work items: implementation/);
+
+    const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root), { goalId });
+    assert.equal(suggestions.some((item) => item.kind === "work-item" && item.recommendedLane === "implementation"), false);
+    assert.equal(suggestions[0].kind, "work-item");
+    assert.equal(suggestions[0].recommendedLane, "coordination");
+    assert.match(suggestions[0].summary, /Resolve dependencies/);
 
     await appendPeerGoalEvent(root, goalId, {
       type: "work-item",

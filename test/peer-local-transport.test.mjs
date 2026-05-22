@@ -83,6 +83,21 @@ test("discovery honors advertised projectScope when present", async (t) => {
   });
 });
 
+test("discovery ignores descriptors with non-positive pids", async (t) => {
+  await withTempRoot(t, async (root) => {
+    const discoveryDir = join(root, "discovery");
+    const repo = join(root, "repo");
+    await mkdir(join(repo, ".git"), { recursive: true });
+
+    await writeDescriptor(discoveryDir, "alive", { peerId: "alive", cwd: repo, pid: process.pid });
+    await writeDescriptor(discoveryDir, "pid-zero", { peerId: "pid-zero", cwd: repo, pid: 0 });
+    await writeDescriptor(discoveryDir, "pid-negative", { peerId: "pid-negative", cwd: repo, pid: -1 });
+
+    const peers = await discoverLocalPeerEndpoints({ discoveryDir, cwd: repo, excludePeerId: "local" });
+    assert.deepEqual(peers.map((peer) => peer.peerId), ["alive"]);
+  });
+});
+
 test("local transport handles cancel signals already aborted before request delivery", async (t) => {
   await withTempRoot(t, async (root) => {
     const discoveryDir = join(root, "discovery");
