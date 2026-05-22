@@ -20,6 +20,7 @@ export function normalizePeerIdleWatcherConfig(input = {}, options = {}) {
     maxActivationsPerSession: positiveInteger(source.maxActivationsPerSession) || DEFAULT_PEER_IDLE_WATCHER_MAX_PER_SESSION,
     includeClosed: source.includeClosed === true,
     autoCompact: parseBoolean(env.PI_PEER_AUTO_COMPACT) ?? (source.autoCompact !== false),
+    protocolOffers: parseBoolean(env.PI_PEER_IDLE_PROTOCOL_OFFERS) ?? (source.protocolOffers !== false),
     allowedKinds: normalizeAllowedKinds(source.allowedKinds),
   };
 }
@@ -209,10 +210,44 @@ export function derivePeerIdleActivation(board, options = {}) {
     const activation = normalizeActivation(suggestion, options.localPeerId, options);
     if (localPeerHasActiveGoalWork(board, suggestion.goalId, options.localPeerId, activation)) continue;
     if (!activation || !activationFitsPeer(activation, options)) continue;
+    if (readOnlyWorkItemAlreadyHasEvidence(board, activation)) continue;
     if (isActivationCoolingDown(options.state, activation, config, nowMs, board)) continue;
     return activation;
   }
   return undefined;
+}
+
+export function derivePeerIdleActivationOfferPlan(board, peers = [], options = {}) {
+  const config = normalizePeerIdleWatcherConfig(options.config || {});
+  if (!config.enabled) return [];
+  const stateByPeer = options.stateByPeer instanceof Map ? options.stateByPeer : new Map();
+  const seenWorkKeys = new Set(options.seenWorkKeys || []);
+  const limit = positiveInteger(options.limit) || Number.POSITIVE_INFINITY;
+  const plan = [];
+  for (const peer of Array.isArray(peers) ? peers : []) {
+    const peerId = cleanString(peer?.peerId);
+    if (!peerId || peerId === cleanString(options.localPeerId)) continue;
+    if (peer.trust === "disabled" || peer.compatible === false) continue;
+    if (peer.status && !["active", "configured"].includes(peer.status)) continue;
+    if (!stateByPeer.has(peerId)) stateByPeer.set(peerId, { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() });
+    const state = stateByPeer.get(peerId);
+    const activation = derivePeerIdleActivation(board, {
+      ...options,
+      config,
+      state,
+      localPeerId: peerId,
+      localRole: peer.role,
+      localPersona: peer.persona,
+      localCapabilities: peer.capabilities,
+    });
+    if (!activation) continue;
+    const workKey = activation.workKey || peerIdleActivationKey(activation);
+    if (seenWorkKeys.has(workKey)) continue;
+    seenWorkKeys.add(workKey);
+    plan.push({ peerId, peer, activation, state });
+    if (plan.length >= limit) break;
+  }
+  return plan;
 }
 
 export function markPeerIdleActivation(state, activation, nowMs = Date.now()) {
@@ -289,6 +324,20 @@ function previousWorkItemIsTerminal(board = {}, goalId, workKey) {
   return ["done", "closed", "cancelled", "canceled", "resolved"].includes(String(item?.status || "").toLowerCase());
 }
 
+function readOnlyWorkItemAlreadyHasEvidence(board = {}, activation = {}) {
+  if (activation.kind !== "work-item" || activation.claimMode !== "read" || !activation.workKey) return false;
+  const goal = board?.goals?.[activation.goalId];
+  const events = Array.isArray(goal?.events) ? goal.events : [];
+  const itemEvent = events.find((event) => event?.id === activation.relatedEventId || (event?.type === "work-item" && event?.workKey === activation.workKey));
+  const itemAt = Date.parse(itemEvent?.at || "") || Number.NEGATIVE_INFINITY;
+  return events.some((event) => {
+    if (event?.workKey !== activation.workKey) return false;
+    if (!["finding", "handoff", "note", "vote"].includes(event.type)) return false;
+    const eventAt = Date.parse(event.at || "") || Number.POSITIVE_INFINITY;
+    return eventAt >= itemAt;
+  });
+}
+
 function priorityRank(priority) {
   const normalized = String(priority || "P2").toUpperCase();
   if (normalized === "P0") return 0;
@@ -311,6 +360,7 @@ function normalizeActivation(suggestion = {}, localPeerId, options = {}) {
     suggestedIntent: cleanString(suggestion.suggestedIntent),
     rationale: cleanString(suggestion.rationale),
     workKey: cleanString(suggestion.workKey),
+    relatedEventId: cleanString(suggestion.relatedEventId),
     personaFit,
     paths: Array.isArray(suggestion.paths) ? suggestion.paths.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()) : [],
     peerId: localPeerId,

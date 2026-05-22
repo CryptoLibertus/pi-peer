@@ -5,6 +5,7 @@ import {
   buildPeerIdleActivationPrompt,
   createPeerIdleWatcher,
   derivePeerIdleActivation,
+  derivePeerIdleActivationOfferPlan,
   markPeerIdleActivation,
   normalizePeerIdleWatcherConfig,
 } from "../src/peers/idle-watcher.mjs";
@@ -29,6 +30,9 @@ test("idle watcher config supports env disable and timing overrides", () => {
   assert.equal(config.cooldownMs, 456);
   assert.equal(config.maxActivationsPerSession, 2);
   assert.equal(config.autoCompact, true);
+  assert.equal(config.protocolOffers, true);
+  assert.equal(normalizePeerIdleWatcherConfig({ protocolOffers: false }, { env: {} }).protocolOffers, false);
+  assert.equal(normalizePeerIdleWatcherConfig({}, { env: { PI_PEER_IDLE_PROTOCOL_OFFERS: "off" } }).protocolOffers, false);
   assert.deepEqual(normalizePeerIdleWatcherConfig({ allowedKinds: "close,review" }, { env: {} }).allowedKinds, ["close", "review"]);
   assert.deepEqual(normalizePeerIdleWatcherConfig({ allowedKinds: [] }, { env: {} }).allowedKinds, []);
   assert.equal(normalizePeerIdleWatcherConfig({ autoCompact: false }, { env: {} }).autoCompact, false);
@@ -205,6 +209,70 @@ test("derivePeerIdleActivation advances dependency-gated work item chains after 
     config: { cooldownMs: 10_000 },
   });
   assert.equal(second.workKey, "goal_chain:loop-002");
+});
+
+test("derivePeerIdleActivation suppresses repeated read-only work-item triage after evidence", () => {
+  const board = {
+    goals: {
+      goal_loop: {
+        id: "goal_loop",
+        objective: "Run bounded loops",
+        status: "open",
+        updatedAt: "2026-01-01T00:02:00.000Z",
+        events: [
+          { id: "loop_5", type: "work-item", peerId: "planner", summary: "Loop 5", itemId: "loop-005", status: "open", lane: "coordination", workKey: "loop:5", at: "2026-01-01T00:00:00.000Z" },
+          { id: "claim_5", type: "claim", peerId: "worker2", summary: "Triage loop 5", mode: "read", lane: "coordination", workKey: "loop:5", at: "2026-01-01T00:01:00.000Z" },
+          { id: "finding_5", type: "finding", peerId: "worker2", summary: "Loop 5 triaged; next action needs scoped write work", lane: "coordination", workKey: "loop:5", at: "2026-01-01T00:01:01.000Z" },
+          { id: "release_5", type: "release", peerId: "worker2", summary: "Released loop 5 triage", resolves: "claim_5", at: "2026-01-01T00:01:02.000Z" },
+        ],
+      },
+    },
+  };
+  assert.equal(derivePeerIdleActivation(board, {
+    localPeerId: "planner",
+    config: { allowedKinds: ["work-item"] },
+  }), undefined);
+});
+
+test("derivePeerIdleActivationOfferPlan routes one protocol offer per work key to active compatible peers", () => {
+  const board = {
+    goals: {
+      goal_offer: {
+        id: "goal_offer",
+        objective: "Route work without per-peer timers",
+        status: "open",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        events: [
+          { id: "evt_item_1", type: "work-item", peerId: "planner", summary: "First loop", itemId: "loop-001", lane: "coordination", status: "open", workKey: "goal_offer:loop-001" },
+          { id: "evt_item_2", type: "work-item", peerId: "planner", summary: "Second loop", itemId: "loop-002", lane: "coordination", status: "open", workKey: "goal_offer:loop-002" },
+        ],
+      },
+    },
+  };
+  const stateByPeer = new Map();
+  const plan = derivePeerIdleActivationOfferPlan(board, [
+    { peerId: "planner", status: "active", compatible: true },
+    { peerId: "worker2", status: "active", compatible: true, role: "worker" },
+    { peerId: "worker3", status: "active", compatible: true, role: "worker" },
+    { peerId: "disabled", status: "active", compatible: false },
+  ], {
+    localPeerId: "planner",
+    stateByPeer,
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].peerId, "worker2");
+  assert.equal(plan[0].activation.workKey, "goal_offer:loop-001");
+  markPeerIdleActivation(plan[0].state, plan[0].activation, 1_000);
+
+  assert.deepEqual(derivePeerIdleActivationOfferPlan(board, [{ peerId: "worker2", status: "active", compatible: true, role: "worker" }], {
+    localPeerId: "planner",
+    stateByPeer,
+    nowMs: 5_000,
+    config: { cooldownMs: 10_000 },
+  }), []);
 });
 
 test("derivePeerIdleActivation lets urgent blockers bypass same-goal cooldowns", () => {

@@ -265,6 +265,7 @@ function summarizePeerIdleWatcher(idleWatcher = {}) {
     intervalMs: idleWatcher.intervalMs,
     cooldownMs: idleWatcher.cooldownMs,
     maxActivationsPerSession: idleWatcher.maxActivationsPerSession,
+    protocolOffers: idleWatcher.protocolOffers !== false,
   };
 }
 

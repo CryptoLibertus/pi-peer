@@ -211,7 +211,7 @@ When peer messaging is enabled, the extension starts a lightweight in-process id
 
 1. If local context pressure is tight or critical, it auto-compacts the local Pi session before accepting more peer work when `idleWatcher.autoCompact` is enabled (default). This uses Pi's `ctx.compact()` hook with peer-specific summary instructions, is guarded by cooldown/in-flight state, and only affects the local peer session; remote peers cannot force another session to compact. If compaction is disabled or unavailable, the watcher falls back to a local follow-up warning.
 2. If an inbound peer task is active but appears not to have triggered a turn, it re-nudges the existing inbound prompt with `triggerTurn: true` using a cooldown.
-3. If no peer task is active, it reads `.pi/peer-goals.json`, derives the same read-only scout suggestions as `/peer scout`, and injects a concise self-prompt so the idle peer can propose, review, claim, vote, or no-op safely. By default it can act on blockers, unsuccessful handoffs, failed votes, stale claims, open proposals, work items, close checks, next steps, and review suggestions. When the local peer has a configured `role` or `persona`, the watcher prefers suggestions whose lane matches that profile and leaves mismatched work for better-fit peers. A read-only idle action is expected to post concrete evidence (`finding`, `handoff`, or `note`) and release its claim before stopping; broad same-goal read claims no longer suppress unrelated future lanes.
+3. If no peer task is active, it reads `.pi/peer-goals.json`, derives the same read-only scout suggestions as `/peer scout`, and injects a concise self-prompt so the idle peer can propose, review, claim, vote, or no-op safely. By default it can act on blockers, unsuccessful handoffs, failed votes, stale claims, open proposals, work items, close checks, next steps, and review suggestions. When the local peer has a configured `role` or `persona`, the watcher prefers suggestions whose lane matches that profile and leaves mismatched work for better-fit peers. A read-only idle action is expected to post concrete evidence (`finding`, `handoff`, or `note`) and release its claim before stopping; broad same-goal read claims no longer suppress unrelated future lanes, and released read-only work-item triage is not re-prompted for the same work key once evidence exists.
 
 Configuration can be placed in `.pi/peers.json` as `idleWatcher` or in `.pi/settings.json` under `peerMessaging.idleWatcher`:
 
@@ -223,12 +223,15 @@ Configuration can be placed in `.pi/peers.json` as `idleWatcher` or in `.pi/sett
     "cooldownMs": 300000,
     "maxActivationsPerSession": 20,
     "autoCompact": true,
+    "protocolOffers": true,
     "allowedKinds": "blocker,task-handoff,failed-vote,stale-claim,open-proposal,work-item,close,next-step,review"
   }
 }
 ```
 
 Set `PI_PEER_IDLE_WATCHER=off` to disable it for a process. `PI_PEER_IDLE_WATCHER_INTERVAL_MS` and `PI_PEER_IDLE_WATCHER_COOLDOWN_MS` override timing for local testing. Set `PI_PEER_AUTO_COMPACT=off` or `idleWatcher.autoCompact: false` to keep the old pause-and-warn behavior. `idleWatcher.allowedKinds` accepts either an array or comma-separated string; set it to an empty array to leave the watcher enabled but suppress proactive scout activations.
+
+In addition to the local fallback interval, the extension watches goal-board changes and can push protocol-routed idle offers to active compatible peers (`idleWatcher.protocolOffers`, default on for planner/coordinator peers; `PI_PEER_IDLE_PROTOCOL_OFFERS=off` disables it for a process). Offers are normal goal-linked peer messages with read claims and work keys, so board claim validation remains the source of truth and duplicate offers are reused/suppressed.
 
 ## Package checks
 

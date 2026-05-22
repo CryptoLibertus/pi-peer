@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { watch } from "node:fs";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 
@@ -20,7 +22,7 @@ import {
   normalizePeerHandoffEvidence,
 } from "../../src/peers/tool-results.mjs";
 import { PEER_TOOL_NAMES, PEER_TOOL_PROMPT_GUIDELINES } from "../../src/peers/guidance.mjs";
-import { createPeerIdleWatcher } from "../../src/peers/idle-watcher.mjs";
+import { buildPeerIdleActivationPrompt, createPeerIdleWatcher, derivePeerIdleActivationOfferPlan, markPeerIdleActivation } from "../../src/peers/idle-watcher.mjs";
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcilePeerControlLedger } from "../../src/peers/control-ledger.mjs";
 import { formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
 
@@ -44,6 +46,8 @@ export default function piPeerExtension(pi: ExtensionAPI) {
     updatePeerContextBudget(runtime, ctx);
     attachPeerUi(runtime, () => activeContext, (current: any) => refreshPeerUi(current, runtime));
     attachPeerIdleWatcher(pi, runtime, () => activeContext, (current: any) => refreshPeerUi(current, runtime));
+    attachPeerGoalBoardWatcher(runtime);
+    schedulePeerIdleProtocolOffers(runtime, "session_start");
     await reconcilePeerControlState(ctx.cwd || process.cwd(), runtime);
     await resumePersistedHiveRuns(ctx.cwd || process.cwd(), runtime);
     await refreshPeerUi(ctx, runtime);
@@ -55,6 +59,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
     updatePeerContextBudget(runtime, ctx);
     await refreshPeerUi(ctx, runtime);
     schedulePeerIdleCheck(runtime, "agent_end");
+    schedulePeerIdleProtocolOffers(runtime, "agent_end");
   });
 
   pi.on("session_compact", async (_event, ctx = {}) => {
@@ -67,6 +72,8 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", async (_event, ctx = {}) => {
     const runtime = await runtimeFor(pi, ctx.cwd);
     runtime.__peerIdleWatcher?.stop?.();
+    runtime.__peerGoalBoardWatcher?.close?.();
+    runtime.__peerGoalBoardWatcher = undefined;
     await refreshPeerUi(ctx, runtime);
     activeContext = undefined;
   });
@@ -1183,6 +1190,7 @@ function attachPeerUi(runtime: any, activeContext: () => any, refresh: (ctx: any
   runtime.comms.subscribe(() => {
     const ctx = activeContext();
     if (ctx?.hasUI) void refresh(ctx);
+    schedulePeerIdleProtocolOffers(runtime, "peer-comms-event");
   });
 }
 
@@ -1199,6 +1207,118 @@ function attachPeerIdleWatcher(pi: ExtensionAPI, runtime: any, activeContext: ()
     });
   }
   return runtime.__peerIdleWatcher.start?.();
+}
+
+function attachPeerGoalBoardWatcher(runtime: any) {
+  if (!runtime?.enabled || runtime.__peerGoalBoardWatcher) return false;
+  try {
+    const dir = join(runtime.cwd || process.cwd(), ".pi");
+    runtime.__peerGoalBoardWatcher = watch(dir, { persistent: false }, (_eventType, filename) => {
+      const name = String(filename || "");
+      if (!name.startsWith("peer-goals")) return;
+      schedulePeerIdleCheck(runtime, "goal-board-change");
+      schedulePeerIdleProtocolOffers(runtime, "goal-board-change");
+    });
+    runtime.__peerGoalBoardWatcher.unref?.();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function schedulePeerIdleProtocolOffers(runtime: any, reason: string) {
+  if (!runtime?.enabled || !runtime?.comms || !shouldRunPeerIdleOfferCoordinator(runtime)) return;
+  if (runtime.__peerIdleOfferTimer) return;
+  runtime.__peerIdleOfferTimer = setTimeout(() => {
+    runtime.__peerIdleOfferTimer = undefined;
+    void dispatchPeerIdleProtocolOffers(runtime, reason).catch(() => {});
+  }, 25);
+  runtime.__peerIdleOfferTimer.unref?.();
+}
+
+function shouldRunPeerIdleOfferCoordinator(runtime: any) {
+  const config = runtime?.config?.idleWatcher || {};
+  if (config.protocolOffers === false) return false;
+  const profile = runtime?.config?.localPeerProfile || runtime?.localEndpoint || {};
+  const id = String(runtime?.localPeerId || "").toLowerCase();
+  const role = String(profile.role || profile.persona || "").toLowerCase();
+  if (role.includes("worker") && !role.includes("coordinator") && !role.includes("planner")) return false;
+  if (/^worker\d*\b/.test(id)) return false;
+  return true;
+}
+
+async function dispatchPeerIdleProtocolOffers(runtime: any, reason: string) {
+  if (runtime.__peerIdleOfferDispatching) return [];
+  runtime.__peerIdleOfferDispatching = true;
+  try {
+    const root = runtime.cwd || process.cwd();
+    await runtime.refreshLocalPeers?.();
+    const peers = runtime.comms?.listPeers ? await runtime.comms.listPeers() : [];
+    if (!peers.length) return [];
+    const board = await loadPeerGoalBoard(root);
+    if (!runtime.__peerIdleOfferStates) runtime.__peerIdleOfferStates = new Map();
+    const config = runtime.__peerIdleWatcher?.config || runtime.config?.idleWatcher || {};
+    const offers = derivePeerIdleActivationOfferPlan(board, peers, {
+      localPeerId: runtime.localPeerId,
+      stateByPeer: runtime.__peerIdleOfferStates,
+      config,
+      nowMs: Date.now(),
+      limit: Math.min(3, peers.length),
+    });
+    const dispatches: any[] = [];
+    for (const offer of offers) dispatches.push(await dispatchPeerIdleProtocolOffer(root, runtime, offer, reason));
+    return dispatches;
+  } finally {
+    runtime.__peerIdleOfferDispatching = false;
+  }
+}
+
+async function dispatchPeerIdleProtocolOffer(root: string, runtime: any, offer: any, reason: string) {
+  const activation = offer.activation;
+  let goalLink: any;
+  try {
+    goalLink = await beginPeerSendGoalLink(root, runtime, {
+      goalId: activation.goalId,
+      targetPeerId: offer.peerId,
+      prompt: activation.summary,
+      claimedPaths: [],
+      claimMode: activation.claimMode || "read",
+      workKey: activation.workKey,
+      workLane: activation.recommendedLane || activation.claimMode || "coordination",
+      duplicatePolicy: "reuse",
+      staleAfterMs: Math.max(60_000, Math.min(Number(runtime.__peerIdleWatcher?.config?.cooldownMs) || 300_000, 15 * 60_000)),
+    });
+    if (goalLink?.duplicate) return { peerId: offer.peerId, duplicate: true, workKey: activation.workKey };
+    const metadata = mergePeerMetadata({ peerIdleOffer: true, activationKind: activation.kind, reason }, [], activation.goalId, {
+      workKey: goalLink?.workKey || activation.workKey,
+      workLane: activation.recommendedLane,
+      duplicatePolicy: "reuse",
+    });
+    if (goalLink?.claimEvent?.id) metadata.goalClaimId = goalLink.claimEvent.id;
+    const prompt = buildPeerIdleOfferPrompt(activation, offer.peerId, reason);
+    const handle = await runtime.comms.sendMessage(offer.peerId, {
+      prompt: withPeerGoalInstructions(prompt, goalLink),
+      intent: activation.suggestedIntent || "coordinate",
+      metadata,
+    });
+    await recordPeerSendGoalDispatch(root, runtime, goalLink, handle, { targetPeerId: offer.peerId, prompt: activation.summary, claimedPaths: [] });
+    trackPeerSendGoalCompletion(root, goalLink, handle, { targetPeerId: offer.peerId, prompt: activation.summary, claimedPaths: [] });
+    markPeerIdleActivation(offer.state, activation, Date.now());
+    return { peerId: offer.peerId, messageId: handle.messageId, conversationId: handle.conversationId, workKey: activation.workKey };
+  } catch (error: any) {
+    if (goalLink?.goalId) await recordPeerSendGoalFailure(root, goalLink, { targetPeerId: offer.peerId, prompt: activation.summary, claimedPaths: [], error });
+    return { peerId: offer.peerId, error: error?.message || String(error), workKey: activation.workKey };
+  }
+}
+
+function buildPeerIdleOfferPrompt(activation: any, peerId: string, reason: string) {
+  return [
+    `Protocol-routed peer idle offer (${reason}).`,
+    `The local extension observed goal-board work and is pushing this offer instead of waiting for this peer's polling timer.`,
+    `Accept it only if the board still shows the work is unclaimed and useful; otherwise release/stop with a brief handoff.`,
+    ``,
+    buildPeerIdleActivationPrompt(activation, { localPeerId: peerId }),
+  ].join("\n");
 }
 
 function updatePeerContextBudget(runtime: any, ctx: any, options: any = {}) {
