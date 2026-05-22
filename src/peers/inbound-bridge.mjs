@@ -129,10 +129,12 @@ export function createInboundPromptBridge(options = {}) {
         const finalAssistantMessage = extractFinalAssistantText(event);
         const cancelled = entry.cancelRequested === true;
         const handoffEvidence = finalAssistantMessage ? parsePeerHandoffEvidence(finalAssistantMessage, { homeDir: options.homeDir }) : undefined;
+        const diagnostics = !cancelled && !finalAssistantMessage ? summarizeAgentEndForDiagnostics(event) : undefined;
         settleEntry(entry, normalizePeerMessageResponseBody({
           status: cancelled ? "CANCELLED" : finalAssistantMessage ? "OK" : "ERROR",
           finalAssistantMessage,
           ...(handoffEvidence?.present ? { handoffEvidence } : {}),
+          ...(diagnostics ? { diagnostics } : {}),
           summary: cancelled ? entry.cancelReason || "cancelled by sender" : finalAssistantMessage ? "Peer turn completed" : "agent_end did not include final assistant text",
         }));
       }
@@ -278,6 +280,20 @@ function truncatePromptSection(value, maxLength = 12_000) {
   return value.length > maxLength ? `${value.slice(0, maxLength)}\n[truncated]` : value;
 }
 
+export function summarizeAgentEndForDiagnostics(event) {
+  if (typeof event === "string") return { type: "string", length: event.length };
+  if (!event || typeof event !== "object") return { type: event === null ? "null" : typeof event };
+  return stripEmpty({
+    type: Array.isArray(event) ? "array" : "object",
+    topLevelKeys: safeKeys(event),
+    willRetry: typeof event.willRetry === "boolean" ? event.willRetry : undefined,
+    stopReason: safeString(event.stopReason || event.finishReason || event.reason),
+    message: summarizeMessageShape(event.message),
+    finalMessage: summarizeMessageShape(event.finalMessage),
+    messages: Array.isArray(event.messages) ? summarizeMessagesShape(event.messages) : undefined,
+  });
+}
+
 export function extractFinalAssistantText(event) {
   if (typeof event === "string") return event.trim();
   if (!event || typeof event !== "object") return "";
@@ -312,6 +328,57 @@ function contentToText(value) {
   }
   if (typeof value?.text === "string") return value.text.trim();
   return "";
+}
+
+function summarizeMessagesShape(messages = []) {
+  const roles = messages.map((message) => safeString(message?.role) || "unknown");
+  const lastAssistant = [...messages].reverse().find((message) => message?.role === "assistant");
+  return stripEmpty({
+    count: messages.length,
+    roles,
+    lastAssistant: summarizeMessageShape(lastAssistant),
+  });
+}
+
+function summarizeMessageShape(message) {
+  if (!message || typeof message !== "object") return undefined;
+  return stripEmpty({
+    role: safeString(message.role),
+    keys: safeKeys(message),
+    stopReason: safeString(message.stopReason || message.finishReason || message.reason),
+    content: summarizeContentShape(message.content),
+  });
+}
+
+function summarizeContentShape(value) {
+  if (typeof value === "string") return { type: "string", length: value.length };
+  if (Array.isArray(value)) {
+    return stripEmpty({
+      type: "array",
+      count: value.length,
+      itemTypes: [...new Set(value.map((item) => Array.isArray(item) ? "array" : item === null ? "null" : typeof item))],
+      blockTypes: [...new Set(value.map((item) => safeString(item?.type)).filter(Boolean))],
+      itemKeys: [...new Set(value.flatMap((item) => safeKeys(item)).slice(0, 20))],
+    });
+  }
+  if (value && typeof value === "object") return stripEmpty({ type: "object", keys: safeKeys(value), blockType: safeString(value.type) });
+  return value === undefined ? undefined : { type: value === null ? "null" : typeof value };
+}
+
+function safeKeys(value, limit = 20) {
+  if (!value || typeof value !== "object") return [];
+  return Object.keys(value).slice(0, limit).map((key) => safeString(key)).filter(Boolean);
+}
+
+function safeString(value, maxLength = 80) {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}…` : trimmed;
+}
+
+function stripEmpty(value = {}) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && !(Array.isArray(item) && item.length === 0)));
 }
 
 function summarizeEnvelope(envelope) {

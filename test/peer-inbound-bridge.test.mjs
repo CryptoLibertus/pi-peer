@@ -58,6 +58,32 @@ test("inbound bridge initial activation and idle nudge use triggerTurn followUp"
   assert.equal(bridge.pendingCount(), 0);
 });
 
+test("inbound bridge records redacted diagnostics when agent_end has no final assistant text", async () => {
+  const bridge = createInboundPromptBridge({
+    pi: { sendMessage: () => {} },
+    responseTimeoutMs: 60_000,
+  });
+
+  const responsePromise = bridge.handleEnvelope(envelope("msg_empty_final"));
+  bridge.handleAgentEnd({
+    willRetry: false,
+    messages: [
+      { role: "user", content: "private user prompt should not be echoed" },
+      { role: "assistant", stopReason: "tool_use", content: [{ type: "tool_use", input: "secret token abc123" }] },
+    ],
+  });
+  const response = await responsePromise;
+
+  assert.equal(response.status, "ERROR");
+  assert.equal(response.summary, "agent_end did not include final assistant text");
+  assert.equal(response.diagnostics.willRetry, false);
+  assert.deepEqual(response.diagnostics.messages.roles, ["user", "assistant"]);
+  assert.equal(response.diagnostics.messages.lastAssistant.stopReason, "tool_use");
+  assert.deepEqual(response.diagnostics.messages.lastAssistant.content.blockTypes, ["tool_use"]);
+  assert.equal(JSON.stringify(response.diagnostics).includes("private user prompt"), false);
+  assert.equal(JSON.stringify(response.diagnostics).includes("secret token"), false);
+});
+
 test("inbound bridge nudge respects cooldown and queue remains behind active", async () => {
   const sent = [];
   const queued = [];

@@ -145,7 +145,7 @@ export function formatPeerGoalDashboard(goal, options = {}) {
     `status: ${state.status || "open"} · ready: ${state.status === "closed" ? "closed" : state.readyToClose ? "yes" : "no"}`,
     `objective: ${truncateStatus(state.objective, 120)}`,
     "",
-    `counts: active claims ${state.activeClaims.length} · stale ${state.staleClaims.length} · open proposals ${state.openProposals.length} · active tasks ${state.activeTasks.length} · blockers ${state.blockingObjections.length}`,
+    `counts: active claims ${state.activeClaims.length} · stale ${state.staleClaims.length} · open proposals ${state.openProposals.length} · active tasks ${state.activeTasks.length} · unresolved handoffs ${state.unresolvedTaskHandoffs?.length || 0} · blockers ${state.blockingObjections.length}`,
   ];
 
   const peerRows = peerContributionRows(state);
@@ -186,6 +186,14 @@ export function formatPeerGoalDashboard(goal, options = {}) {
     for (const blocker of state.blockingObjections.slice(0, 8)) lines.push(`- ${blocker.id} · ${blocker.peerId}: ${truncateStatus(blocker.summary, 120)}`);
   }
 
+  if (state.unresolvedTaskHandoffs?.length) {
+    lines.push("", "Unresolved peer handoffs:");
+    for (const task of state.unresolvedTaskHandoffs.slice(0, 8)) {
+      lines.push(`- ${task.handoffEventId || task.id} · ${task.handoffPeerId || task.peerId}: ${task.status || "unknown"} · ${truncateStatus(task.handoffSummary || task.summary, 120)}`);
+      if (task.handoffEventId) lines.push(`  next: /peer goal resolve ${shellQuote(state.id)} ${shellQuote(task.handoffEventId)} ${shellQuote("accepted or superseded unsuccessful peer handoff")}`);
+    }
+  }
+
   if (state.currentVotes.length) {
     lines.push("", "Votes:");
     for (const vote of state.currentVotes.slice(0, 8)) lines.push(`- ${vote.peerId}: ${vote.verdict}${vote.confidence !== undefined ? ` (${vote.confidence})` : ""} · ${truncateStatus(vote.summary, 100)}`);
@@ -194,7 +202,7 @@ export function formatPeerGoalDashboard(goal, options = {}) {
   lines.push("", "Safe next actions:");
   if (state.readyToClose && state.status !== "closed") lines.push(`- close: /peer goal close ${shellQuote(state.id)} ${shellQuote("closure gates satisfied")}`);
   if (!state.currentVotes.length && !state.openProposals.length && !state.activeClaims.length) lines.push(`- vote: /peer goal vote ${shellQuote(state.id)} pass ${shellQuote("reviewed and verified")}`);
-  if (!state.readyToClose && !state.openProposals.length && !state.activeClaims.length && !state.staleClaims.length) lines.push("- no mutation suggested; ask for a read-only review or claim an explicit implementation path.");
+  if (!state.readyToClose && !state.openProposals.length && !state.activeClaims.length && !state.staleClaims.length && !state.unresolvedTaskHandoffs?.length) lines.push("- no mutation suggested; ask for a read-only review or claim an explicit implementation path.");
   return lines.join("\n");
 }
 

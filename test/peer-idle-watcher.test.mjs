@@ -28,6 +28,9 @@ test("idle watcher config supports env disable and timing overrides", () => {
   assert.equal(config.intervalMs, 123);
   assert.equal(config.cooldownMs, 456);
   assert.equal(config.maxActivationsPerSession, 2);
+  assert.equal(config.autoCompact, true);
+  assert.equal(normalizePeerIdleWatcherConfig({ autoCompact: false }, { env: {} }).autoCompact, false);
+  assert.equal(normalizePeerIdleWatcherConfig({}, { env: { PI_PEER_AUTO_COMPACT: "off" } }).autoCompact, false);
 });
 
 test("derivePeerIdleActivation picks scout suggestions and respects cooldown", () => {
@@ -308,14 +311,63 @@ test("createPeerIdleWatcher only injects when context is idle and no peer messag
   assert.equal(busy.reason, "peer messages pending");
 });
 
-test("idle watcher pauses next task when context judgement requires compaction", async () => {
+test("idle watcher auto-compacts when configured and context pressure blocks new work", async () => {
+  const sent = [];
+  const compactCalls = [];
+  const runtime = {
+    enabled: true,
+    localPeerId: "worker-a",
+    cwd: "/tmp/project",
+    contextBudget: { tokens: 96_000, contextWindow: 100_000 },
+    config: { idleWatcher: { intervalMs: 1_000, cooldownMs: 10_000, autoCompact: true } },
+    comms: { listMessages: async () => [] },
+    pendingInboundCount: () => 0,
+  };
+  const ctx = {
+    cwd: "/tmp/project",
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    compact: (input) => compactCalls.push(input),
+    ui: { notify: () => {} },
+  };
+  const watcher = createPeerIdleWatcher({
+    runtime,
+    pi: { sendMessage: (message, options) => sent.push({ message, options }) },
+    activeContext: () => ctx,
+    loadBoard: async () => openGoalBoard,
+    now: () => 1_000,
+    config: { intervalMs: 1_000, cooldownMs: 10_000, autoCompact: true },
+  });
+
+  const result = await watcher.check("test");
+  assert.equal(result.activated, true);
+  assert.equal(result.activation.kind, "context-auto-compact");
+  assert.equal(compactCalls.length, 1);
+  assert.match(compactCalls[0].customInstructions, /local peer worker-a/);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].options, undefined);
+  assert.match(sent[0].message.content, /auto-compacting context/);
+  assert.equal(sent[0].message.details.contextJudgement.automaticAction, "compact");
+
+  const inFlight = await watcher.check("test");
+  assert.equal(inFlight.activated, false);
+  assert.equal(inFlight.reason, "context compaction in flight");
+  assert.equal(compactCalls.length, 1);
+
+  compactCalls[0].onComplete?.({});
+  const cooledDown = await watcher.check("test");
+  assert.equal(cooledDown.activated, false);
+  assert.equal(cooledDown.reason, "context judgement cooling down");
+});
+
+test("idle watcher pauses next task when auto-compaction is disabled", async () => {
   const sent = [];
   const runtime = {
     enabled: true,
     localPeerId: "worker-a",
     cwd: "/tmp/project",
     contextBudget: { tokens: 96_000, contextWindow: 100_000 },
-    config: { idleWatcher: { intervalMs: 1_000, cooldownMs: 10_000 } },
+    config: { idleWatcher: { intervalMs: 1_000, cooldownMs: 10_000, autoCompact: false } },
     comms: { listMessages: async () => [] },
     pendingInboundCount: () => 0,
   };
@@ -325,7 +377,7 @@ test("idle watcher pauses next task when context judgement requires compaction",
     activeContext: () => ({ cwd: "/tmp/project", isIdle: () => true, hasPendingMessages: () => false }),
     loadBoard: async () => openGoalBoard,
     now: () => 1_000,
-    config: { intervalMs: 1_000, cooldownMs: 10_000 },
+    config: { intervalMs: 1_000, cooldownMs: 10_000, autoCompact: false },
   });
 
   const result = await watcher.check("test");

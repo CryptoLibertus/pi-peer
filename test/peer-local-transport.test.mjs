@@ -148,6 +148,51 @@ test("authenticated local transport handles cancel signals already aborted befor
   });
 });
 
+test("authenticated local transport propagates in-flight cancellation and comms records acknowledgement", async (t) => {
+  await withTempRoot(t, async (root) => {
+    const discoveryDir = join(root, "discovery");
+    const endpoint = createLocalPeerEndpoint({
+      peerId: "worker",
+      cwd: root,
+      discoveryDir,
+      authToken: "shared-secret",
+      handler: async (_envelope, _descriptor, context) => {
+        context.markQueued({ queuedPosition: 1, queueLength: 1, priority: "P0" });
+        return new Promise((resolve) => {
+          context.onCancel(({ reason }) => resolve({ status: "CANCELLED", summary: `ack: ${reason}` }));
+        });
+      },
+    });
+    const descriptor = await endpoint.start();
+    t.after(async () => endpoint.stop());
+
+    const comms = createPeerComms({
+      localPeerId: "planner",
+      registry: new MemoryPeerRegistry([{ ...descriptor, authToken: "shared-secret" }]),
+      transport: new LocalPeerTransport({ discoveryDir, timeoutMs: 1_000 }),
+    });
+    t.after(async () => comms.dispose());
+
+    const handle = await comms.sendMessage("worker", { prompt: "do authenticated cancellable work", intent: "task" }, { priority: "P0" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const cancelling = await handle.cancel("stop authenticated now");
+    assert.equal(cancelling.status, "cancelling");
+    const secondCancel = await handle.cancel("stop authenticated again");
+    assert.equal(secondCancel.status, "cancelling");
+
+    const response = await handle.response;
+    assert.equal(response.status, "CANCELLED");
+    assert.match(response.summary, /stop authenticated now/);
+
+    const message = await comms.getMessage(handle.messageId);
+    assert.equal(message.status, "cancelled");
+    assert.equal(message.priority, "P0");
+    assert.equal(message.events.some((event) => event.type === "request.queued" && event.priority === "P0"), true);
+    assert.equal(message.events.some((event) => event.type === "request.cancelled"), true);
+    assert.equal(message.events.some((event) => event.type === "cancel.acknowledged"), true);
+  });
+});
+
 test("local transport propagates cancellation and comms records acknowledgement", async (t) => {
   await withTempRoot(t, async (root) => {
     const discoveryDir = join(root, "discovery");

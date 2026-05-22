@@ -54,7 +54,7 @@ export function derivePeerContextJudgement(budget = {}, options = {}) {
     shouldSummarize: pressure === "watch" || shouldCompact,
     shouldCompact,
     shouldClearContext,
-    requiresUserApproval: shouldCompact || shouldClearContext,
+    requiresUserApproval: (shouldCompact && !allowAutomaticCompaction) || shouldClearContext,
     automaticAction: allowAutomaticCompaction && shouldCompact ? "compact" : "none",
     allowedActions: policy.allowedActions,
     reason: policy.reason,

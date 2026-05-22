@@ -12,9 +12,11 @@ const BLOCKING_SEVERITIES = new Set(["blocking", "blocker", "critical"]);
 const VOTE_VERDICTS = new Set(["pass", "fail", "pass-with-risks"]);
 const DUPLICATE_POLICIES = new Set(["error", "reuse", "allow-parallel"]);
 const ACTIVE_TASK_STATUSES = new Set(["queued", "dispatching", "planned", "running", "pending", "blocked"]);
+const SUCCESSFUL_TASK_HANDOFF_STATUSES = new Set(["done", "complete", "completed", "closed", "resolved", "ok", "pass", "passed"]);
 const DEFAULT_GOAL_CLAIM_STALE_MS = 45 * 60 * 1000;
 const SCOUT_LANES = Object.freeze({
   blocker: { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "review", rationale: "Blocking objections need a coordination/review lane before more work starts." },
+  "task-handoff": { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "review", rationale: "Unsuccessful peer handoffs are terminal for activity but still need an explicit resolve/defer decision." },
   "failed-vote": { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "review", rationale: "Failed votes need triage before new implementation work." },
   "stale-claim": { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator"], claimMode: "read", suggestedIntent: "coordinate", rationale: "Stale claims need owner follow-up or release, not duplicate writes." },
   "open-proposal": { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "review", rationale: "Open proposals need triage into accept, defer, or resolve decisions." },
@@ -243,11 +245,12 @@ export function deriveGoalState(goal, options = {}) {
   const activeWriteClaims = activeClaims.filter((claim) => claim.mode === "write");
   const tasks = events.filter((event) => event.type === "task").map((event) => projectTaskSummary(event, events));
   const activeTasks = tasks.filter(isActiveTaskSummary);
+  const unresolvedTaskHandoffs = tasks.filter((task) => isUnsuccessfulTaskHandoffSummary(task) && !resolvedIds.has(task.handoffEventId));
   const workItems = projectWorkItems(events);
   const openWorkItems = workItems.filter((item) => !isTerminalWorkItemStatus(item.status));
   const blockedWorkItems = workItems.filter((item) => item.blockedBy?.length);
   const closurePolicy = normalizePeerGoalClosurePolicy(goal?.closurePolicy || goal?.metadata?.closurePolicy);
-  const baseReadyToClose = goal?.status === "open" && blockingObjections.length === 0 && failedVotes.length === 0 && activeClaims.length === 0 && activeTasks.length === 0 && openProposals.length === 0 && openWorkItems.length === 0 && blockedWorkItems.length === 0 && passingVotes.length > 0;
+  const baseReadyToClose = goal?.status === "open" && blockingObjections.length === 0 && unresolvedTaskHandoffs.length === 0 && failedVotes.length === 0 && activeClaims.length === 0 && activeTasks.length === 0 && openProposals.length === 0 && openWorkItems.length === 0 && blockedWorkItems.length === 0 && passingVotes.length > 0;
   const closurePolicyStatus = evaluateClosurePolicy(closurePolicy, { events, passingVotes });
   return {
     ...goal,
@@ -266,6 +269,7 @@ export function deriveGoalState(goal, options = {}) {
     passingVotes,
     tasks,
     activeTasks,
+    unresolvedTaskHandoffs,
     workItems,
     openWorkItems,
     blockedWorkItems,
@@ -284,6 +288,7 @@ export function formatPeerGoalList(board) {
     if (state.activeClaims.length) bits.push(`${state.activeClaims.length} active claim${state.activeClaims.length === 1 ? "" : "s"}`);
     if (state.staleClaims.length) bits.push(`${state.staleClaims.length} stale claim${state.staleClaims.length === 1 ? "" : "s"}`);
     if (state.blockingObjections.length) bits.push(`${state.blockingObjections.length} blocker${state.blockingObjections.length === 1 ? "" : "s"}`);
+    if (state.unresolvedTaskHandoffs?.length) bits.push(`${state.unresolvedTaskHandoffs.length} unresolved handoff${state.unresolvedTaskHandoffs.length === 1 ? "" : "s"}`);
     if (state.openProposals.length) bits.push(`${state.openProposals.length} proposal${state.openProposals.length === 1 ? "" : "s"}`);
     if (state.openWorkItems.length) bits.push(`${state.openWorkItems.length} work item${state.openWorkItems.length === 1 ? "" : "s"}`);
     return bits.join(" · ");
@@ -325,6 +330,10 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
     };
     if (state.blockingObjections.length) {
       push("P0", "blocker", `Resolve ${state.blockingObjections.length} blocking objection${state.blockingObjections.length === 1 ? "" : "s"} before more work.`, { paths: uniqueEventPaths(state.blockingObjections) });
+      continue;
+    }
+    if (state.unresolvedTaskHandoffs?.length) {
+      push("P0", "task-handoff", `Resolve ${state.unresolvedTaskHandoffs.length} unsuccessful peer handoff${state.unresolvedTaskHandoffs.length === 1 ? "" : "s"} before closing.`, { paths: uniqueEventPaths(state.unresolvedTaskHandoffs) });
       continue;
     }
     if (state.failedVotes.length) {
@@ -427,6 +436,10 @@ export function formatPeerGoal(goal) {
   if (state.blockingObjections.length) {
     lines.push("", "Blocking objections:");
     for (const objection of state.blockingObjections) lines.push(`- ${objection.id} · ${objection.peerId} · ${objection.summary}`);
+  }
+  if (state.unresolvedTaskHandoffs?.length) {
+    lines.push("", "Unresolved peer handoffs:");
+    for (const task of state.unresolvedTaskHandoffs.slice(-8)) lines.push(`- ${task.handoffEventId || task.id} · ${task.handoffPeerId || task.peerId} · ${task.status || "unknown"} · ${task.handoffSummary || task.summary}`);
   }
   if (state.openProposals.length) {
     lines.push("", "Open proposals:");
@@ -643,6 +656,9 @@ export function validateGoalReadyToClose(state) {
   if (state.activeTasks?.length) {
     throw new Error(`peer goal ${state.id} has active tasks: ${state.activeTasks.map((item) => item.taskId || item.id).join(", ")}`);
   }
+  if (state.unresolvedTaskHandoffs?.length) {
+    throw new Error(`peer goal ${state.id} has unresolved peer handoffs: ${state.unresolvedTaskHandoffs.map((item) => item.handoffEventId || item.taskId || item.id).join(", ")}`);
+  }
   if (state.openProposals.length) {
     throw new Error(`peer goal ${state.id} has unresolved open proposals: ${state.openProposals.map((item) => item.id).join(", ")}`);
   }
@@ -820,11 +836,19 @@ function projectTaskSummary(task, events) {
     status: handoff.status || "done",
     completedAt: handoff.at,
     handoffEventId: handoff.id,
+    handoffPeerId: handoff.peerId,
+    handoffSummary: handoff.summary,
   });
 }
 
 function isActiveTaskSummary(task = {}) {
+  if (task.completedAt || task.handoffEventId) return false;
   return !task.status || ACTIVE_TASK_STATUSES.has(String(task.status).toLowerCase());
+}
+
+function isUnsuccessfulTaskHandoffSummary(task = {}) {
+  if (!task.completedAt && !task.handoffEventId) return false;
+  return !SUCCESSFUL_TASK_HANDOFF_STATUSES.has(String(task.status || "").toLowerCase());
 }
 
 function taskMatchesHandoff(task, event, events) {

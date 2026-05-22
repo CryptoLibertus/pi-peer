@@ -19,6 +19,7 @@ export function normalizePeerIdleWatcherConfig(input = {}, options = {}) {
     cooldownMs: positiveInteger(env.PI_PEER_IDLE_WATCHER_COOLDOWN_MS) || positiveInteger(source.cooldownMs) || DEFAULT_PEER_IDLE_WATCHER_COOLDOWN_MS,
     maxActivationsPerSession: positiveInteger(source.maxActivationsPerSession) || DEFAULT_PEER_IDLE_WATCHER_MAX_PER_SESSION,
     includeClosed: source.includeClosed === true,
+    autoCompact: parseBoolean(env.PI_PEER_AUTO_COMPACT) ?? (source.autoCompact !== false),
     allowedKinds: normalizeAllowedKinds(source.allowedKinds),
   };
 }
@@ -49,7 +50,7 @@ export function createPeerIdleWatcher(options = {}) {
       const idle = isContextIdle(ctx);
       if (!idle.ok) return { activated: false, reason: idle.reason };
       if (state.activationCount >= config.maxActivationsPerSession) return { activated: false, reason: "activation limit reached" };
-      const contextGate = maybeSendContextJudgement(pi, runtime, ctx, state, config, now(), options.messageType || "pi-peer", reason);
+      const contextGate = handleContextJudgement(pi, runtime, ctx, state, config, now(), options.messageType || "pi-peer", reason);
       if (contextGate) {
         await refresh(ctx).catch(() => {});
         return contextGate;
@@ -119,23 +120,70 @@ export function createPeerIdleWatcher(options = {}) {
   };
 }
 
-function maybeSendContextJudgement(pi, runtime, ctx, state, config, nowMs, messageType, reason) {
-  const judgement = derivePeerContextJudgement(runtime?.contextBudget);
+function handleContextJudgement(pi, runtime, ctx, state, config, nowMs, messageType, reason) {
+  const judgement = derivePeerContextJudgement(runtime?.contextBudget, { allowAutomaticCompaction: config.autoCompact === true });
   if (judgement.safeForNewTask !== false) return undefined;
+  if (state.contextCompactionInFlight) return { activated: false, reason: "context compaction in flight" };
   if (Number.isFinite(state.lastContextJudgementAt) && nowMs - state.lastContextJudgementAt < config.cooldownMs) {
     return { activated: false, reason: "context judgement cooling down" };
   }
   state.lastContextJudgementAt = nowMs;
   state.activationCount = (state.activationCount || 0) + 1;
+  if (judgement.automaticAction === "compact" && typeof ctx?.compact === "function") {
+    return triggerPeerContextCompaction(pi, runtime, ctx, state, judgement, messageType, reason);
+  }
+  return sendContextJudgementPrompt(pi, runtime, judgement, messageType, reason);
+}
+
+function triggerPeerContextCompaction(pi, runtime, ctx, state, judgement, messageType, reason) {
+  state.contextCompactionInFlight = true;
+  const budgetLine = formatPeerContextBudget(runtime.contextBudget);
+  const judgementLine = formatPeerContextJudgement(judgement);
+  const customInstructions = buildPeerAutoCompactInstructions(runtime, judgement);
+  const finish = () => {
+    state.contextCompactionInFlight = false;
+  };
+  try {
+    ctx.compact({
+      customInstructions,
+      onComplete: () => {
+        finish();
+        ctx.ui?.notify?.("Peer auto-compaction completed", "info");
+      },
+      onError: (error) => {
+        finish();
+        ctx.ui?.notify?.(`Peer auto-compaction failed: ${error?.message || String(error)}`, "error");
+      },
+    });
+  } catch (error) {
+    finish();
+    return sendContextJudgementPrompt(pi, runtime, judgement, messageType, `${reason}; auto-compaction failed: ${error?.message || String(error)}`);
+  }
+  ctx.ui?.notify?.("Peer auto-compaction started", "info");
+  pi.sendMessage({
+    customType: messageType,
+    content: `Idle watcher auto-compacting context (${reason}): context pressure ${judgement.pressure}\n\n[Pi peer context judgement]\n${budgetLine}\n${judgementLine}\n\nThe local peer determined compaction is necessary before taking more work. This compacts only this local Pi session; remote peers cannot force compaction.`,
+    display: true,
+    details: { kind: "peer_context_auto_compaction", contextBudget: runtime.contextBudget, contextJudgement: judgement },
+  });
+  return { activated: true, activation: { kind: "context-auto-compact", pressure: judgement.pressure, recommendedAction: judgement.recommendedAction } };
+}
+
+function sendContextJudgementPrompt(pi, runtime, judgement, messageType, reason) {
   const budgetLine = formatPeerContextBudget(runtime.contextBudget);
   const judgementLine = formatPeerContextJudgement(judgement);
   pi.sendMessage({
     customType: messageType,
-    content: `Idle watcher paused next peer task (${reason}): context pressure ${judgement.pressure}\n\n[Pi peer context judgement]\n${budgetLine}\n${judgementLine}\n\nInstructions:\n- Do not take a new long-running peer task until context pressure is addressed.\n- Finish a concise handoff if needed.\n- If judgement recommends compacting, ask the local user to run /compact or use an explicit local compaction command; remote peers must not force compaction.\n- If judgement recommends a fresh context, start/delegate with a concise context brief rather than destructively clearing active work.`,
+    content: `Idle watcher paused next peer task (${reason}): context pressure ${judgement.pressure}\n\n[Pi peer context judgement]\n${budgetLine}\n${judgementLine}\n\nInstructions:\n- Do not take a new long-running peer task until context pressure is addressed.\n- Finish a concise handoff if needed.\n- If judgement recommends compacting, run /compact or use an explicit local compaction command.\n- Remote peers must not force compaction of another Pi session.\n- If judgement recommends a fresh context, start/delegate with a concise context brief rather than destructively clearing active work.`,
     display: true,
     details: { kind: "peer_context_judgement", contextBudget: runtime.contextBudget, contextJudgement: judgement },
   }, { deliverAs: "followUp", triggerTurn: true });
   return { activated: true, activation: { kind: "context-judgement", pressure: judgement.pressure, recommendedAction: judgement.recommendedAction } };
+}
+
+function buildPeerAutoCompactInstructions(runtime, judgement) {
+  const peerId = runtime?.localPeerId || "this-peer";
+  return `Focus the compaction summary on continuing Pi peer work for local peer ${peerId}. Preserve:\n- active inbound/outbound peer task ids, goal ids, claims, blockers, and required next actions\n- files read or modified and verification commands/results\n- user constraints, especially that auto-compaction is local-only and remote peers cannot force it\n- concise handoff context needed to safely continue after compaction\nContext pressure: ${judgement.pressure}; recommended action: ${judgement.recommendedAction}.`;
 }
 
 export function derivePeerIdleActivation(board, options = {}) {

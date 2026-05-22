@@ -54,6 +54,9 @@ test("context judgement maps pressure to next-task decisions", () => {
   assert.equal(tight.shouldCompact, true);
   assert.equal(tight.requiresUserApproval, true);
   assert.match(formatPeerContextJudgement(tight), /compact/);
+  const autoTight = derivePeerContextJudgement({ tokens: 90_000, contextWindow: 100_000 }, { allowAutomaticCompaction: true });
+  assert.equal(autoTight.automaticAction, "compact");
+  assert.equal(autoTight.requiresUserApproval, false);
 
   const critical = derivePeerContextJudgement({ remainingTokens: 3_000 });
   assert.equal(critical.pressure, "critical");

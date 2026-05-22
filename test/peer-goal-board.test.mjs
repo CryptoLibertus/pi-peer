@@ -1155,9 +1155,106 @@ test("completed goal-linked tasks do not keep showing as running", async (t) => 
       taskId: planned.event.id,
       status: "done",
     });
+    await appendPeerGoalEvent(root, goalId, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "Done handoffs reviewed" });
     state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
     assert.equal(state.tasks.find((item) => item.id === planned.event.id).status, "done");
+    assert.equal(state.unresolvedTaskHandoffs.length, 0);
+    assert.equal(state.readyToClose, true);
   });
+
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "Ready once peer failure is resolved" });
+    const link = await beginPeerGoalTask(root, goalId, {
+      targetPeerId: "worker-a",
+      prompt: "Review with possible failure",
+      mode: "read",
+      lane: "review",
+      duplicatePolicy: "reuse",
+    });
+    await recordPeerGoalTaskDispatch(root, goalId, {
+      requesterPeerId: "planner",
+      targetPeerId: "worker-a",
+      prompt: "Review with possible failure",
+      mode: "read",
+      lane: "review",
+      workKey: link.workKey,
+      messageId: "msg_blocked_review",
+      conversationId: "conv_blocked_review",
+      claimEventId: link.claimEvent.id,
+    });
+    await completePeerGoalTask(root, goalId, {
+      targetPeerId: "worker-a",
+      messageId: "msg_blocked_review",
+      conversationId: "conv_blocked_review",
+      claimEventId: link.claimEvent.id,
+      workKey: link.workKey,
+      status: "blocked",
+      responseStatus: "ERROR",
+      summary: "ERROR: agent_end did not include final assistant text",
+    });
+
+    let state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.tasks.length, 1);
+    assert.equal(state.tasks[0].status, "blocked");
+    assert.equal(state.tasks[0].handoffEventId.startsWith("evt_handoff_"), true);
+    assert.ok(state.tasks[0].completedAt);
+    assert.equal(state.activeClaims.length, 0);
+    assert.equal(state.activeTasks.length, 0);
+    assert.equal(state.unresolvedTaskHandoffs.length, 1);
+    assert.equal(state.unresolvedTaskHandoffs[0].handoffEventId, state.tasks[0].handoffEventId);
+    assert.equal(state.readyToClose, false);
+
+    const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+    assert.equal(suggestions[0].kind, "task-handoff");
+    assert.equal(suggestions[0].priority, "P0");
+    assert.match(suggestions[0].summary, /Resolve 1 unsuccessful peer handoff/);
+
+    await appendPeerGoalEvent(root, goalId, {
+      type: "resolve",
+      peerId: "planner",
+      resolves: state.tasks[0].handoffEventId,
+      summary: "Accepted failed peer attempt and no longer blocking closure",
+    });
+    state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.unresolvedTaskHandoffs.length, 0);
+    assert.equal(state.readyToClose, true);
+  });
+
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "task",
+      peerId: "planner",
+      summary: "Manual blocked work remains active until a handoff resolves it",
+      taskId: "manual-blocked-task",
+      status: "blocked",
+    });
+    const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.activeTasks.length, 1);
+  });
+
+  for (const status of ["partial", "ERROR"]) {
+    await withGoal(t, async (root, goalId) => {
+      await appendPeerGoalEvent(root, goalId, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: `Ready after ${status} is resolved` });
+      await appendPeerGoalEvent(root, goalId, {
+        type: "task",
+        peerId: "planner",
+        summary: `${status} handoff task`,
+        taskId: `task-${status}`,
+        status: "running",
+      });
+      await appendPeerGoalEvent(root, goalId, {
+        type: "handoff",
+        peerId: "worker-a",
+        summary: `${status} handoff`,
+        taskId: `task-${status}`,
+        status,
+      });
+      const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+      assert.equal(state.activeTasks.length, 0);
+      assert.equal(state.unresolvedTaskHandoffs.length, 1);
+      assert.equal(state.readyToClose, false);
+    });
+  }
 });
 
 test("task projection does not complete sibling tasks that share a work key", async (t) => {
