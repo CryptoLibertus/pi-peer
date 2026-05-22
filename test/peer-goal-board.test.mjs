@@ -344,6 +344,69 @@ test("active read claims and running tasks block normal closure", async (t) => {
   });
 });
 
+test("stale claims block normal closure until released", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    const claim = await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "reviewer-stale",
+      summary: "Review claim that went stale",
+      mode: "read",
+      lane: "review",
+      workKey: "closure-stale-review",
+      staleAfterMs: 1,
+    });
+    await delay(5);
+    await appendPeerGoalEvent(root, goalId, { type: "vote", peerId: "planner", verdict: "pass", summary: "Looks good after stale work is resolved" });
+
+    let board = await loadPeerGoalBoard(root);
+    let state = deriveGoalState(board.goals[goalId]);
+    assert.equal(state.activeClaims.length, 0);
+    assert.equal(state.staleClaims.length, 1);
+    assert.equal(state.readyToClose, false);
+    assert.throws(() => validateGoalReadyToClose(state), /has stale claims/);
+    await assert.rejects(
+      closePeerGoal(root, goalId, { peerId: "planner", summary: "should wait for stale claim cleanup" }),
+      /has stale claims/,
+    );
+
+    let suggestions = derivePeerGoalScoutSuggestions(board, { goalId });
+    assert.equal(suggestions.some((item) => item.kind === "stale-claim"), true);
+    assert.equal(suggestions.some((item) => item.kind === "close"), false);
+
+    await appendPeerGoalEvent(root, goalId, { type: "release", peerId: "reviewer-stale", resolves: claim.event.id, summary: "stale review explicitly released" });
+    board = await loadPeerGoalBoard(root);
+    state = deriveGoalState(board.goals[goalId]);
+    assert.equal(state.staleClaims.length, 0);
+    assert.equal(state.readyToClose, true);
+    suggestions = derivePeerGoalScoutSuggestions(board, { goalId });
+    assert.equal(suggestions.some((item) => item.kind === "close"), true);
+  });
+});
+
+test("expired claims do not block normal closure", async (t) => {
+  await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "claim",
+      peerId: "reviewer-expired",
+      summary: "Time-boxed review claim expired",
+      mode: "read",
+      lane: "review",
+      workKey: "closure-expired-review",
+      ttlMs: 1,
+      staleAfterMs: 60_000,
+    });
+    await delay(5);
+    await appendPeerGoalEvent(root, goalId, { type: "vote", peerId: "planner", verdict: "pass", summary: "Expired claim intentionally timed out" });
+
+    const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.activeClaims.length, 0);
+    assert.equal(state.staleClaims.length, 0);
+    assert.equal(state.expiredClaims.length, 1);
+    assert.equal(state.readyToClose, true);
+    assert.doesNotThrow(() => validateGoalReadyToClose(state));
+  });
+});
+
 test("closure policy defaults preserve one-pass vote compatibility", async (t) => {
   await withGoal(t, async (root, goalId) => {
     await appendPeerGoalEvent(root, goalId, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "Default closure still only needs a passing vote when no work is open" });

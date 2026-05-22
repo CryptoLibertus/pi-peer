@@ -250,7 +250,7 @@ export function deriveGoalState(goal, options = {}) {
   const openWorkItems = workItems.filter((item) => !isTerminalWorkItemStatus(item.status));
   const blockedWorkItems = workItems.filter((item) => item.blockedBy?.length);
   const closurePolicy = normalizePeerGoalClosurePolicy(goal?.closurePolicy || goal?.metadata?.closurePolicy);
-  const baseReadyToClose = goal?.status === "open" && blockingObjections.length === 0 && unresolvedTaskHandoffs.length === 0 && failedVotes.length === 0 && activeClaims.length === 0 && activeTasks.length === 0 && openProposals.length === 0 && openWorkItems.length === 0 && blockedWorkItems.length === 0 && passingVotes.length > 0;
+  const baseReadyToClose = goal?.status === "open" && blockingObjections.length === 0 && unresolvedTaskHandoffs.length === 0 && failedVotes.length === 0 && activeClaims.length === 0 && staleClaims.length === 0 && activeTasks.length === 0 && openProposals.length === 0 && openWorkItems.length === 0 && blockedWorkItems.length === 0 && passingVotes.length > 0;
   const closurePolicyStatus = evaluateClosurePolicy(closurePolicy, { events, passingVotes });
   return {
     ...goal,
@@ -667,6 +667,9 @@ export function validateGoalReadyToClose(state) {
   }
   if (state.activeClaims.length) {
     throw new Error(`peer goal ${state.id} has active claims: ${state.activeClaims.map((item) => item.id).join(", ")}`);
+  }
+  if (state.staleClaims?.length) {
+    throw new Error(`peer goal ${state.id} has stale claims: ${state.staleClaims.map((item) => item.id).join(", ")}`);
   }
   if (state.activeTasks?.length) {
     throw new Error(`peer goal ${state.id} has active tasks: ${state.activeTasks.map((item) => item.taskId || item.id).join(", ")}`);
