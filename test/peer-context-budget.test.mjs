@@ -22,6 +22,18 @@ test("context pressure handles remaining-token thresholds and unknown fallback",
   assert.equal(formatPeerContextBudget({}), "context unknown");
 });
 
+test("context budget treats null post-compaction usage as unknown instead of zero", () => {
+  const budget = normalizePeerContextBudget({ tokens: null, percent: null, remainingTokens: null, contextWindow: 272_000 });
+  assert.equal(budget.available, true);
+  assert.equal(budget.tokens, undefined);
+  assert.equal(budget.remainingTokens, undefined);
+  assert.equal(budget.percent, undefined);
+  assert.equal(budget.contextWindow, 272_000);
+  assert.equal(budget.pressure, "unknown");
+  assert.match(formatPeerContextBudget(budget), /context unknown/);
+  assert.doesNotMatch(formatPeerContextBudget(budget), /0 used/);
+});
+
 test("capturePeerContextBudget reads extension context when available", () => {
   const budget = capturePeerContextBudget({ getContextUsage: () => ({ tokens: 42_000, contextWindow: 200_000 }) });
   assert.equal(budget.available, true);

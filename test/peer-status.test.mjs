@@ -33,6 +33,14 @@ test("peer status includes local context pressure when available", () => {
   assert.match(text, /judgement compact_or_delegate/);
 });
 
+test("peer status can show visible unknown context after compaction", () => {
+  const status = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test", contextBudget: { available: true, pressure: "unknown", source: "post-compaction" } }, { peers: [], messages: [] });
+  const text = formatPeerStatusText(status);
+  assert.match(text, /context unknown/);
+  assert.match(text, /judgement continue/);
+  assert.doesNotMatch(text, /context tight/);
+});
+
 test("goal dashboard surfaces unresolved peer handoff resolution actions", () => {
   const goal = {
     id: "goal_unresolved_handoff",

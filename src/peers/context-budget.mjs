@@ -13,7 +13,8 @@ export function normalizePeerContextBudget(input = {}) {
   const percent = normalizePercent(input.percent ?? input.ratio ?? input.contextPercent, tokens, contextWindow);
   const remainingTokens = positiveNumber(input.remainingTokens ?? input.remaining ?? (tokens !== undefined && contextWindow !== undefined ? contextWindow - tokens : undefined));
   const pressure = deriveContextPressure({ pressure: input.pressure, tokens, contextWindow, percent, remainingTokens });
-  const available = tokens !== undefined || contextWindow !== undefined || percent !== undefined;
+  const explicitAvailable = typeof input.available === "boolean" ? input.available : undefined;
+  const available = explicitAvailable ?? (tokens !== undefined || contextWindow !== undefined || percent !== undefined);
   return stripUndefined({
     available,
     tokens,
@@ -140,6 +141,7 @@ function normalizePercent(value, tokens, contextWindow) {
 }
 
 function positiveNumber(value) {
+  if (value === null || value === undefined || value === "") return undefined;
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : undefined;
 }

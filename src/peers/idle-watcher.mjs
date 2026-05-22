@@ -1,4 +1,4 @@
-import { derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement } from "./context-budget.mjs";
+import { capturePeerContextBudget, derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement } from "./context-budget.mjs";
 import { deriveGoalState, derivePeerGoalScoutSuggestions, loadPeerGoalBoard } from "./goal-board.mjs";
 
 export const DEFAULT_PEER_IDLE_WATCHER_INTERVAL_MS = 15_000;
@@ -50,7 +50,7 @@ export function createPeerIdleWatcher(options = {}) {
       const idle = isContextIdle(ctx);
       if (!idle.ok) return { activated: false, reason: idle.reason };
       if (state.activationCount >= config.maxActivationsPerSession) return { activated: false, reason: "activation limit reached" };
-      const contextGate = handleContextJudgement(pi, runtime, ctx, state, config, now(), options.messageType || "pi-peer", reason);
+      const contextGate = handleContextJudgement(pi, runtime, ctx, state, config, now(), options.messageType || "pi-peer", reason, refresh);
       if (contextGate) {
         await refresh(ctx).catch(() => {});
         return contextGate;
@@ -120,7 +120,7 @@ export function createPeerIdleWatcher(options = {}) {
   };
 }
 
-function handleContextJudgement(pi, runtime, ctx, state, config, nowMs, messageType, reason) {
+function handleContextJudgement(pi, runtime, ctx, state, config, nowMs, messageType, reason, refresh) {
   const judgement = derivePeerContextJudgement(runtime?.contextBudget, { allowAutomaticCompaction: config.autoCompact === true });
   if (judgement.safeForNewTask !== false) return undefined;
   if (state.contextCompactionInFlight) return { activated: false, reason: "context compaction in flight" };
@@ -130,12 +130,12 @@ function handleContextJudgement(pi, runtime, ctx, state, config, nowMs, messageT
   state.lastContextJudgementAt = nowMs;
   state.activationCount = (state.activationCount || 0) + 1;
   if (judgement.automaticAction === "compact" && typeof ctx?.compact === "function") {
-    return triggerPeerContextCompaction(pi, runtime, ctx, state, judgement, messageType, reason);
+    return triggerPeerContextCompaction(pi, runtime, ctx, state, judgement, messageType, reason, refresh);
   }
   return sendContextJudgementPrompt(pi, runtime, judgement, messageType, reason);
 }
 
-function triggerPeerContextCompaction(pi, runtime, ctx, state, judgement, messageType, reason) {
+function triggerPeerContextCompaction(pi, runtime, ctx, state, judgement, messageType, reason, refresh) {
   state.contextCompactionInFlight = true;
   const budgetLine = formatPeerContextBudget(runtime.contextBudget);
   const judgementLine = formatPeerContextJudgement(judgement);
@@ -148,7 +148,9 @@ function triggerPeerContextCompaction(pi, runtime, ctx, state, judgement, messag
       customInstructions,
       onComplete: () => {
         finish();
+        refreshRuntimeContextBudget(runtime, ctx);
         ctx.ui?.notify?.("Peer auto-compaction completed", "info");
+        void refresh?.(ctx).catch(() => {});
       },
       onError: (error) => {
         finish();
@@ -167,6 +169,16 @@ function triggerPeerContextCompaction(pi, runtime, ctx, state, judgement, messag
     details: { kind: "peer_context_auto_compaction", contextBudget: runtime.contextBudget, contextJudgement: judgement },
   });
   return { activated: true, activation: { kind: "context-auto-compact", pressure: judgement.pressure, recommendedAction: judgement.recommendedAction } };
+}
+
+function refreshRuntimeContextBudget(runtime, ctx) {
+  const captured = capturePeerContextBudget(ctx);
+  const budget = captured.available
+    ? captured
+    : { available: true, pressure: "unknown", source: "post-compaction", updatedAt: new Date().toISOString() };
+  if (typeof runtime?.updateContextBudget === "function") return runtime.updateContextBudget(budget);
+  if (runtime && typeof runtime === "object") runtime.contextBudget = budget;
+  return budget;
 }
 
 function sendContextJudgementPrompt(pi, runtime, judgement, messageType, reason) {

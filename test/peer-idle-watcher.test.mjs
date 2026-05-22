@@ -363,6 +363,7 @@ test("createPeerIdleWatcher only injects when context is idle and no peer messag
 test("idle watcher auto-compacts when configured and context pressure blocks new work", async () => {
   const sent = [];
   const compactCalls = [];
+  const refreshCalls = [];
   const runtime = {
     enabled: true,
     localPeerId: "worker-a",
@@ -371,12 +372,17 @@ test("idle watcher auto-compacts when configured and context pressure blocks new
     config: { idleWatcher: { intervalMs: 1_000, cooldownMs: 10_000, autoCompact: true } },
     comms: { listMessages: async () => [] },
     pendingInboundCount: () => 0,
+    updateContextBudget(input) {
+      this.contextBudget = input;
+      return this.contextBudget;
+    },
   };
   const ctx = {
     cwd: "/tmp/project",
     isIdle: () => true,
     hasPendingMessages: () => false,
     compact: (input) => compactCalls.push(input),
+    getContextUsage: () => undefined,
     ui: { notify: () => {} },
   };
   const watcher = createPeerIdleWatcher({
@@ -386,6 +392,7 @@ test("idle watcher auto-compacts when configured and context pressure blocks new
     loadBoard: async () => openGoalBoard,
     now: () => 1_000,
     config: { intervalMs: 1_000, cooldownMs: 10_000, autoCompact: true },
+    refresh: async (currentCtx) => refreshCalls.push(currentCtx.cwd),
   });
 
   const result = await watcher.check("test");
@@ -404,9 +411,16 @@ test("idle watcher auto-compacts when configured and context pressure blocks new
   assert.equal(compactCalls.length, 1);
 
   compactCalls[0].onComplete?.({});
-  const cooledDown = await watcher.check("test");
-  assert.equal(cooledDown.activated, false);
-  assert.equal(cooledDown.reason, "context judgement cooling down");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runtime.contextBudget.available, true);
+  assert.equal(runtime.contextBudget.source, "post-compaction");
+  assert.equal(runtime.contextBudget.tokens, undefined);
+  assert.equal(runtime.contextBudget.pressure, "unknown");
+  assert.deepEqual(refreshCalls, ["/tmp/project", "/tmp/project", "/tmp/project"]);
+
+  const afterCompact = await watcher.check("test");
+  assert.equal(compactCalls.length, 1);
+  assert.notEqual(afterCompact.activation?.kind, "context-auto-compact");
 });
 
 test("idle watcher pauses next task when auto-compaction is disabled", async () => {

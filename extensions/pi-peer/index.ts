@@ -53,6 +53,13 @@ export default function piPeerExtension(pi: ExtensionAPI) {
     schedulePeerIdleCheck(runtime, "agent_end");
   });
 
+  pi.on("session_compact", async (_event, ctx = {}) => {
+    activeContext = ctx;
+    const runtime = await runtimeFor(pi, ctx.cwd);
+    updatePeerContextBudget(runtime, ctx, { visibleWhenUnavailable: true, source: "post-compaction" });
+    await refreshPeerUi(ctx, runtime);
+  });
+
   pi.on("session_shutdown", async (_event, ctx = {}) => {
     const runtime = await runtimeFor(pi, ctx.cwd);
     runtime.__peerIdleWatcher?.stop?.();
@@ -285,6 +292,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
     if (!ctx?.hasUI || !ctx.ui?.setStatus || !ctx.ui?.setWidget) return;
     try {
       const resolved = runtime || await runtimeFor(pi, ctx.cwd);
+      maybeUpdatePeerContextBudget(resolved, ctx);
       if (resolved.enabled) await resolved.refreshLocalPeers().catch(() => []);
       const status = await collectPeerRuntimeStatus(resolved);
       const lines = formatPeerStatusLines(status);
@@ -978,8 +986,22 @@ function attachPeerIdleWatcher(pi: ExtensionAPI, runtime: any, activeContext: ()
   return runtime.__peerIdleWatcher.start?.();
 }
 
-function updatePeerContextBudget(runtime: any, ctx: any) {
-  const budget = capturePeerContextBudget(ctx);
+function updatePeerContextBudget(runtime: any, ctx: any, options: any = {}) {
+  const captured = capturePeerContextBudget(ctx);
+  const budget = options.visibleWhenUnavailable && !captured.available
+    ? { available: true, pressure: "unknown", source: options.source || "unknown", updatedAt: new Date().toISOString() }
+    : captured;
+  return setPeerContextBudget(runtime, budget);
+}
+
+function maybeUpdatePeerContextBudget(runtime: any, ctx: any) {
+  if (typeof ctx?.getContextUsage !== "function") return runtime?.contextBudget;
+  const captured = capturePeerContextBudget(ctx);
+  if (!captured.available && runtime?.contextBudget?.source === "post-compaction") return runtime.contextBudget;
+  return setPeerContextBudget(runtime, captured);
+}
+
+function setPeerContextBudget(runtime: any, budget: any) {
   return typeof runtime?.updateContextBudget === "function" ? runtime.updateContextBudget(budget) : budget;
 }
 
