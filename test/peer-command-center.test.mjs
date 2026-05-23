@@ -4,6 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { parsePeerCommand } from "../src/peers/command.mjs";
 import { buildPeerCommandCenterState, derivePeerCommandCenterRecommendations, formatPeerCommandCenter, routePeerIntent } from "../src/peers/command-center.mjs";
 import { loadPeerGoalBoard } from "../src/peers/goal-board.mjs";
 
@@ -282,4 +283,27 @@ test("routePeerIntent work without explicit paths is conservative", async () => 
   assert.equal(result.mutated, false);
   assert.match(result.text, /No write claim created/);
   assert.match(result.text, /\/peer goal claim goal_123/);
+});
+
+test("routePeerIntent work path command round-trips flag-like paths through parser", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "work",
+    intentArgs: ["goal_123"],
+    paths: ["--fixtures", "src"],
+  }, {
+    peerId: "worker-a",
+    runtimeStatus: { localPeerId: "worker-a" },
+  });
+
+  const command = result.text.trim();
+  assert.match(command, /^\/peer goal claim /);
+
+  const parsed = parsePeerCommand(command.replace(/^\/peer\s+/, ""));
+
+  assert.equal(parsed.subcommand, "goal");
+  assert.equal(parsed.goalAction, "claim");
+  assert.equal(parsed.mode, "write");
+  assert.deepEqual(parsed.paths, ["--fixtures", "src"]);
 });

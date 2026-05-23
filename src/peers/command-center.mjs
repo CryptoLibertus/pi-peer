@@ -241,7 +241,7 @@ function laneClaimCommand(goalId, lane, summary, workKey) {
 }
 
 function writeClaimCommand(goalId, summary, paths, workKey) {
-  const pathFlags = paths.map((item) => `--path ${commandArg(item)}`).join(" ");
+  const pathFlags = paths.map((item) => `--path=${commandArg(item)}`).join(" ");
   return `/peer goal claim ${commandArg(goalId)} ${commandArg(summary)} --mode write --lane ${commandArg("implementation")} ${pathFlags} --key ${commandArg(workKey)}`;
 }
 
