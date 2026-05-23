@@ -55,7 +55,7 @@ test("command center renders local profile, org, peers, goal blockers, and subru
   assert.match(text, /\/peer do resolve-handoffs/);
 });
 
-test("recommendations prioritize disconnected tasks, unresolved handoffs, review, setup", () => {
+test("recommendations follow full priority order and dedupe repeated coordination commands", () => {
   const state = buildPeerCommandCenterState({
     setup: { exists: false },
     goals: [
@@ -66,8 +66,8 @@ test("recommendations prioritize disconnected tasks, unresolved handoffs, review
         currentVotes: [],
         activeTasks: [],
         activeClaims: [],
-        staleClaims: [],
-        blockingObjections: [],
+        staleClaims: [{ id: "claim_1" }],
+        blockingObjections: [{ id: "obj_1" }],
         unresolvedTaskHandoffs: [{ handoffEventId: "evt_1" }],
         openProposals: [],
       },
@@ -75,14 +75,67 @@ test("recommendations prioritize disconnected tasks, unresolved handoffs, review
     controlState: {
       disconnectedTasks: [{ messageId: "msg_1" }],
       activeTasks: [],
-      activeSubruns: [],
+      activeSubruns: [{ subrunId: "sub_1", status: "running" }],
     },
   });
 
   const recommendations = derivePeerCommandCenterRecommendations(state);
 
-  assert.equal(recommendations[0].command, "/peer reconnect");
-  assert.equal(recommendations[1].command, "/peer do resolve-handoffs");
-  assert.ok(recommendations.some((item) => item.command === "/peer do review goal_123"));
-  assert.ok(recommendations.some((item) => item.command === "/peer setup"));
+  assert.deepEqual(recommendations.map((item) => item.command), [
+    "/peer reconnect",
+    "/peer do coordinate goal_123",
+    "/peer do resolve-handoffs",
+    "/peer do review goal_123",
+    "/peer subrun status",
+    "/peer setup",
+  ]);
+});
+
+test("recommendations place blocker coordination after unresolved handoffs when no stale claim duplicates it", () => {
+  const state = buildPeerCommandCenterState({
+    setup: { exists: true },
+    goals: [
+      {
+        id: "goal_123",
+        objective: "Ship setup wizard",
+        readyToClose: false,
+        currentVotes: [{ verdict: "pass" }],
+        activeTasks: [],
+        activeClaims: [],
+        staleClaims: [],
+        blockingObjections: [{ id: "obj_1" }],
+        unresolvedTaskHandoffs: [{ handoffEventId: "evt_1" }],
+        openProposals: [],
+      },
+    ],
+  });
+
+  const recommendations = derivePeerCommandCenterRecommendations(state);
+
+  assert.deepEqual(recommendations.map((item) => item.command), [
+    "/peer do resolve-handoffs",
+    "/peer do coordinate goal_123",
+  ]);
+});
+
+test("recommendations put no-goal starter after active subruns and missing setup", () => {
+  const state = buildPeerCommandCenterState({
+    setup: { exists: false },
+    objective: "Ship command center",
+    goals: [],
+    controlState: {
+      disconnectedTasks: [{ messageId: "msg_1" }],
+      activeTasks: [],
+      activeSubruns: [{ subrunId: "sub_1", status: "running" }],
+    },
+  });
+
+  const recommendations = derivePeerCommandCenterRecommendations(state);
+
+  assert.deepEqual(recommendations.map((item) => item.command), [
+    "/peer reconnect",
+    "/peer subrun status",
+    "/peer setup",
+    "/peer do start goal \"Ship command center\"",
+  ]);
 });
