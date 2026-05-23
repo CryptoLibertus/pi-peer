@@ -23,10 +23,13 @@ test("formatPeerSetupPrompt asks for the six session uses", () => {
   const prompt = formatPeerSetupPrompt();
 
   assert.match(prompt, /What do you want this session to do/);
-  assert.match(prompt, /1\. Coordinate other peers/);
-  assert.match(prompt, /2\. Implement code/);
-  assert.match(prompt, /5\. Manage private subagents/);
-  assert.match(prompt, /Reply with \/peer setup <number>/);
+  assert.match(prompt, /^1\. Coordinate other peers$/m);
+  assert.match(prompt, /^2\. Implement code$/m);
+  assert.match(prompt, /^3\. Review work$/m);
+  assert.match(prompt, /^4\. Research$/m);
+  assert.match(prompt, /^5\. Manage private subagents$/m);
+  assert.match(prompt, /^6\. Inspect status only$/m);
+  assert.match(prompt, /^Reply with \/peer setup <number>\.$/m);
 });
 
 test("applyPeerSetupChoice creates peer config and org role for coordinator", async (t) => {

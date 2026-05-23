@@ -137,9 +137,9 @@ export function formatPeerSetupPrompt(input = {}) {
     "3. Review work",
     "4. Research",
     "5. Manage private subagents",
-    "6. Inspect current peer status",
+    "6. Inspect status only",
     "",
-    "Reply with /peer setup <number>",
+    "Reply with /peer setup <number>.",
     peer ? `Current peer: ${peer}` : undefined,
   ].filter(Boolean).join("\n");
 }
