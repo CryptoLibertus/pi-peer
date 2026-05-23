@@ -24,6 +24,7 @@ import {
 import { PEER_TOOL_NAMES, PEER_TOOL_PROMPT_GUIDELINES } from "../../src/peers/guidance.mjs";
 import { buildPeerIdleActivationPrompt, createPeerIdleWatcher, derivePeerIdleActivationOfferPlan, markPeerIdleActivation } from "../../src/peers/idle-watcher.mjs";
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcilePeerControlLedger } from "../../src/peers/control-ledger.mjs";
+import { formatHiveRunPeerHealthPauseSummary, summarizeHiveRunPeerHealth } from "../../src/peers/hive-supervisor.mjs";
 import { formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
 
 const MESSAGE_TYPE = "pi-peer";
@@ -829,7 +830,17 @@ async function dispatchPeerHiveRunTick(root: string, runtime: any, options: any)
     return activeGoalMessages.map((message: any) => ({ peerId: message.peerId, messageId: message.messageId, skipped: "active-message" }));
   }
   const board = await loadPeerGoalBoard(root);
-  const suggestions = derivePeerGoalScoutSuggestions(board, { goalId: options.goalId }).slice(0, Math.max(1, peers.length));
+  const peerHealth = summarizeHiveRunPeerHealth(messages, peers, {
+    nowMs: Date.now(),
+    windowMs: options.peerFailureWindowMs,
+    failureThreshold: options.peerFailureThreshold,
+  });
+  if (peerHealth.paused) {
+    await appendHiveRunPeerHealthBlocker(root, runtime, options, board, peerHealth);
+    return peerHealth.unhealthyPeers.map((peer: any) => ({ peerId: peer.peerId, skipped: "unhealthy-peer", failures: peer.failureCount }));
+  }
+  const dispatchPeers = peerHealth.healthyPeers.length ? peerHealth.healthyPeers : peers;
+  const suggestions = derivePeerGoalScoutSuggestions(board, { goalId: options.goalId }).slice(0, Math.max(1, dispatchPeers.length));
   if (!suggestions.length) {
     await appendPeerGoalEvent(root, options.goalId, {
       type: "note",
@@ -842,7 +853,7 @@ async function dispatchPeerHiveRunTick(root: string, runtime: any, options: any)
   }
   const dispatches: any[] = [];
   await Promise.all(suggestions.map(async (suggestion: any, index: number) => {
-    const targetPeerId = peers[index % peers.length];
+    const targetPeerId = dispatchPeers[index % dispatchPeers.length];
     const lane = suggestion.recommendedLane || "review";
     const workKey = suggestion.workKey || `hive-run:${options.goalId}:${lane}:${suggestion.kind}`;
     let goalLink: any;
@@ -878,6 +889,33 @@ async function dispatchPeerHiveRunTick(root: string, runtime: any, options: any)
     }
   }));
   return dispatches;
+}
+
+async function appendHiveRunPeerHealthBlocker(root: string, runtime: any, options: any, board: any, peerHealth: any) {
+  const goal = board?.goals?.[options.goalId];
+  if (!goal || hasOpenHiveRunPeerHealthBlocker(goal)) return;
+  await appendPeerGoalEvent(root, options.goalId, {
+    type: "objection",
+    peerId: runtime?.localPeerId || "unknown",
+    summary: formatHiveRunPeerHealthPauseSummary(peerHealth),
+    lane: "coordination",
+    severity: "blocking",
+    metadata: {
+      hiveRun: true,
+      peerHealth: {
+        status: "all-peers-unhealthy",
+        unhealthyPeers: peerHealth.unhealthyPeers.map((peer: any) => ({ peerId: peer.peerId, failureCount: peer.failureCount, messageIds: peer.failures.map((failure: any) => failure.messageId).filter(Boolean) })),
+        failureThreshold: peerHealth.failureThreshold,
+        windowMs: peerHealth.windowMs,
+      },
+    },
+  }).catch(() => {});
+}
+
+function hasOpenHiveRunPeerHealthBlocker(goal: any) {
+  const events = Array.isArray(goal?.events) ? goal.events : [];
+  const resolved = new Set(events.filter((event: any) => event?.type === "resolve" && event.resolves).map((event: any) => event.resolves));
+  return events.some((event: any) => event?.type === "objection" && !resolved.has(event.id) && event.metadata?.peerHealth?.status === "all-peers-unhealthy");
 }
 
 function peerMessageGoalId(message: any) {

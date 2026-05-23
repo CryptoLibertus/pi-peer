@@ -145,6 +145,7 @@ The runner is intentionally conservative:
 - It dispatches read-only work by default.
 - It does not create write claims unless concrete paths are supplied through explicit follow-up commands.
 - It uses work keys to avoid duplicate dispatch.
+- It skips peers with repeated local-close transport failures and pauses with a blocking objection if every configured peer is unhealthy, instead of repeatedly dispatching cleanup work to peers that cannot answer.
 - It holds a coordinator read claim and heartbeats it while active.
 - It releases the coordinator claim and posts a handoff when stopped or when duration expires.
 - It records supervisor lifecycle data to the control ledger; on session start Pi attempts to resume persisted hive supervisors whose deadlines have not elapsed.
