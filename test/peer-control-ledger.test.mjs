@@ -89,6 +89,19 @@ test("control ledger treats explicit completed subrun status as terminal", async
   });
 });
 
+test("control ledger infers failed subrun type as terminal error", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { type: "subrun.started", subrunId: "run_failed" });
+    await appendPeerControlRecord(root, { type: "subrun.failed", subrunId: "run_failed" });
+
+    const state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    assert.equal(state.activeSubruns.length, 0);
+    assert.equal(state.completedSubruns.length, 1);
+    assert.equal(state.completedSubruns[0].status, "error");
+    assert.ok(state.completedSubruns[0].completedAt);
+  });
+});
+
 test("control ledger accumulates subrun artifact refs across records", async (t) => {
   await withRoot(t, async (root) => {
     await appendPeerControlRecord(root, { kind: "subrun", action: "started", subrunId: "run_artifacts", metadata: { artifactRefs: ["artifact:first"] } });

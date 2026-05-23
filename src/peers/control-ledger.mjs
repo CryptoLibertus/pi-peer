@@ -306,6 +306,7 @@ function statusForSubrunAction(action) {
   const text = cleanText(action).toLowerCase();
   if (["queued", "start", "started", "running", "progress"].includes(text)) return text === "start" || text === "started" ? "running" : text;
   if (["complete", "completed", "done", "response"].includes(text)) return "done";
+  if (["fail", "failed"].includes(text)) return "error";
   if (["partial", "blocked", "error"].includes(text)) return text;
   if (["cancel", "cancelled"].includes(text)) return "cancelled";
   return "unknown";
