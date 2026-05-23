@@ -12,8 +12,8 @@ const ACTIVE_TASK_STATUSES = new Set(["queued", "dispatching", "running", "pendi
 const TERMINAL_TASK_STATUSES = new Set(["done", "completed", "blocked", "error", "cancelled", "disconnected"]);
 const ACTIVE_SUPERVISOR_STATUSES = new Set(["started", "resumed", "recovered", "tick"]);
 const STOPPED_SUPERVISOR_STATUSES = new Set(["stopped", "elapsed", "cancelled", "done", "error"]);
-const ACTIVE_SUBRUN_STATUSES = new Set(["queued", "running", "pending"]);
-const TERMINAL_SUBRUN_STATUSES = new Set(["done", "partial", "blocked", "error", "cancelled"]);
+const ACTIVE_SUBRUN_STATUSES = new Set(["queued", "running", "pending", "progress"]);
+const TERMINAL_SUBRUN_STATUSES = new Set(["done", "completed", "partial", "blocked", "error", "cancelled"]);
 
 export function controlLedgerPath(root) {
   if (!root) throw new Error("peer control ledger requires root");
@@ -190,6 +190,9 @@ function applySubrunRecord(subruns, record) {
   if (!runId) return;
   const current = subruns.get(runId) || { subrunId: runId, events: 0, createdAt: record.at };
   const status = cleanText(record.status || statusForSubrunAction(record.action));
+  const childCount = nonNegativeNumber(metadata.childCount);
+  const completedCount = nonNegativeNumber(metadata.completedCount);
+  const blockedCount = nonNegativeNumber(metadata.blockedCount);
   subruns.set(runId, stripEmpty({
     ...current,
     events: (current.events || 0) + 1,
@@ -202,10 +205,10 @@ function applySubrunRecord(subruns, record) {
     status: status || current.status || "unknown",
     action: cleanText(record.action) || current.action,
     summary: cleanText(record.summary) || current.summary,
-    artifactRefs: normalizeList(metadata.artifactRefs || current.artifactRefs),
-    childCount: positiveNumber(metadata.childCount) || current.childCount,
-    completedCount: positiveNumber(metadata.completedCount) || current.completedCount,
-    blockedCount: positiveNumber(metadata.blockedCount) || current.blockedCount,
+    artifactRefs: normalizeList([...normalizeList(current.artifactRefs), ...normalizeList(metadata.artifactRefs)]),
+    childCount: childCount ?? current.childCount,
+    completedCount: completedCount ?? current.completedCount,
+    blockedCount: blockedCount ?? current.blockedCount,
     createdAt: current.createdAt || record.at,
     updatedAt: record.at,
     completedAt: TERMINAL_SUBRUN_STATUSES.has(status) ? record.at : current.completedAt,
@@ -280,6 +283,7 @@ function inferKind(type) {
   const text = cleanText(type).toLowerCase();
   if (text.startsWith("hive.")) return "hive";
   if (text.startsWith("task.")) return "task";
+  if (text.startsWith("subrun.")) return "subrun";
   return "";
 }
 
@@ -334,6 +338,12 @@ function normalizeList(value) {
 function positiveNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function nonNegativeNumber(value) {
+  if (value == null || value === "") return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
 }
 
 function cleanText(value) {

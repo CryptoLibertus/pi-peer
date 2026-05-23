@@ -224,7 +224,7 @@ export function compactPeerControl(value = {}) {
     completedCount: value.completedTasks?.length || 0,
     activeHiveRuns: compactEvents(value.activeHiveRuns, 20),
     hiveRunCount: value.hiveRuns?.length || 0,
-    activeSubruns: compactTasks(value.activeSubruns, 20),
+    activeSubruns: compactSubruns(value.activeSubruns, 20),
     subrunCount: value.subruns?.length || 0,
     completedSubrunCount: value.completedSubruns?.length || 0,
     warnings: value.warnings,
@@ -285,6 +285,25 @@ function compactTasks(tasks = [], limit = 8) {
     updatedAt: task.updatedAt,
     completedAt: task.completedAt,
     handoffEventId: task.handoffEventId,
+  })) : [];
+}
+
+function compactSubruns(subruns = [], limit = 8) {
+  return Array.isArray(subruns) ? subruns.slice(0, limit).map((subrun) => stripEmpty({
+    subrunId: subrun.subrunId,
+    parentPeerId: subrun.parentPeerId,
+    provider: subrun.provider,
+    mode: subrun.mode,
+    goalId: subrun.goalId,
+    workKey: subrun.workKey,
+    status: subrun.status,
+    childCount: subrun.childCount,
+    completedCount: subrun.completedCount,
+    blockedCount: subrun.blockedCount,
+    artifactRefs: subrun.artifactRefs,
+    summary: truncateText(subrun.summary, 240),
+    updatedAt: subrun.updatedAt,
+    completedAt: subrun.completedAt,
   })) : [];
 }
 
