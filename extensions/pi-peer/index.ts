@@ -26,10 +26,9 @@ import { buildPeerIdleActivationPrompt, createPeerIdleWatcher, derivePeerIdleAct
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcilePeerControlLedger } from "../../src/peers/control-ledger.mjs";
 import { formatHiveRunPeerHealthPauseSummary, summarizeHiveRunPeerHealth } from "../../src/peers/hive-supervisor.mjs";
 import { formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
-import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, setPeerOrgRole } from "../../src/peers/org.mjs";
+import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
 
 const MESSAGE_TYPE = "pi-peer";
-const PEER_ORG_INIT_ID_ERROR = "/peer org init requires --id <peer-id> or an existing stable peer identity from .pi/peers.json or PI_PEER_ID";
 const runtimeByCwd = new Map<string, Promise<any>>();
 const hiveRunsByKey = new Map<string, any>();
 
@@ -534,18 +533,6 @@ async function handlePeerOrgCommand(parsed: any, ctx: any, runtime: any) {
     return `Updated peer org role for ${parsed.peerId}.\n\n${formatPeerOrgStatus({ ...result, exists: true })}`;
   }
   throw new Error(`Unknown peer org action '${parsed.orgAction}'`);
-}
-
-function resolvePeerOrgInitPeerId(parsed: any, runtime: any) {
-  if (parsed?.localPeerId) return parsed.localPeerId;
-
-  const source = runtime?.summary?.localPeerIdSource || runtime?.config?.localPeerIdSource;
-  const sourceText = typeof source === "string" ? source.trim() : "";
-  if (!sourceText || sourceText.toLowerCase() === "generated") throw new Error(PEER_ORG_INIT_ID_ERROR);
-
-  const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId;
-  if (peerId) return peerId;
-  throw new Error(PEER_ORG_INIT_ID_ERROR);
 }
 
 async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any) {

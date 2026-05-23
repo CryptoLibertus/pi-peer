@@ -3,6 +3,7 @@ import { dirname, resolve as resolvePath } from "node:path";
 
 export const PEER_ORG_RELATIVE_PATH = ".pi/peer-org.json";
 export const PEER_ORG_VERSION = 1;
+export const PEER_ORG_INIT_ID_ERROR = "/peer org init requires --id <peer-id> or an existing stable peer identity from .pi/peers.json or PI_PEER_ID";
 
 export const DEFAULT_PEER_ORG_ROLES = Object.freeze({
   coordinator: {
@@ -117,6 +118,18 @@ export async function setPeerOrgRole(root, peerId, input = {}) {
   await writeFile(path, `${JSON.stringify(org, null, 2)}\n`, "utf8");
 
   return { ok: true, created: !loaded.exists, path, relativePath, peerId: normalizedPeerId, org, warnings: loaded.warnings || [] };
+}
+
+export function resolvePeerOrgInitPeerId(parsed = {}, runtime = {}) {
+  const explicitPeerId = cleanText(parsed.localPeerId);
+  if (explicitPeerId) return explicitPeerId;
+
+  const source = cleanText(runtime?.summary?.localPeerIdSource || runtime?.config?.localPeerIdSource);
+  if (!source || source.toLowerCase() === "generated") throw new Error(PEER_ORG_INIT_ID_ERROR);
+
+  const peerId = cleanText(runtime?.localPeerId || runtime?.summary?.localPeerId);
+  if (peerId) return peerId;
+  throw new Error(PEER_ORG_INIT_ID_ERROR);
 }
 
 export function normalizePeerOrg(input = {}) {

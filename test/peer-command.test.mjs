@@ -102,6 +102,35 @@ test("parses bounded self-improve commands", () => {
   assert.match(parsePeerCommand("self-improve forever").error, /Unknown \/peer self-improve action/);
 });
 
+test("parses peer org init explicit id and default subagent spawning", () => {
+  const parsed = parsePeerCommand("org init --id planner-a --role planner --domain protocol");
+  assert.equal(parsed.subcommand, "org");
+  assert.equal(parsed.orgAction, "init");
+  assert.equal(parsed.localPeerId, "planner-a");
+  assert.equal(parsed.role, "planner");
+  assert.equal(parsed.domain, "protocol");
+  assert.equal(parsed.canSpawnSubagents, true);
+});
+
+test("parses peer org init local peer id alias and disabled subagent spawning", () => {
+  const parsed = parsePeerCommand("org init --local-peer-id planner-b --subagents false");
+  assert.equal(parsed.subcommand, "org");
+  assert.equal(parsed.orgAction, "init");
+  assert.equal(parsed.localPeerId, "planner-b");
+  assert.equal(parsed.canSpawnSubagents, false);
+});
+
+test("parses peer org role set disabled subagent spawning", () => {
+  const parsed = parsePeerCommand("org role set worker-a --role implementer --domain protocol --subagents=false");
+  assert.equal(parsed.subcommand, "org");
+  assert.equal(parsed.orgAction, "role");
+  assert.equal(parsed.roleAction, "set");
+  assert.equal(parsed.peerId, "worker-a");
+  assert.equal(parsed.role, "implementer");
+  assert.equal(parsed.domain, "protocol");
+  assert.equal(parsed.canSpawnSubagents, false);
+});
+
 test("parses proposal aliases as proposal events", () => {
   for (const raw of [
     "proposal goal_123 Add a reviewer lane --path src,README.md",
