@@ -76,6 +76,19 @@ test("control ledger keeps progress subruns active", async (t) => {
   });
 });
 
+test("control ledger normalizes explicit started subrun status as active", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { kind: "subrun", action: "noop", status: "started", subrunId: "run_started" });
+
+    const loaded = await loadPeerControlLedger(root);
+    assert.equal(loaded.records[0].status, "running");
+    const state = derivePeerControlState(loaded.records);
+    assert.equal(state.activeSubruns.length, 1);
+    assert.equal(state.completedSubruns.length, 0);
+    assert.equal(state.activeSubruns[0].status, "running");
+  });
+});
+
 test("control ledger treats explicit completed subrun status as terminal", async (t) => {
   await withRoot(t, async (root) => {
     await appendPeerControlRecord(root, { kind: "subrun", action: "started", subrunId: "run_completed" });
@@ -85,6 +98,20 @@ test("control ledger treats explicit completed subrun status as terminal", async
     assert.equal(state.activeSubruns.length, 0);
     assert.equal(state.completedSubruns.length, 1);
     assert.equal(state.completedSubruns[0].status, "completed");
+    assert.ok(state.completedSubruns[0].completedAt);
+  });
+});
+
+test("control ledger normalizes explicit failed subrun status as terminal error", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { kind: "subrun", action: "noop", status: "failed", subrunId: "run_failed_status" });
+
+    const loaded = await loadPeerControlLedger(root);
+    assert.equal(loaded.records[0].status, "error");
+    const state = derivePeerControlState(loaded.records);
+    assert.equal(state.activeSubruns.length, 0);
+    assert.equal(state.completedSubruns.length, 1);
+    assert.equal(state.completedSubruns[0].status, "error");
     assert.ok(state.completedSubruns[0].completedAt);
   });
 });
@@ -99,6 +126,19 @@ test("control ledger infers failed subrun type as terminal error", async (t) => 
     assert.equal(state.completedSubruns.length, 1);
     assert.equal(state.completedSubruns[0].status, "error");
     assert.ok(state.completedSubruns[0].completedAt);
+  });
+});
+
+test("control ledger infers pending subrun type as active", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { type: "subrun.pending", subrunId: "run_pending" });
+
+    const loaded = await loadPeerControlLedger(root);
+    assert.equal(loaded.records[0].status, "pending");
+    const state = derivePeerControlState(loaded.records);
+    assert.equal(state.activeSubruns.length, 1);
+    assert.equal(state.completedSubruns.length, 0);
+    assert.equal(state.activeSubruns[0].status, "pending");
   });
 });
 

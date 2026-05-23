@@ -189,7 +189,7 @@ function applySubrunRecord(subruns, record) {
   const runId = cleanText(record.subrunId || record.runId || metadata.subrunId || metadata.runId || record.messageId);
   if (!runId) return;
   const current = subruns.get(runId) || { subrunId: runId, events: 0, createdAt: record.at };
-  const status = cleanText(record.status || statusForSubrunAction(record.action));
+  const status = normalizeSubrunStatus(record.status || statusForSubrunAction(record.action));
   const childCount = nonNegativeNumber(metadata.childCount);
   const completedCount = nonNegativeNumber(metadata.completedCount);
   const blockedCount = nonNegativeNumber(metadata.blockedCount);
@@ -229,12 +229,15 @@ function normalizePeerControlRecord(record = {}) {
   if (!kind) throw new Error("peer control ledger record requires kind");
   const action = cleanText(record.action || actionFromType(record.type)).toLowerCase();
   const at = cleanText(record.at) || new Date().toISOString();
+  const status = kind === "subrun"
+    ? normalizeSubrunStatus(record.status || statusForSubrunAction(action))
+    : cleanText(record.status).toLowerCase();
   return stripEmpty({
     id: cleanText(record.id) || `ctrl_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`,
     at,
     kind,
     action,
-    status: cleanText(record.status).toLowerCase(),
+    status,
     goalId: cleanText(record.goalId),
     messageId: cleanText(record.messageId || record.taskId),
     subrunId: cleanText(record.subrunId || record.runId),
@@ -304,12 +307,20 @@ function statusForTaskAction(action) {
 
 function statusForSubrunAction(action) {
   const text = cleanText(action).toLowerCase();
-  if (["queued", "start", "started", "running", "progress"].includes(text)) return text === "start" || text === "started" ? "running" : text;
+  if (["queued", "start", "started", "running", "progress", "pending"].includes(text)) return normalizeSubrunStatus(text);
   if (["complete", "completed", "done", "response"].includes(text)) return "done";
   if (["fail", "failed"].includes(text)) return "error";
   if (["partial", "blocked", "error"].includes(text)) return text;
   if (["cancel", "cancelled"].includes(text)) return "cancelled";
   return "unknown";
+}
+
+function normalizeSubrunStatus(status) {
+  const text = cleanText(status).toLowerCase();
+  if (["start", "started"].includes(text)) return "running";
+  if (["fail", "failed"].includes(text)) return "error";
+  if (text === "cancel") return "cancelled";
+  return text;
 }
 
 function statusForHiveAction(action) {
