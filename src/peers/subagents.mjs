@@ -187,6 +187,7 @@ export function formatPeerSubagentRunResult(result = {}) {
   if (summary.doneCount !== undefined) bits.push(`done ${summary.doneCount}`);
   if (summary.blockedCount !== undefined) bits.push(`blocked ${summary.blockedCount}`);
   if (summary.artifactRefs?.length) bits.push(`artifacts ${summary.artifactRefs.join(",")}`);
+  if (summary.summary) bits.push(summary.summary);
   if (summary.message) bits.push(summary.message);
   return bits.join(" · ");
 }

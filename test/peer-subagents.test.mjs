@@ -53,11 +53,12 @@ test("subrun progress, complete, and status format compact state", async (t) => 
       provider: "manual",
       mode: "parallel",
     });
-    await recordPeerSubagentRunProgress(root, {
+    const progress = await recordPeerSubagentRunProgress(root, {
       subrunId: started.subrunId,
       goalId: "goal_123",
       parentPeerId: "researcher-a",
       provider: "manual",
+      summary: "Collected sources",
       artifactRefs: ["artifact:sources"],
     });
     const completed = await completePeerSubagentRun(root, {
@@ -65,6 +66,7 @@ test("subrun progress, complete, and status format compact state", async (t) => 
       goalId: "goal_123",
       parentPeerId: "researcher-a",
       provider: "manual",
+      summary: "Research synthesis complete",
       doneCount: 2,
       blockedCount: 0,
       artifactRefs: ["artifact:summary"],
@@ -74,8 +76,34 @@ test("subrun progress, complete, and status format compact state", async (t) => 
     assert.equal(state.activeSubruns.length, 0);
     assert.equal(state.completedSubruns.length, 1);
     assert.deepEqual(state.completedSubruns[0].artifactRefs, ["artifact:sources", "artifact:summary"]);
-    assert.match(formatPeerSubagentStatus({ state }), /Subruns/);
-    assert.match(formatPeerSubagentRunResult(completed), /Subrun/);
+
+    const statusText = formatPeerSubagentStatus({ state });
+    assert.match(statusText, /Subruns: 0 active · 1 completed/);
+    assert.match(statusText, new RegExp(started.subrunId));
+    assert.match(statusText, /done/);
+    assert.match(statusText, /manual/);
+    assert.match(statusText, /parallel/);
+    assert.match(statusText, /done 2/);
+    assert.match(statusText, /blocked 0/);
+    assert.match(statusText, /artifact:sources,artifact:summary/);
+
+    const progressText = formatPeerSubagentRunResult(progress);
+    assert.match(progressText, /Subrun/);
+    assert.match(progressText, new RegExp(started.subrunId));
+    assert.match(progressText, /progress/);
+    assert.match(progressText, /Collected sources/);
+    assert.match(progressText, /artifact:sources/);
+
+    const completeText = formatPeerSubagentRunResult(completed);
+    assert.match(completeText, /Subrun/);
+    assert.match(completeText, new RegExp(started.subrunId));
+    assert.match(completeText, /done/);
+    assert.match(completeText, /manual/);
+    assert.match(completeText, /parallel/);
+    assert.match(completeText, /Research synthesis complete/);
+    assert.match(completeText, /done 2/);
+    assert.match(completeText, /blocked 0/);
+    assert.match(completeText, /artifact:summary/);
   });
 });
 
@@ -104,6 +132,7 @@ test("completePeerSubagentRun can attach bounded subagent evidence to parent goa
     const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goal.id]);
     const handoff = state.events.find((event) => event.type === "handoff" && event.taskId === started.subrunId);
     assert.ok(handoff);
+    assert.equal(handoff.peerId, "worker-a");
     assert.deepEqual(handoff.metadata.subagentEvidence, {
       subrunId: started.subrunId,
       provider: "manual",
