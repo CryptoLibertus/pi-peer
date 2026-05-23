@@ -8,6 +8,7 @@ import { loadPeerRuntimeConfig } from "../src/peers/config.mjs";
 import { loadPeerOrg } from "../src/peers/org.mjs";
 import {
   applyPeerSetupChoice,
+  formatPeerSetupResult,
   formatPeerSetupPrompt,
   loadPeerSetupSession,
   PEER_SETUP_CHOICES,
@@ -23,28 +24,88 @@ async function withRoot(t, fn) {
 test("formatPeerSetupPrompt asks for the six session uses", () => {
   const prompt = formatPeerSetupPrompt();
 
-  assert.match(prompt, /What do you want this session to do/);
-  assert.match(prompt, /^1\. Coordinate other peers$/m);
-  assert.match(prompt, /^2\. Implement code$/m);
-  assert.match(prompt, /^3\. Review work$/m);
-  assert.match(prompt, /^4\. Research$/m);
-  assert.match(prompt, /^5\. Manage private subagents$/m);
-  assert.match(prompt, /^6\. Inspect status only$/m);
+  assert.equal(prompt, [
+    "What do you want this session to do?",
+    "",
+    "1. Coordinate other peers",
+    "2. Implement code",
+    "3. Review work",
+    "4. Research",
+    "5. Manage private subagents",
+    "6. Inspect status only",
+    "",
+    "Reply with /peer setup <number>.",
+  ].join("\n"));
   assert.match(prompt, /^Reply with \/peer setup <number>\.$/m);
 });
 
-test("PEER_SETUP_CHOICES exposes stable labels for each setup option", () => {
-  assert.deepEqual(
-    Object.fromEntries(Object.entries(PEER_SETUP_CHOICES).map(([choice, config]) => [choice, config.label])),
-    {
-      coordinate: "Coordinate other peers",
-      implement: "Implement code",
-      review: "Review work",
-      research: "Research",
-      subagents: "Manage private subagents",
-      status: "Inspect status only",
+test("PEER_SETUP_CHOICES exposes full stable metadata for each setup option", () => {
+  assert.deepEqual(PEER_SETUP_CHOICES, {
+    coordinate: {
+      label: "Coordinate other peers",
+      role: "coordinator",
+      domain: "coordination",
+      canSpawnSubagents: true,
+      countsForIndependentVote: true,
     },
-  );
+    implement: {
+      label: "Implement code",
+      role: "implementer",
+      domain: "implementation",
+      canSpawnSubagents: true,
+      countsForIndependentVote: false,
+    },
+    review: {
+      label: "Review work",
+      role: "reviewer",
+      domain: "review",
+      canSpawnSubagents: true,
+      countsForIndependentVote: true,
+    },
+    research: {
+      label: "Research",
+      role: "researcher",
+      domain: "research",
+      canSpawnSubagents: true,
+      countsForIndependentVote: true,
+    },
+    subagents: {
+      label: "Manage private subagents",
+      role: "coordinator",
+      domain: "coordination",
+      canSpawnSubagents: true,
+      countsForIndependentVote: true,
+      forceSubagents: true,
+    },
+    status: {
+      label: "Inspect status only",
+      role: undefined,
+      domain: undefined,
+      canSpawnSubagents: false,
+      countsForIndependentVote: undefined,
+      inspectOnly: true,
+    },
+  });
+});
+
+test("formatPeerSetupResult uses blank separators around sections", () => {
+  assert.equal(formatPeerSetupResult({
+    peerId: "planner-a",
+    role: "coordinator",
+    domain: "coordination",
+    canSpawnSubagents: true,
+  }), [
+    "Peer setup updated",
+    "",
+    "Local: planner-a",
+    "Role: coordinator",
+    "Domain: coordination",
+    "Subagents: yes",
+    "",
+    "Next:",
+    "1. /peer center",
+    "2. /peer setup done",
+  ].join("\n"));
 });
 
 test("applyPeerSetupChoice creates peer config and org role for coordinator", async (t) => {
@@ -108,6 +169,29 @@ test("subagents choice enables optional orchestration metadata", async (t) => {
 
     const { org } = await loadPeerOrg(root);
     assert.equal(org.peers["planner-a"].canSpawnSubagents, true);
+  });
+});
+
+test("status choice writes only setup session state", async (t) => {
+  await withRoot(t, async (root) => {
+    const result = await applyPeerSetupChoice(root, {
+      choice: "status",
+      peerId: "planner-a",
+      runtime: { summary: { localPeerIdSource: "PI_PEER_ID" } },
+    });
+
+    assert.equal(result.inspectOnly, true);
+
+    const session = await loadPeerSetupSession(root);
+    assert.equal(session.exists, true);
+    assert.equal(session.choice, "status");
+    assert.equal(session.inspectOnly, true);
+
+    const config = await loadPeerRuntimeConfig(root, { env: {} });
+    assert.equal(config.source, "none");
+
+    const org = await loadPeerOrg(root, { allowMissing: true });
+    assert.equal(org.exists, false);
   });
 });
 

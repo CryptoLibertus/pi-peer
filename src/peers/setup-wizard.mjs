@@ -147,7 +147,7 @@ export function formatPeerSetupPrompt(input = {}) {
     "",
     "Reply with /peer setup <number>.",
     peer ? `Current peer: ${peer}` : undefined,
-  ].filter(Boolean).join("\n");
+  ].filter((line) => line !== undefined).join("\n");
 }
 
 export async function applyPeerSetupChoice(root, input = {}) {
@@ -216,7 +216,9 @@ export function formatPeerSetupResult(result = {}) {
   if (result.inspectOnly) {
     return [
       "Peer setup updated",
+      "",
       "Inspect only: yes",
+      "",
       "Next:",
       "1. /peer center",
       "2. /peer setup done",
@@ -224,10 +226,12 @@ export function formatPeerSetupResult(result = {}) {
   }
   return [
     "Peer setup updated",
+    "",
     `Local: ${result.peerId || "unknown"}`,
     `Role: ${result.role || "unknown"}`,
     `Domain: ${result.domain || "unknown"}`,
     `Subagents: ${result.canSpawnSubagents ? "yes" : "no"}`,
+    "",
     "Next:",
     "1. /peer center",
     "2. /peer setup done",
