@@ -329,6 +329,26 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
   if (parsed.subcommand === "help") return sendPeerMessage(pi, formatPeerHelp());
 
   try {
+    if (parsed.subcommand === "setup" && parsed.setupWizard === true) {
+      if (parsed.setupAction === "show") {
+        return sendPeerMessage(pi, [
+          "Peer setup",
+          "",
+          "What do you want this session to do?",
+          "1. Coordinate or plan peer work",
+          "2. Implement code",
+          "3. Review work",
+          "4. Research",
+          "5. Use subagents",
+          "6. Inspect status",
+          "",
+          "Reply with /peer setup <number>.",
+          "Legacy setup is still available with /peer setup --id <peer-id>.",
+        ].join("\n"));
+      }
+      return sendPeerMessage(pi, "Peer setup wizard commands are parsed and full setup wiring is being installed. Run /peer help, or use /peer setup --id <peer-id> for legacy setup.");
+    }
+
     if (parsed.subcommand === "init" || parsed.subcommand === "setup") {
       const result = await initPeerConfig(ctx.cwd || process.cwd(), { localPeerId: parsed.localPeerId, role: parsed.role, domain: parsed.domain, persona: parsed.persona, trust: parsed.trust, capabilities: parsed.capabilities, seedPeers: parsed.seedPeers, enabled: parsed.enabled });
       await resetRuntimeFor(ctx.cwd);
