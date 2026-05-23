@@ -8,30 +8,35 @@ export const PEER_SETUP_SESSION_RELATIVE_PATH = ".pi/peer-setup-session.json";
 
 export const PEER_SETUP_CHOICES = Object.freeze({
   coordinate: Object.freeze({
+    label: "Coordinate other peers",
     role: "coordinator",
     domain: "coordination",
     canSpawnSubagents: true,
     countsForIndependentVote: true,
   }),
   implement: Object.freeze({
+    label: "Implement code",
     role: "implementer",
     domain: "implementation",
     canSpawnSubagents: true,
     countsForIndependentVote: false,
   }),
   review: Object.freeze({
+    label: "Review work",
     role: "reviewer",
     domain: "review",
     canSpawnSubagents: true,
     countsForIndependentVote: true,
   }),
   research: Object.freeze({
+    label: "Research",
     role: "researcher",
     domain: "research",
     canSpawnSubagents: true,
     countsForIndependentVote: true,
   }),
   subagents: Object.freeze({
+    label: "Manage private subagents",
     role: "coordinator",
     domain: "coordination",
     canSpawnSubagents: true,
@@ -39,6 +44,7 @@ export const PEER_SETUP_CHOICES = Object.freeze({
     forceSubagents: true,
   }),
   status: Object.freeze({
+    label: "Inspect status only",
     role: undefined,
     domain: undefined,
     canSpawnSubagents: false,

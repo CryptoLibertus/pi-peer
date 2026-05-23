@@ -10,6 +10,7 @@ import {
   applyPeerSetupChoice,
   formatPeerSetupPrompt,
   loadPeerSetupSession,
+  PEER_SETUP_CHOICES,
   resetPeerSetupSession,
 } from "../src/peers/setup-wizard.mjs";
 
@@ -30,6 +31,20 @@ test("formatPeerSetupPrompt asks for the six session uses", () => {
   assert.match(prompt, /^5\. Manage private subagents$/m);
   assert.match(prompt, /^6\. Inspect status only$/m);
   assert.match(prompt, /^Reply with \/peer setup <number>\.$/m);
+});
+
+test("PEER_SETUP_CHOICES exposes stable labels for each setup option", () => {
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(PEER_SETUP_CHOICES).map(([choice, config]) => [choice, config.label])),
+    {
+      coordinate: "Coordinate other peers",
+      implement: "Implement code",
+      review: "Review work",
+      research: "Research",
+      subagents: "Manage private subagents",
+      status: "Inspect status only",
+    },
+  );
 });
 
 test("applyPeerSetupChoice creates peer config and org role for coordinator", async (t) => {
