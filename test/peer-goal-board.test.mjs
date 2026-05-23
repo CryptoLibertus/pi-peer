@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch, validateGoalReadyToClose } from "../src/peers/goal-board.mjs";
+import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, projectSubagentEvidence, recordPeerGoalTaskDispatch, validateGoalReadyToClose } from "../src/peers/goal-board.mjs";
 import { appendGoalJournalRecord, compactGoalJournal, goalJournalPath, replayGoalJournal } from "../src/peers/goal-store.mjs";
 
 async function withGoal(t, fn) {
@@ -525,6 +525,99 @@ test("closure policy can require independent passing votes from non-producers", 
   state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
   assert.equal(state.independentPassingVotes.length, 1);
   assert.equal(state.readyToClose, true);
+});
+
+test("subagent evidence renders while child votes do not satisfy independent vote policy", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-subagent-evidence-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, {
+    objective: "subagent evidence gated goal",
+    peerId: "planner",
+    closurePolicy: { minIndependentVotes: 1 },
+  });
+
+  await completePeerGoalTask(root, created.id, {
+    peerId: "worker-a",
+    lane: "implementation",
+    summary: "Implementation complete with private team evidence",
+    subagentEvidence: {
+      provider: "pi-subagents",
+      childCount: 2,
+      completedCount: 1,
+      blockedCount: 1,
+      artifactRefs: ["artifact:subrun-1"],
+    },
+  });
+  await appendPeerGoalEvent(root, created.id, {
+    type: "vote",
+    peerId: "worker-a-child",
+    verdict: "pass",
+    summary: "child review pass",
+    metadata: { subagent: true, parentPeerId: "worker-a", countsForIndependentVote: false },
+  });
+
+  let goal = (await loadPeerGoalBoard(root)).goals[created.id];
+  let state = deriveGoalState(goal);
+  assert.equal(state.passingVotes.length, 1);
+  assert.equal(state.independentPassingVotes.length, 0);
+  assert.equal(state.readyToClose, false);
+  assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /1 independent passing vote\(s\) required \(0 present\)/);
+  assert.match(formatPeerGoal(goal), /pi-subagents subagents 2 child, 1 done, 1 blocked/);
+
+  await appendPeerGoalEvent(root, created.id, {
+    type: "vote",
+    peerId: "reviewer-a",
+    verdict: "pass",
+    summary: "top-level independent review pass",
+  });
+  goal = (await loadPeerGoalBoard(root)).goals[created.id];
+  state = deriveGoalState(goal);
+  assert.equal(state.independentPassingVotes.length, 1);
+  assert.equal(state.readyToClose, true);
+});
+
+test("top-level child vote markers and count overrides persist without satisfying independent votes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-top-level-child-votes-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, {
+    objective: "top-level child vote markers",
+    peerId: "planner",
+    closurePolicy: { minIndependentVotes: 1 },
+  });
+
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "child-a", verdict: "pass", parentPeerId: "worker-a" });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "child-b", verdict: "pass", subagent: true });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-b", verdict: "pass", role: "reviewer", countsForIndependentVote: false });
+
+  const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.passingVotes.length, 3);
+  assert.equal(state.independentPassingVotes.length, 0);
+  assert.equal(state.readyToClose, false);
+  assert.equal(state.votes.find((vote) => vote.peerId === "child-a").parentPeerId, "worker-a");
+  assert.equal(state.votes.find((vote) => vote.peerId === "child-b").subagent, true);
+  assert.equal(state.votes.find((vote) => vote.peerId === "reviewer-b").role, "reviewer");
+  assert.equal(state.votes.find((vote) => vote.peerId === "reviewer-b").countsForIndependentVote, false);
+});
+
+test("projectSubagentEvidence accepts completedCount as done count alias", () => {
+  assert.deepEqual(
+    projectSubagentEvidence({
+      provider: "pi-subagents",
+      childCount: 3,
+      completedCount: 2,
+      blockedCount: 1,
+    }),
+    {
+      provider: "pi-subagents",
+      childCount: 3,
+      doneCount: 2,
+      blockedCount: 1,
+    },
+  );
 });
 
 test("scout emits parallel closure-policy review lanes for unmet vote quorum", async (t) => {

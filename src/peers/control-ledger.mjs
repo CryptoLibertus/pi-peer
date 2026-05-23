@@ -12,6 +12,8 @@ const ACTIVE_TASK_STATUSES = new Set(["queued", "dispatching", "running", "pendi
 const TERMINAL_TASK_STATUSES = new Set(["done", "completed", "blocked", "error", "cancelled", "disconnected"]);
 const ACTIVE_SUPERVISOR_STATUSES = new Set(["started", "resumed", "recovered", "tick"]);
 const STOPPED_SUPERVISOR_STATUSES = new Set(["stopped", "elapsed", "cancelled", "done", "error"]);
+const ACTIVE_SUBRUN_STATUSES = new Set(["queued", "running", "pending", "progress"]);
+const TERMINAL_SUBRUN_STATUSES = new Set(["done", "completed", "partial", "blocked", "error", "cancelled"]);
 
 export function controlLedgerPath(root) {
   if (!root) throw new Error("peer control ledger requires root");
@@ -62,16 +64,21 @@ export async function loadPeerControlLedger(root) {
 export function derivePeerControlState(records = [], options = {}) {
   const tasks = new Map();
   const supervisors = new Map();
+  const subruns = new Map();
   for (const record of Array.isArray(records) ? records : []) {
     const normalized = normalizePeerControlRecord(record);
     if (normalized.kind === "task") applyTaskRecord(tasks, normalized);
     if (normalized.kind === "hive") applyHiveRecord(supervisors, normalized);
+    if (normalized.kind === "subrun") applySubrunRecord(subruns, normalized);
   }
   const taskList = [...tasks.values()].sort(sortByUpdatedAt);
   const supervisorList = [...supervisors.values()].sort(sortByUpdatedAt);
+  const subrunList = [...subruns.values()].sort(sortByUpdatedAt);
   const activeTasks = taskList.filter((task) => ACTIVE_TASK_STATUSES.has(task.status));
   const disconnectedTasks = taskList.filter((task) => task.status === "disconnected");
   const completedTasks = taskList.filter((task) => TERMINAL_TASK_STATUSES.has(task.status) && task.status !== "disconnected");
+  const activeSubruns = subrunList.filter((run) => ACTIVE_SUBRUN_STATUSES.has(run.status));
+  const completedSubruns = subrunList.filter((run) => TERMINAL_SUBRUN_STATUSES.has(run.status));
   const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   const activeSupervisors = supervisorList.filter((run) => isSupervisorActive(run, nowMs));
   return {
@@ -82,6 +89,9 @@ export function derivePeerControlState(records = [], options = {}) {
     completedTasks,
     hiveRuns: supervisorList,
     activeHiveRuns: activeSupervisors,
+    subruns: subrunList,
+    activeSubruns,
+    completedSubruns,
     warnings: [],
   };
 }
@@ -174,6 +184,38 @@ function applyHiveRecord(supervisors, record) {
   }));
 }
 
+function applySubrunRecord(subruns, record) {
+  const metadata = plainObject(record.metadata) ? record.metadata : {};
+  const runId = cleanText(record.subrunId || record.runId || metadata.subrunId || metadata.runId || record.messageId);
+  if (!runId) return;
+  const current = subruns.get(runId) || { subrunId: runId, events: 0, createdAt: record.at };
+  const status = normalizeSubrunStatus(record.status || statusForSubrunAction(record.action));
+  const childCount = nonNegativeNumber(metadata.childCount);
+  const completedCount = nonNegativeNumber(metadata.completedCount);
+  const blockedCount = nonNegativeNumber(metadata.blockedCount);
+  subruns.set(runId, stripEmpty({
+    ...current,
+    events: (current.events || 0) + 1,
+    subrunId: runId,
+    parentPeerId: cleanText(record.peerId || metadata.parentPeerId) || current.parentPeerId,
+    provider: cleanText(metadata.provider) || current.provider,
+    mode: cleanText(metadata.mode) || current.mode,
+    goalId: cleanText(record.goalId || metadata.goalId) || current.goalId,
+    workKey: cleanText(record.workKey || metadata.workKey) || current.workKey,
+    status: status || current.status || "unknown",
+    action: cleanText(record.action) || current.action,
+    summary: cleanText(record.summary) || current.summary,
+    artifactRefs: normalizeList([...normalizeList(current.artifactRefs), ...normalizeList(metadata.artifactRefs)]),
+    childCount: childCount ?? current.childCount,
+    completedCount: completedCount ?? current.completedCount,
+    blockedCount: blockedCount ?? current.blockedCount,
+    createdAt: current.createdAt || record.at,
+    updatedAt: record.at,
+    completedAt: TERMINAL_SUBRUN_STATUSES.has(status) ? record.at : current.completedAt,
+    metadata: { ...(current.metadata || {}), ...metadata },
+  }));
+}
+
 function isSupervisorActive(run, nowMs) {
   if (!ACTIVE_SUPERVISOR_STATUSES.has(run.status)) return false;
   if (!run.deadlineAt) return true;
@@ -187,14 +229,18 @@ function normalizePeerControlRecord(record = {}) {
   if (!kind) throw new Error("peer control ledger record requires kind");
   const action = cleanText(record.action || actionFromType(record.type)).toLowerCase();
   const at = cleanText(record.at) || new Date().toISOString();
+  const status = kind === "subrun"
+    ? normalizeSubrunStatus(record.status || statusForSubrunAction(action))
+    : cleanText(record.status).toLowerCase();
   return stripEmpty({
     id: cleanText(record.id) || `ctrl_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`,
     at,
     kind,
     action,
-    status: cleanText(record.status).toLowerCase(),
+    status,
     goalId: cleanText(record.goalId),
     messageId: cleanText(record.messageId || record.taskId),
+    subrunId: cleanText(record.subrunId || record.runId),
     conversationId: cleanText(record.conversationId),
     peerId: cleanText(record.peerId),
     workKey: cleanText(record.workKey),
@@ -240,6 +286,7 @@ function inferKind(type) {
   const text = cleanText(type).toLowerCase();
   if (text.startsWith("hive.")) return "hive";
   if (text.startsWith("task.")) return "task";
+  if (text.startsWith("subrun.")) return "subrun";
   return "";
 }
 
@@ -256,6 +303,24 @@ function statusForTaskAction(action) {
   if (["cancel", "cancelled"].includes(text)) return "cancelled";
   if (text === "disconnected") return "disconnected";
   return "unknown";
+}
+
+function statusForSubrunAction(action) {
+  const text = cleanText(action).toLowerCase();
+  if (["queued", "start", "started", "running", "progress", "pending"].includes(text)) return normalizeSubrunStatus(text);
+  if (["complete", "completed", "done", "response"].includes(text)) return "done";
+  if (["fail", "failed"].includes(text)) return "error";
+  if (["partial", "blocked", "error"].includes(text)) return text;
+  if (["cancel", "cancelled"].includes(text)) return "cancelled";
+  return "unknown";
+}
+
+function normalizeSubrunStatus(status) {
+  const text = cleanText(status).toLowerCase();
+  if (["start", "started"].includes(text)) return "running";
+  if (["fail", "failed"].includes(text)) return "error";
+  if (text === "cancel") return "cancelled";
+  return text;
 }
 
 function statusForHiveAction(action) {
@@ -285,6 +350,12 @@ function normalizeList(value) {
 function positiveNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function nonNegativeNumber(value) {
+  if (value == null || value === "") return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
 }
 
 function cleanText(value) {

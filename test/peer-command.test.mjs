@@ -102,6 +102,61 @@ test("parses bounded self-improve commands", () => {
   assert.match(parsePeerCommand("self-improve forever").error, /Unknown \/peer self-improve action/);
 });
 
+test("parses peer org init explicit id and default subagent spawning", () => {
+  const parsed = parsePeerCommand("org init --id planner-a --role planner --domain protocol");
+  assert.equal(parsed.subcommand, "org");
+  assert.equal(parsed.orgAction, "init");
+  assert.equal(parsed.localPeerId, "planner-a");
+  assert.equal(parsed.role, "planner");
+  assert.equal(parsed.domain, "protocol");
+  assert.equal(parsed.canSpawnSubagents, true);
+});
+
+test("parses peer org init role and subagent spawning without explicit id", () => {
+  const parsed = parsePeerCommand("org init --role coordinator --domain protocol --subagents");
+  assert.equal(parsed.subcommand, "org");
+  assert.equal(parsed.orgAction, "init");
+  assert.equal(parsed.role, "coordinator");
+  assert.equal(parsed.domain, "protocol");
+  assert.equal(parsed.canSpawnSubagents, true);
+});
+
+test("parses peer org init local peer id alias and disabled subagent spawning", () => {
+  const parsed = parsePeerCommand("org init --local-peer-id planner-b --subagents false");
+  assert.equal(parsed.subcommand, "org");
+  assert.equal(parsed.orgAction, "init");
+  assert.equal(parsed.localPeerId, "planner-b");
+  assert.equal(parsed.canSpawnSubagents, false);
+});
+
+test("parses peer org role set disabled subagent spawning", () => {
+  const parsed = parsePeerCommand("org role set worker-a --role implementer --domain protocol --subagents=false");
+  assert.equal(parsed.subcommand, "org");
+  assert.equal(parsed.orgAction, "role");
+  assert.equal(parsed.roleAction, "set");
+  assert.equal(parsed.peerId, "worker-a");
+  assert.equal(parsed.role, "implementer");
+  assert.equal(parsed.domain, "protocol");
+  assert.equal(parsed.canSpawnSubagents, false);
+});
+
+test("parses setup domain and optional subagent capability metadata", () => {
+  const parsed = parsePeerCommand("setup --id planner-a --role planner --domain protocol --subagents --subagent-provider pi-subagents");
+  assert.equal(parsed.subcommand, "setup");
+  assert.equal(parsed.localPeerId, "planner-a");
+  assert.equal(parsed.role, "planner");
+  assert.equal(parsed.domain, "protocol");
+  assert.deepEqual(parsed.capabilities.orchestration, {
+    subagents: true,
+    provider: "pi-subagents",
+    modes: ["single", "parallel", "chain", "async"],
+    maxDepth: 1,
+    maxConcurrency: 4,
+    worktree: true,
+    intercom: false,
+  });
+});
+
 test("parses proposal aliases as proposal events", () => {
   for (const raw of [
     "proposal goal_123 Add a reviewer lane --path src,README.md",
@@ -193,6 +248,10 @@ test("peer help documents claim lane, write shorthand, and stale flags", () => {
   assert.match(help, /duplicate-policy reuse\|error\|allow-parallel/);
   assert.match(help, /--stale-after-ms <ms>/);
   assert.match(help, /self-improve init\|status\|run/);
+  assert.match(help, /\/peer org init/);
+  assert.match(help, /\/peer org role set/);
+  assert.match(help, /--domain/);
+  assert.match(help, /--subagents/);
 });
 
 test("parses goal closure policy flags", () => {

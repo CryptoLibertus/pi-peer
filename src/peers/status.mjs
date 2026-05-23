@@ -1,5 +1,5 @@
 import { derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement, normalizePeerContextBudget } from "./context-budget.mjs";
-import { deriveGoalState, derivePeerGoalWorkKey } from "./goal-board.mjs";
+import { deriveGoalState, derivePeerGoalWorkKey, formatSubagentEvidenceSummary, projectSubagentEvidence } from "./goal-board.mjs";
 import { summarizePeerIdleWatcherState, shouldSurfaceCoordinationInFooter } from "./idle-watcher.mjs";
 import { redactPeerAuditValue } from "./protocol.mjs";
 
@@ -42,6 +42,7 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
     contextJudgement,
     idleWatcher,
     localRole: safeStatusText(localProfile.role || endpoint?.role),
+    localDomain: safeStatusText(localProfile.domain || endpoint?.domain),
     localPersona: safeStatusText(localProfile.persona || endpoint?.persona),
     endpointStatus: enabled ? (endpoint ? "listening" : "not listening") : "disabled",
     authStatus: enabled ? (endpoint?.authRequired ? "required" : endpoint ? "open" : "not advertised") : "disabled",
@@ -61,7 +62,7 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
 export function formatPeerStatusLines(status = {}) {
   const enabledText = status.enabled ? "enabled" : "disabled";
   const color = status.enabled ? "success" : "muted";
-  const profileText = [status.localRole ? `role ${status.localRole}` : "", status.localPersona ? `persona ${status.localPersona}` : ""].filter(Boolean).join(" · ");
+  const profileText = [status.localRole ? `role ${status.localRole}` : "", status.localDomain ? `domain ${status.localDomain}` : "", status.localPersona ? `persona ${status.localPersona}` : ""].filter(Boolean).join(" · ");
   const protocolText = status.protocolVersion ? ` · protocol v${status.protocolVersion}` : "";
   const capsText = capabilitySummary(status.localCapabilities);
   const lines = [
@@ -221,6 +222,14 @@ export function formatPeerGoalDashboard(goal, options = {}) {
     for (const row of peerRows.slice(0, 8)) lines.push(`- ${row.peerId}: active ${row.activeClaims}/${row.activeTasks} · stale ${row.staleClaims} · handoffs ${row.handoffs} · findings ${row.findings} · votes ${row.votes}`);
   }
 
+  const subagentEvidenceRows = (state.events || [])
+    .map((event) => ({ event, summary: formatSubagentEvidenceSummary(projectSubagentEvidence(event.metadata?.subagentEvidence)) }))
+    .filter((row) => row.summary);
+  if (subagentEvidenceRows.length) {
+    lines.push("", "Subagent evidence:");
+    for (const row of subagentEvidenceRows.slice(-8)) lines.push(`- ${row.event.id} · ${row.event.peerId} · ${row.summary}`);
+  }
+
   if (state.activeClaims.length) {
     lines.push("", "Active lanes:");
     for (const claim of state.activeClaims.slice(0, 10)) lines.push(`- ${claim.id} · ${claim.peerId} · ${claim.lane || "work"}/${claim.mode || "read"} · ${truncateStatus(claim.summary, 100)}${claim.workKey ? ` · key ${claim.workKey}` : ""}`);
@@ -343,6 +352,8 @@ function peerContributionRows(state = {}) {
 
 function capabilitySummary(capabilities = {}) {
   if (!capabilities || typeof capabilities !== "object") return "";
+  const orchestration = capabilities.orchestration && typeof capabilities.orchestration === "object" ? capabilities.orchestration : {};
+  if (orchestration.subagents === true) return `subagents:${orchestration.provider || "custom"}${Array.isArray(orchestration.modes) && orchestration.modes.length ? `(${orchestration.modes.join(",")})` : ""}`;
   if (Array.isArray(capabilities.intents) && capabilities.intents.length) return `intents:${capabilities.intents.join(",")}`;
   return Object.keys(capabilities).slice(0, 4).join(",");
 }
@@ -353,6 +364,7 @@ export function deriveFanoutSuggestion(peers = [], pendingMessages = []) {
     .map((peer) => ({
       peerId: peer.peerId,
       role: safeStatusText(peer.role),
+      domain: safeStatusText(peer.domain),
       persona: safeStatusText(peer.persona),
       recommendedLane: recommendLaneForPeer(peer),
     }))
@@ -378,7 +390,7 @@ export function deriveFanoutSuggestion(peers = [], pendingMessages = []) {
 }
 
 function recommendLaneForPeer(peer = {}) {
-  const text = [peer.role, peer.persona, peer.peerId].filter(Boolean).join(" ").toLowerCase();
+  const text = [peer.role, peer.domain, peer.persona, peer.peerId].filter(Boolean).join(" ").toLowerCase();
   if (/(^|[^a-z0-9])(review|reviewer|qa|quality)\d*($|[^a-z0-9])/.test(text)) return "review";
   if (/(^|[^a-z0-9])(research|researcher|scout)\d*($|[^a-z0-9])/.test(text)) return "research";
   if (/(^|[^a-z0-9])(plan|planner|coord|coordinator|orchestrator)\d*($|[^a-z0-9])/.test(text)) return "coordination";

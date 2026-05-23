@@ -62,6 +62,51 @@ test("peer_get compact message omits full prompt and final assistant body", () =
   assert.ok(result.details.value.finalAssistantPreview.length < longFinal.length);
 });
 
+test("peer_get compact control output preserves active subrun fields", () => {
+  const result = peerGetToolResult("control", "control", {
+    records: 3,
+    activeTasks: [],
+    disconnectedTasks: [],
+    completedTasks: [],
+    activeHiveRuns: [],
+    hiveRuns: [],
+    subruns: [{ subrunId: "subrun_1" }],
+    completedSubruns: [],
+    activeSubruns: [{
+      subrunId: "subrun_1",
+      parentPeerId: "coordinator",
+      provider: "codex",
+      mode: "review",
+      goalId: "goal_1",
+      workKey: "review:1",
+      status: "progress",
+      childCount: 3,
+      completedCount: 1,
+      blockedCount: 0,
+      artifactRefs: ["artifact:first", "artifact:second"],
+      summary: "Checking subrun progress",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+      completedAt: undefined,
+    }],
+  });
+
+  assert.deepEqual(result.details.value.activeSubruns, [{
+    subrunId: "subrun_1",
+    parentPeerId: "coordinator",
+    provider: "codex",
+    mode: "review",
+    goalId: "goal_1",
+    workKey: "review:1",
+    status: "progress",
+    childCount: 3,
+    completedCount: 1,
+    blockedCount: 0,
+    artifactRefs: ["artifact:first", "artifact:second"],
+    summary: "Checking subrun progress",
+    updatedAt: "2026-01-01T00:00:01.000Z",
+  }]);
+});
+
 test("handoff evidence parser accepts plain section headings", () => {
   const evidence = parsePeerHandoffEvidence(`Status
 Done

@@ -64,6 +64,164 @@ test("control ledger derives active hive supervisors until stopped or deadline e
   });
 });
 
+test("control ledger keeps progress subruns active", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { kind: "subrun", action: "started", subrunId: "run_progress", peerId: "coordinator" });
+    await appendPeerControlRecord(root, { kind: "subrun", action: "progress", subrunId: "run_progress", peerId: "coordinator" });
+
+    const state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    assert.equal(state.activeSubruns.length, 1);
+    assert.equal(state.completedSubruns.length, 0);
+    assert.equal(state.activeSubruns[0].status, "progress");
+  });
+});
+
+test("control ledger normalizes explicit started subrun status as active", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { kind: "subrun", action: "noop", status: "started", subrunId: "run_started" });
+
+    const loaded = await loadPeerControlLedger(root);
+    assert.equal(loaded.records[0].status, "running");
+    const state = derivePeerControlState(loaded.records);
+    assert.equal(state.activeSubruns.length, 1);
+    assert.equal(state.completedSubruns.length, 0);
+    assert.equal(state.activeSubruns[0].status, "running");
+  });
+});
+
+test("control ledger treats explicit completed subrun status as terminal", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { kind: "subrun", action: "started", subrunId: "run_completed" });
+    await appendPeerControlRecord(root, { kind: "subrun", action: "response", status: "completed", subrunId: "run_completed" });
+
+    const state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    assert.equal(state.activeSubruns.length, 0);
+    assert.equal(state.completedSubruns.length, 1);
+    assert.equal(state.completedSubruns[0].status, "completed");
+    assert.ok(state.completedSubruns[0].completedAt);
+  });
+});
+
+test("control ledger completes subruns and preserves provider artifacts", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, {
+      kind: "subrun",
+      action: "started",
+      subrunId: "sub_1",
+      peerId: "worker-a",
+      metadata: {
+        provider: "pi-subagents",
+        mode: "parallel",
+        artifactRefs: ["artifact:started"],
+      },
+    });
+
+    let state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    assert.equal(state.activeSubruns.length, 1);
+    assert.equal(state.activeSubruns[0].subrunId, "sub_1");
+
+    await appendPeerControlRecord(root, {
+      kind: "subrun",
+      action: "done",
+      subrunId: "sub_1",
+      metadata: {
+        artifactRefs: ["artifact:done"],
+      },
+    });
+
+    state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    assert.equal(state.activeSubruns.length, 0);
+    assert.equal(state.completedSubruns.length, 1);
+    assert.equal(state.completedSubruns[0].provider, "pi-subagents");
+    assert.deepEqual(state.completedSubruns[0].artifactRefs, ["artifact:started", "artifact:done"]);
+  });
+});
+
+test("control ledger normalizes explicit failed subrun status as terminal error", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { kind: "subrun", action: "noop", status: "failed", subrunId: "run_failed_status" });
+
+    const loaded = await loadPeerControlLedger(root);
+    assert.equal(loaded.records[0].status, "error");
+    const state = derivePeerControlState(loaded.records);
+    assert.equal(state.activeSubruns.length, 0);
+    assert.equal(state.completedSubruns.length, 1);
+    assert.equal(state.completedSubruns[0].status, "error");
+    assert.ok(state.completedSubruns[0].completedAt);
+  });
+});
+
+test("control ledger infers failed subrun type as terminal error", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { type: "subrun.started", subrunId: "run_failed" });
+    await appendPeerControlRecord(root, { type: "subrun.failed", subrunId: "run_failed" });
+
+    const state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    assert.equal(state.activeSubruns.length, 0);
+    assert.equal(state.completedSubruns.length, 1);
+    assert.equal(state.completedSubruns[0].status, "error");
+    assert.ok(state.completedSubruns[0].completedAt);
+  });
+});
+
+test("control ledger infers pending subrun type as active", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { type: "subrun.pending", subrunId: "run_pending" });
+
+    const loaded = await loadPeerControlLedger(root);
+    assert.equal(loaded.records[0].status, "pending");
+    const state = derivePeerControlState(loaded.records);
+    assert.equal(state.activeSubruns.length, 1);
+    assert.equal(state.completedSubruns.length, 0);
+    assert.equal(state.activeSubruns[0].status, "pending");
+  });
+});
+
+test("control ledger accumulates subrun artifact refs across records", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { kind: "subrun", action: "started", subrunId: "run_artifacts", metadata: { artifactRefs: ["artifact:first"] } });
+    await appendPeerControlRecord(root, { kind: "subrun", action: "progress", subrunId: "run_artifacts", metadata: { artifactRefs: ["artifact:second"] } });
+
+    const state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    assert.deepEqual(state.activeSubruns[0].artifactRefs, ["artifact:first", "artifact:second"]);
+  });
+});
+
+test("control ledger allows subrun blocked count to clear to zero", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, { kind: "subrun", action: "progress", subrunId: "run_counts", metadata: { childCount: 3, completedCount: 1, blockedCount: 2 } });
+    await appendPeerControlRecord(root, { kind: "subrun", action: "progress", subrunId: "run_counts", metadata: { blockedCount: 0 } });
+
+    const state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    assert.equal(state.activeSubruns[0].childCount, 3);
+    assert.equal(state.activeSubruns[0].completedCount, 1);
+    assert.equal(state.activeSubruns[0].blockedCount, 0);
+  });
+});
+
+test("control ledger infers subrun kind from subrun type", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, {
+      type: "subrun.started",
+      subrunId: "run_inferred",
+      peerId: "coordinator",
+      goalId: "goal_1",
+      workKey: "work:1",
+      metadata: { provider: "codex", mode: "review" },
+    });
+
+    const loaded = await loadPeerControlLedger(root);
+    assert.equal(loaded.records[0].kind, "subrun");
+    assert.equal(loaded.records[0].action, "started");
+
+    const state = derivePeerControlState(loaded.records);
+    assert.equal(state.activeSubruns.length, 1);
+    assert.equal(state.activeSubruns[0].subrunId, "run_inferred");
+    assert.equal(state.activeSubruns[0].provider, "codex");
+    assert.equal(state.activeSubruns[0].mode, "review");
+  });
+});
+
 test("control ledger rejects corrupt middle records", async (t) => {
   await withRoot(t, async (root) => {
     await appendPeerControlRecord(root, { kind: "task", action: "dispatched", messageId: "msg_1" });

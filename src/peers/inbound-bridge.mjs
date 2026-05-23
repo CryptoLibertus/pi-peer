@@ -240,6 +240,7 @@ function renderResponderInstructions(envelope, profile = {}, options = {}) {
     `- You are local Pi peer '${redactForPrompt(peerId, options)}'.`,
   ];
   if (profile.role) lines.push(`- Role: ${redactForPrompt(profile.role, options)}`);
+  if (profile.domain) lines.push(`- Domain: ${redactForPrompt(profile.domain, options)}`);
   if (profile.persona) lines.push(`- Persona: ${redactForPrompt(profile.persona, options)}`);
   lines.push("", "Peer communication guidance:", renderPeerCommunicationGuidance());
 
