@@ -116,6 +116,14 @@ test("parses peer subrun facade actions", () => {
   assert.equal(complete.subrunAction, "complete");
   assert.equal(complete.doneCount, 2);
   assert.equal(complete.blockedCount, 1);
+
+  const blockedWithNoDone = parsePeerCommand("subrun complete sub_123 Blocked --done 0 --blocked 1");
+  assert.equal(blockedWithNoDone.doneCount, 0);
+  assert.equal(blockedWithNoDone.blockedCount, 1);
+
+  const doneWithNoBlocked = parsePeerCommand("subrun complete sub_123 Done --done 2 --blocked 0");
+  assert.equal(doneWithNoBlocked.doneCount, 2);
+  assert.equal(doneWithNoBlocked.blockedCount, 0);
 });
 
 test("parses hive and swarm start as safe self-selection goal starters", () => {

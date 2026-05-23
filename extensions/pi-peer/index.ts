@@ -345,11 +345,19 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       await refresh();
       return sendPeerMessage(pi, text);
     }
-    if (parsed.subcommand === "status") {
+    if (parsed.subcommand === "status" || parsed.subcommand === "center" || (parsed.subcommand === "do" && parsed.intent === "status")) {
       updatePeerContextBudget(runtime, ctx);
       if (runtime.enabled) await runtime.refreshLocalPeers();
       await refresh();
       return sendPeerMessage(pi, formatPeerStatusText(await collectPeerRuntimeStatus(runtime)));
+    }
+    if (parsed.subcommand === "do") {
+      await refresh();
+      return sendPeerMessage(pi, "Peer intent router is parsed; run /peer help until command center wiring is installed.");
+    }
+    if (parsed.subcommand === "subrun") {
+      await refresh();
+      return sendPeerMessage(pi, "Peer subrun commands are parsed; run /peer help until subagent adapter wiring is installed.");
     }
     if (parsed.subcommand === "context") {
       const budget = updatePeerContextBudget(runtime, ctx);

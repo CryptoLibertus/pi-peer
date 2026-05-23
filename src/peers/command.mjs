@@ -353,9 +353,9 @@ function parsePeerSubrunCommand(parsed, flags, positionals) {
     provider: stringFlag(flags.provider, undefined),
     workKey: stringFlag(flags.workKey || flags.key, undefined),
     artifactRefs: listFlag(flags.artifact || flags.artifacts || flags.artifactRef || flags.artifactRefs),
-    doneCount: positiveIntegerFlag(flags.done || flags.doneCount),
-    blockedCount: positiveIntegerFlag(flags.blocked || flags.blockedCount),
-    childCount: positiveIntegerFlag(flags.child || flags.children || flags.childCount),
+    doneCount: nonNegativeIntegerFlag(flags.done || flags.doneCount || flags.completed || flags.completedCount),
+    blockedCount: nonNegativeIntegerFlag(flags.blocked || flags.blockedCount),
+    childCount: nonNegativeIntegerFlag(flags.child || flags.children || flags.childCount),
   };
   if (action === "status") return stripUndefined(common);
   if (action === "start") {
@@ -502,6 +502,13 @@ function positiveIntegerFlag(value) {
   if (value === undefined || value === true) return undefined;
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : undefined;
+}
+
+function nonNegativeIntegerFlag(value) {
+  if (Array.isArray(value)) return nonNegativeIntegerFlag(value.at(-1));
+  if (value === undefined || value === true) return undefined;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : undefined;
 }
 
 function qualityMetadataFromFlags(flags = {}) {
