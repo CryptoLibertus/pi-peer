@@ -459,6 +459,160 @@ test("closure policy can require lane and role specific votes and evidence", asy
   assert.doesNotThrow(() => validateGoalReadyToClose(state));
 });
 
+test("closure policy can require evidence from distinct peers", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-distinct-policy-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, {
+    objective: "distinct evidence policy goal",
+    peerId: "planner",
+    closurePolicy: {
+      minPassingVotes: 1,
+      requiredEvidence: [{ type: "finding", lane: "review", min: 4, minDistinctPeers: 2 }],
+    },
+  });
+
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "base vote" });
+  await appendPeerGoalEvent(root, created.id, { type: "finding", peerId: "reviewer-a", lane: "review", summary: "first review finding" });
+  await appendPeerGoalEvent(root, created.id, { type: "finding", peerId: "reviewer-a", lane: "review", summary: "same peer should not satisfy diversity" });
+
+  let state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.readyToClose, false);
+  assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /distinctPeers>=2/);
+  assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /2 matching event\(s\) from distinct peer\(s\) \(1 present\)/);
+
+  await appendPeerGoalEvent(root, created.id, { type: "finding", peerId: "reviewer-b", lane: "review", summary: "independent review finding" });
+  state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.readyToClose, false);
+  assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /4 matching event\(s\) \(3 present\)/);
+
+  await appendPeerGoalEvent(root, created.id, { type: "finding", peerId: "reviewer-c", lane: "review", summary: "fourth review finding" });
+  state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.closurePolicyStatus.satisfied, true);
+  assert.equal(state.readyToClose, true);
+});
+
+test("closure policy can require independent passing votes from non-producers", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-independent-vote-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, {
+    objective: "independent review policy goal",
+    peerId: "planner",
+    closurePolicy: { minPassingVotes: 1, minIndependentVotes: 1 },
+  });
+
+  await appendPeerGoalEvent(root, created.id, {
+    type: "claim",
+    peerId: "worker-a",
+    summary: "implement feature",
+    mode: "write",
+    lane: "implementation",
+    paths: ["src/peers/goal-board.mjs"],
+  });
+  await appendPeerGoalEvent(root, created.id, { type: "release", peerId: "worker-a", resolves: (await loadPeerGoalBoard(root)).goals[created.id].events[0].id, summary: "implementation done" });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "worker-a", verdict: "pass", summary: "self-approved" });
+
+  let state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.passingVotes.length, 1);
+  assert.equal(state.independentPassingVotes.length, 0);
+  assert.equal(state.readyToClose, false);
+  assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /1 independent passing vote\(s\) required \(0 present\)/);
+
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "independent review pass" });
+  state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
+  assert.equal(state.independentPassingVotes.length, 1);
+  assert.equal(state.readyToClose, true);
+});
+
+test("scout emits parallel closure-policy review lanes for unmet vote quorum", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-policy-scout-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, {
+    objective: "redundant review goal",
+    peerId: "planner",
+    closurePolicy: { minPassingVotes: 2 },
+  });
+
+  let suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+  let policyReviews = suggestions.filter((suggestion) => suggestion.summary.startsWith("Closure policy needs independent vote"));
+  assert.equal(policyReviews.length, 2);
+  assert.equal(new Set(policyReviews.map((suggestion) => suggestion.workKey)).size, 2);
+  const [firstWorkKey, secondWorkKey] = policyReviews.map((suggestion) => suggestion.workKey);
+
+  await appendPeerGoalEvent(root, created.id, {
+    type: "claim",
+    peerId: "reviewer-a",
+    summary: policyReviews[0].summary,
+    mode: "read",
+    lane: "review",
+    workKey: firstWorkKey,
+  });
+
+  suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+  policyReviews = suggestions.filter((suggestion) => suggestion.summary.startsWith("Closure policy needs independent vote"));
+  assert.equal(policyReviews.length, 1);
+  assert.equal(policyReviews[0].workKey, secondWorkKey);
+  assert.equal(suggestions.some((suggestion) => suggestion.workKey === firstWorkKey), false);
+});
+
+test("scout keeps closure-policy work keys stable as vote counts progress", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-policy-stable-workkey-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, {
+    objective: "stable redundant review work keys",
+    peerId: "planner",
+    closurePolicy: { minPassingVotes: 2 },
+  });
+
+  let suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+  const slotTwo = suggestions.find((suggestion) => suggestion.summary.startsWith("Closure policy needs independent vote 2/2"));
+  assert.ok(slotTwo);
+  await appendPeerGoalEvent(root, created.id, {
+    type: "claim",
+    peerId: "reviewer-b",
+    summary: slotTwo.summary,
+    mode: "read",
+    lane: "review",
+    workKey: slotTwo.workKey,
+  });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "first review pass" });
+
+  suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+  assert.equal(suggestions.some((suggestion) => suggestion.summary.startsWith("Closure policy needs independent vote 2/2")), false);
+});
+
+test("scout gives distinct work keys to different closure-policy vote requirements", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-policy-workkey-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  await createPeerGoal(root, {
+    objective: "role-specific redundant review goal",
+    peerId: "planner",
+    closurePolicy: {
+      minPassingVotes: 1,
+      requiredVotes: [
+        { role: "qa", min: 1 },
+        { role: "reviewer", min: 1 },
+      ],
+    },
+  });
+
+  const suggestions = derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root));
+  const policyReviews = suggestions.filter((suggestion) => suggestion.summary.startsWith("Closure policy needs vote"));
+  assert.equal(policyReviews.length, 2);
+  assert.equal(new Set(policyReviews.map((suggestion) => suggestion.workKey)).size, 2);
+  assert.equal(policyReviews.some((suggestion) => suggestion.workKey.includes("role=qa")), true);
+  assert.equal(policyReviews.some((suggestion) => suggestion.workKey.includes("role=reviewer")), true);
+});
+
 test("closure policy can be supplied through goal metadata", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-policy-metadata-test-"));
   t.after(async () => {

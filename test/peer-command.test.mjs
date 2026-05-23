@@ -195,6 +195,15 @@ test("peer help documents claim lane, write shorthand, and stale flags", () => {
   assert.match(help, /self-improve init\|status\|run/);
 });
 
+test("parses goal closure policy flags", () => {
+  const parsed = parsePeerCommand("goal create Ship redundant review --min-votes 2 --min-independent-votes 1");
+  assert.deepEqual(parsed.closurePolicy, { minPassingVotes: 2, minIndependentVotes: 1 });
+
+  const help = formatPeerHelp();
+  assert.match(help, /--min-votes <n>/);
+  assert.match(help, /--min-independent-votes <n>/);
+});
+
 test("parses semantic work-key duplicate controls", () => {
   const send = parsePeerCommand("send reviewer Review this --goal goal_123 --key review:abc --lane review --duplicate-policy reuse");
   assert.equal(send.workKey, "review:abc");
@@ -208,6 +217,9 @@ test("parses semantic work-key duplicate controls", () => {
   assert.equal(claim.workLane, "review");
   assert.equal(claim.duplicatePolicy, "allow-parallel");
   assert.equal(claim.staleAfterMs, 900000);
+
+  const fanout = parsePeerCommand("goal fanout goal_123 Independent review --peer reviewer-a,reviewer-b --allow-parallel --send");
+  assert.equal(fanout.duplicatePolicy, "allow-parallel");
 });
 
 test("repeated scalar flags keep last-value behavior", () => {

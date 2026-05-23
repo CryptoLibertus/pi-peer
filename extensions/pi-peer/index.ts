@@ -991,7 +991,7 @@ async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
   const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown";
   if (parsed.goalAction === "list") return formatPeerGoalList(await loadPeerGoalBoard(root));
   if (parsed.goalAction === "create") {
-    const goal = await createPeerGoal(root, { objective: parsed.objective, constraints: parsed.constraints, peerId });
+    const goal = await createPeerGoal(root, { objective: parsed.objective, constraints: parsed.constraints, peerId, closurePolicy: parsed.closurePolicy });
     return `${formatPeerGoal(goal)}\n\nNext: peers can post findings, claim work, object, vote, and hand off with /peer goal <action> ${goal.id} ...`;
   }
   if (parsed.goalAction === "show") {
@@ -1137,7 +1137,7 @@ async function handlePeerGoalFanout(parsed: any, ctx: any, runtime: any, peerId:
           claimedPaths: parsed.paths,
           claimMode: item.mode,
           workLane: item.lane,
-          duplicatePolicy: "reuse",
+          duplicatePolicy: parsed.duplicatePolicy || "reuse",
           staleAfterMs: parsed.staleAfterMs,
         });
         if (goalLink?.duplicate) {
@@ -1159,10 +1159,10 @@ async function handlePeerGoalFanout(parsed: any, ctx: any, runtime: any, peerId:
           }
           return;
         }
-        const metadata = mergePeerMetadata({ fanout: true }, parsed.paths, parsed.goalId, { workKey: goalLink?.workKey, workLane: item.lane, duplicatePolicy: "reuse" });
+        const metadata = mergePeerMetadata({ fanout: true }, parsed.paths, parsed.goalId, { workKey: goalLink?.workKey, workLane: item.lane, duplicatePolicy: parsed.duplicatePolicy || "reuse" });
         if (goalLink?.claimEvent?.id) metadata.goalClaimId = goalLink.claimEvent.id;
         const handle = await runtime.comms.sendMessage(item.peerId, {
-          prompt: withPeerGoalInstructions(buildFanoutPrompt(parsed.objective, item.peerId, item.mode, item.lane), goalLink),
+          prompt: withPeerGoalInstructions(buildFanoutPrompt(parsed.objective, item.peerId, item.mode, item.lane, parsed.duplicatePolicy), goalLink),
           intent: item.mode === "write" ? "task" : "review",
           metadata,
         });
@@ -1654,9 +1654,10 @@ function inferFanoutWorkLane(peerId: string, mode: string) {
   return mode === "write" ? "implementation" : "review";
 }
 
-function buildFanoutPrompt(objective: string, peerId: string, mode: string, lane: string) {
+function buildFanoutPrompt(objective: string, peerId: string, mode: string, lane: string, duplicatePolicy?: string) {
   const role = mode === "write" ? `${lane} implementation lane` : `read-only ${lane} lane`;
-  return `${objective}\n\nFan-out role for ${peerId}: ${role}. Stay within that lane. Report progress with peer_progress when work is long-running, and end with the required final handoff.`;
+  const parallel = duplicatePolicy === "allow-parallel" ? "\nThis is an intentional independent parallel lane/second opinion. Do not rely on sibling peer conclusions unless the prompt explicitly asks you to compare them; record your own evidence and caveats." : "";
+  return `${objective}\n\nFan-out role for ${peerId}: ${role}. Stay within that lane.${parallel} Report progress with peer_progress when work is long-running, and end with the required final handoff.`;
 }
 
 function peerResponseHandoffEvidence(response: any) {

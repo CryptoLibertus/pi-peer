@@ -158,9 +158,9 @@ export function formatPeerHelp() {
     "- `/peer hive status|stop <goal-id>` — inspect or stop an in-process hive run supervisor",
     "- `/peer self-improve init|status|run <objective> [--loops <1-100>] [--duration <5h|30m|300s>] [--peer <id[,id]>] [--dispatch] [--path <a,b>] [--eval <cmd>] [--auto-commit]` — initialize and run bounded recursive self-improvement experiments with safe defaults",
     "- `/peer goals|ls`, `/peer current [goal-id]`, `/peer scout [goal-id]`, `/peer dashboard [goal-id]`, `/peer fanout`, `/peer propose`, `/peer take|claim`, `/peer complete|done`, `/peer objection|block`, `/peer unblock`, `/peer ping`, `/peer drop`, `/peer pass|fail` — short goal-board aliases",
-    "- `/peer goal create <objective> [--constraint <a,b>]` — start a flat shared goal board",
+    "- `/peer goal create <objective> [--constraint <a,b>] [--min-votes <n>] [--min-independent-votes <n>]` — start a flat shared goal board",
     "- `/peer goal list|show [goal-id]` — inspect peer goals, active claims, blockers, proposals, and votes",
-    "- `/peer goal fanout <goal-id> <objective> --peer <id[,id]> [--path <a,b>] [--send] [--no-await]` — plan or dispatch role-specific peer lanes",
+    "- `/peer goal fanout <goal-id> <objective> --peer <id[,id]> [--path <a,b>] [--send] [--no-await] [--duplicate-policy reuse|error|allow-parallel]` — plan or dispatch role-specific peer lanes",
     "- `/peer goal scout [goal-id] [--limit <n>] [--include-closed]` — read-only proactive suggestions with exact work keys and copyable claim commands for what peers could do next",
     "- `/peer goal task|finding|proposal|handoff|note <goal-id> <summary> [--path <a,b>] [--lane research|review|implementation] [--status done]` — post goal-board events; lane-tagged proposals become scout suggestions peers can self-select",
     "- `/peer goal plan <goal-id> <objective> [--lane research,implementation,review] [--path <a,b>]` — expand an objective into dependency-gated work items and lane proposals",
@@ -264,7 +264,7 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
   if (action === "create") {
     const objective = rest.join(" ").trim();
     if (!objective) return { ...withAction, error: "/peer goal create requires <objective>" };
-    return { ...withAction, objective, constraints: listFlag(flags.constraint || flags.constraints) };
+    return { ...withAction, objective, constraints: listFlag(flags.constraint || flags.constraints), closurePolicy: closurePolicyFromFlags(flags) };
   }
   if (action === "show") return { ...withAction, goalId: rest[0] };
   if (action === "dashboard") return { ...withAction, goalId: rest[0] };
@@ -285,6 +285,7 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
       awaitResponse: !flagEnabled(flags.noAwait) && flagDefaultEnabled(flags.await, true),
       timeoutMs: positiveIntegerFlag(flags.timeoutMs),
       staleAfterMs: positiveIntegerFlag(flags.staleAfterMs),
+      duplicatePolicy: flagEnabled(flags.allowParallel) ? "allow-parallel" : stringFlag(flags.duplicatePolicy, undefined),
     };
   }
   if (action === "plan" || action === "schedule") {
@@ -349,6 +350,16 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
     return { ...withAction, goalId, summary, force: flagEnabled(flags.force) };
   }
   return { ...withAction, error: `Unknown /peer goal action '${action}'` };
+}
+
+function closurePolicyFromFlags(flags = {}) {
+  const minPassingVotes = positiveIntegerFlag(firstDefined(flags.minPassingVotes, flags.minVotes));
+  const minIndependentVotes = positiveIntegerFlag(firstDefined(flags.minIndependentVotes, flags.minIndependentPassingVotes, flags.independentVotes));
+  const closurePolicy = {
+    ...(minPassingVotes ? { minPassingVotes } : {}),
+    ...(minIndependentVotes ? { minIndependentVotes } : {}),
+  };
+  return Object.keys(closurePolicy).length ? closurePolicy : undefined;
 }
 
 function stringFlag(value, fallback) {

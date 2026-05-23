@@ -127,6 +127,8 @@ export function normalizePeerGoalClosurePolicy(input = {}) {
   const policy = {};
   const minPassingVotes = positiveInteger(source.minPassingVotes ?? source.minVotes);
   if (minPassingVotes !== undefined) policy.minPassingVotes = minPassingVotes;
+  const minIndependentVotes = positiveInteger(source.minIndependentVotes ?? source.minIndependentPassingVotes ?? source.independentVotes);
+  if (minIndependentVotes !== undefined) policy.minIndependentVotes = minIndependentVotes;
 
   const requiredVotes = normalizeClosureRequirements(source.requiredVotes || source.votes, { defaultTypes: ["vote"] });
   if (requiredVotes.length) policy.requiredVotes = requiredVotes;
@@ -164,6 +166,8 @@ function normalizeClosureRequirement(input = {}, options = {}) {
   const quality = normalizeClosureQualityRequirement(input.quality || input);
   if (quality) requirement.quality = quality;
   requirement.min = positiveInteger(input.min) || 1;
+  const minDistinctPeers = positiveInteger(input.minDistinctPeers ?? input.distinctPeers ?? input.minPeers);
+  if (minDistinctPeers !== undefined) requirement.minDistinctPeers = minDistinctPeers;
   return requirement;
 }
 

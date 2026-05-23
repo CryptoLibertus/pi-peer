@@ -242,6 +242,8 @@ export function deriveGoalState(goal, options = {}) {
   const currentVotes = currentPeerVotes(votes);
   const failedVotes = currentVotes.filter((vote) => vote.verdict === "fail");
   const passingVotes = currentVotes.filter((vote) => vote.verdict === "pass" || vote.verdict === "pass-with-risks");
+  const producerPeerIds = producerPeerIdsForIndependentReview(events);
+  const independentPassingVotes = passingVotes.filter((vote) => vote.peerId && !producerPeerIds.has(vote.peerId));
   const activeWriteClaims = activeClaims.filter((claim) => claim.mode === "write");
   const tasks = events.filter((event) => event.type === "task").map((event) => projectTaskSummary(event, events));
   const activeTasks = tasks.filter(isActiveTaskSummary);
@@ -251,7 +253,7 @@ export function deriveGoalState(goal, options = {}) {
   const blockedWorkItems = workItems.filter((item) => item.blockedBy?.length);
   const closurePolicy = normalizePeerGoalClosurePolicy(goal?.closurePolicy || goal?.metadata?.closurePolicy);
   const baseReadyToClose = goal?.status === "open" && blockingObjections.length === 0 && unresolvedTaskHandoffs.length === 0 && failedVotes.length === 0 && activeClaims.length === 0 && staleClaims.length === 0 && activeTasks.length === 0 && openProposals.length === 0 && openWorkItems.length === 0 && blockedWorkItems.length === 0 && passingVotes.length > 0;
-  const closurePolicyStatus = evaluateClosurePolicy(closurePolicy, { events, passingVotes });
+  const closurePolicyStatus = evaluateClosurePolicy(closurePolicy, { events, passingVotes, independentPassingVotes });
   return {
     ...goal,
     events,
@@ -267,6 +269,8 @@ export function deriveGoalState(goal, options = {}) {
     currentVotes,
     failedVotes,
     passingVotes,
+    independentPassingVotes,
+    producerPeerIds: [...producerPeerIds],
     tasks,
     activeTasks,
     unresolvedTaskHandoffs,
@@ -407,6 +411,11 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
         });
       }
     }
+    const policySuggestions = closurePolicyScoutSuggestions(state, goal);
+    if (policySuggestions.length) {
+      for (const suggestion of policySuggestions) push("P1", suggestion.kind || "review", suggestion.summary, suggestion);
+      continue;
+    }
     if (state.readyToClose && !state.openProposals.length && !state.openWorkItems.length && !state.blockedWorkItems.length) {
       push("P1", "close", "Goal satisfies closure gates; close it or record a final note.");
       continue;
@@ -426,6 +435,66 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
     }
   }
   return suggestions;
+}
+
+function closurePolicyScoutSuggestions(state = {}, goal = {}) {
+  const missing = state.closurePolicyStatus?.missing || [];
+  if (!missing.length) return [];
+  if (state.blockingObjections?.length || state.failedVotes?.length || state.unresolvedTaskHandoffs?.length) return [];
+  const activeBlockingClaims = (state.activeClaims || []).filter((claim) => claim.mode === "write" || !isClosurePolicyWorkKey(claim.workKey));
+  const activeBlockingTasks = (state.activeTasks || []).filter((task) => !isClosurePolicyWorkKey(task.workKey));
+  if (activeBlockingClaims.length || state.staleClaims?.length || activeBlockingTasks.length) return [];
+  if (state.openProposals?.length || state.openWorkItems?.length || state.blockedWorkItems?.length) return [];
+
+  const suggestions = [];
+  for (const item of missing) {
+    const required = Math.max(1, item.required || 1);
+    const actual = Math.max(0, item.actual || 0);
+    for (let slot = actual + 1; slot <= required; slot += 1) {
+      suggestions.push(closurePolicyScoutSuggestion(goal, item, slot, required));
+    }
+  }
+  return suggestions.filter(Boolean);
+}
+
+function isClosurePolicyWorkKey(workKey) {
+  return String(workKey || "").includes("|closure policy ");
+}
+
+function closurePolicyScoutSuggestion(goal = {}, missing = {}, slot = 1, required = 1) {
+  const requirement = missing.requirement || {};
+  const needsEvidence = missing.kind === "required-evidence";
+  const lane = normalizeLaneName(requirement.lane || (needsEvidence ? "research" : "review"));
+  const roleHint = requirement.role ? ` with role ${requirement.role}` : "";
+  const distinctHint = Number.isInteger(requirement.minDistinctPeers) || missing.kind === "min-passing-votes" || missing.kind === "min-independent-votes" ? " independent" : "";
+  const unit = needsEvidence ? "evidence" : "vote";
+  const summary = `Closure policy needs${distinctHint} ${unit} ${slot}/${required}${roleHint}: ${missing.summary}`;
+  return {
+    kind: "review",
+    summary,
+    recommendedLane: lane,
+    preferredRoles: preferredRolesForLane(lane),
+    claimMode: "read",
+    suggestedIntent: suggestedIntentForLane(lane),
+    rationale: "Unmet closure policy requirements should trigger redundant independent review/evidence before a coordinator can close the goal.",
+    workKey: derivePeerGoalWorkKey({ goalId: goal.id, lane, objective: `closure policy ${closurePolicyRequirementFingerprint(missing)} slot ${slot} of ${required}`, mode: "read" }),
+  };
+}
+
+function closurePolicyRequirementFingerprint(missing = {}) {
+  const requirement = missing.requirement || {};
+  return [
+    missing.kind || "missing",
+    missing.metric ? `metric=${missing.metric}` : "",
+    Array.isArray(requirement.types) ? requirement.types.join("+") : "",
+    Array.isArray(requirement.verdicts) ? requirement.verdicts.join("+") : "",
+    requirement.lane ? `lane=${requirement.lane}` : "",
+    requirement.role ? `role=${requirement.role}` : "",
+    requirement.peerId ? `peer=${requirement.peerId}` : "",
+    requirement.workKey ? `key=${requirement.workKey}` : "",
+    requirement.status ? `status=${requirement.status}` : "",
+    requirement.quality ? describeQualityRequirement(requirement.quality) : "",
+  ].filter(Boolean).join(" ");
 }
 
 function blockedWorkItemsNeedingTriage(state) {
@@ -522,6 +591,19 @@ function eventAlreadyResolved(goal, eventId) {
   return Array.isArray(goal?.events) && goal.events.some((event) => event.type === "resolve" && event.resolves === eventId);
 }
 
+function producerPeerIdsForIndependentReview(events = []) {
+  const producers = new Set();
+  for (const event of Array.isArray(events) ? events : []) {
+    const lane = normalizeLaneName(event.lane || event.workLane || event.metadata?.lane || event.metadata?.workLane);
+    const mode = cleanText(event.mode || event.claimMode || event.metadata?.mode || event.metadata?.claimMode).toLowerCase();
+    const role = cleanText(event.role || event.metadata?.role).toLowerCase();
+    const type = String(event.type || "").toLowerCase();
+    const implementationEvidence = lane === "implementation" || mode === "write" || role === "worker";
+    if (event.peerId && ["claim", "task", "handoff", "finding"].includes(type) && implementationEvidence) producers.add(event.peerId);
+  }
+  return producers;
+}
+
 function resolvedProposalForWorkKey(goal, workKey) {
   const normalizedWorkKey = normalizeWorkKey(workKey);
   if (!normalizedWorkKey) return undefined;
@@ -539,17 +621,41 @@ function evaluateClosurePolicy(policy, context = {}) {
     missing.push({ kind: "min-passing-votes", required: policy.minPassingVotes, actual: passingVotes.length, summary: `${policy.minPassingVotes} passing votes required (${passingVotes.length} present)` });
   }
 
+  const independentPassingVotes = Array.isArray(context.independentPassingVotes) ? context.independentPassingVotes : passingVotes.filter((vote) => vote.peerId && !producerPeerIdsForIndependentReview(events).has(vote.peerId));
+  if (policy.minIndependentVotes && independentPassingVotes.length < policy.minIndependentVotes) {
+    missing.push({ kind: "min-independent-votes", required: policy.minIndependentVotes, actual: independentPassingVotes.length, summary: `${policy.minIndependentVotes} independent passing vote(s) required (${independentPassingVotes.length} present)` });
+  }
+
   for (const requirement of policy.requiredVotes || []) {
-    const actual = events.filter((event) => event.type === "vote" && eventMatchesClosureRequirement(event, requirement, { defaultVerdicts: ["pass", "pass-with-risks"] })).length;
-    if (actual < requirement.min) missing.push({ kind: "required-votes", requirement, required: requirement.min, actual, summary: `${describeClosureRequirement(requirement, "vote")} requires ${requirement.min} matching vote(s) (${actual} present)` });
+    const matches = events.filter((event) => event.type === "vote" && eventMatchesClosureRequirement(event, requirement, { defaultVerdicts: ["pass", "pass-with-risks"] }));
+    pushClosureRequirementMissing(missing, "required-votes", requirement, matches, "vote", "vote(s)");
   }
 
   for (const requirement of policy.requiredEvidence || []) {
-    const actual = events.filter((event) => eventMatchesClosureRequirement(event, requirement)).length;
-    if (actual < requirement.min) missing.push({ kind: "required-evidence", requirement, required: requirement.min, actual, summary: `${describeClosureRequirement(requirement, "evidence")} requires ${requirement.min} matching event(s) (${actual} present)` });
+    const matches = events.filter((event) => eventMatchesClosureRequirement(event, requirement));
+    pushClosureRequirementMissing(missing, "required-evidence", requirement, matches, "evidence", "event(s)");
   }
 
   return { satisfied: missing.length === 0, missing };
+}
+
+function pushClosureRequirementMissing(missing, kind, requirement = {}, matches = [], fallback = "requirement", unit = "event(s)") {
+  const totalRequired = requirement.min || 1;
+  if (matches.length < totalRequired) {
+    missing.push({ kind, metric: "total", requirement, required: totalRequired, actual: matches.length, summary: formatClosureRequirementMissing(requirement, fallback, unit, matches.length, { distinct: false, target: totalRequired }) });
+  }
+  if (Number.isInteger(requirement.minDistinctPeers)) {
+    const distinctActual = new Set(matches.map((event) => event.peerId || event.id).filter(Boolean)).size;
+    if (distinctActual < requirement.minDistinctPeers) {
+      missing.push({ kind, metric: "distinct-peers", requirement, required: requirement.minDistinctPeers, actual: distinctActual, summary: formatClosureRequirementMissing(requirement, fallback, unit, distinctActual, { distinct: true, target: requirement.minDistinctPeers }) });
+    }
+  }
+}
+
+function formatClosureRequirementMissing(requirement = {}, fallback = "requirement", unit = "event(s)", actual = 0, options = {}) {
+  const target = options.target || requirement.min || 1;
+  const distinct = options.distinct ? " from distinct peer(s)" : "";
+  return `${describeClosureRequirement(requirement, fallback)} requires ${target} matching ${unit}${distinct} (${actual} present)`;
 }
 
 function eventMatchesClosureRequirement(event = {}, requirement = {}, options = {}) {
@@ -576,6 +682,7 @@ function describeClosureRequirement(requirement = {}, fallback = "requirement") 
   if (requirement.workKey) parts.push(`workKey=${requirement.workKey}`);
   if (requirement.status) parts.push(`status=${requirement.status}`);
   if (requirement.quality) parts.push(describeQualityRequirement(requirement.quality));
+  if (Number.isInteger(requirement.minDistinctPeers)) parts.push(`distinctPeers>=${requirement.minDistinctPeers}`);
   return parts.join(" ");
 }
 
