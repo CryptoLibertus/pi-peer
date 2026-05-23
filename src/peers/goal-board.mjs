@@ -199,6 +199,7 @@ export async function completePeerGoalTask(root, goalId, input = {}) {
       responseStatus: cleanText(input.responseStatus),
       workKey,
       ...(plainObject(input.handoffEvidence) ? { handoffEvidence: input.handoffEvidence } : {}),
+      ...(plainObject(input.subagentEvidence) ? { subagentEvidence: input.subagentEvidence } : {}),
       ...(plainObject(input.metadata) ? input.metadata : {}),
     }),
   });
@@ -238,12 +239,15 @@ export function deriveGoalState(goal, options = {}) {
     .map(projectEventSummary);
   const proposals = events.filter((event) => event.type === "proposal").map(projectEventSummary);
   const openProposals = proposals.filter((event) => !resolvedIds.has(event.id));
-  const votes = events.filter((event) => event.type === "vote").map(projectEventSummary);
-  const currentVotes = currentPeerVotes(votes);
+  const voteEvents = events.filter((event) => event.type === "vote");
+  const votes = voteEvents.map(projectEventSummary);
+  const currentVoteEvents = currentPeerVotes(voteEvents);
+  const currentVotes = currentVoteEvents.map(projectEventSummary);
   const failedVotes = currentVotes.filter((vote) => vote.verdict === "fail");
-  const passingVotes = currentVotes.filter((vote) => vote.verdict === "pass" || vote.verdict === "pass-with-risks");
+  const passingVoteEvents = currentVoteEvents.filter((vote) => vote.verdict === "pass" || vote.verdict === "pass-with-risks");
+  const passingVotes = passingVoteEvents.map(projectEventSummary);
   const producerPeerIds = producerPeerIdsForIndependentReview(events);
-  const independentPassingVotes = passingVotes.filter((vote) => vote.peerId && !producerPeerIds.has(vote.peerId));
+  const independentPassingVotes = passingVoteEvents.filter((vote) => isIndependentTopLevelVote(vote, producerPeerIds)).map(projectEventSummary);
   const activeWriteClaims = activeClaims.filter((claim) => claim.mode === "write");
   const tasks = events.filter((event) => event.type === "task").map((event) => projectTaskSummary(event, events));
   const activeTasks = tasks.filter(isActiveTaskSummary);
@@ -552,7 +556,10 @@ export function formatPeerGoal(goal) {
   const recent = state.events.slice(-10);
   if (recent.length) {
     lines.push("", "Recent events:");
-    for (const event of recent) lines.push(`- ${event.id} · ${event.type} · ${event.peerId} · ${truncate(event.summary || event.verdict || "", 120)}`);
+    for (const event of recent) {
+      const subagentSummary = formatSubagentEvidenceSummary(projectSubagentEvidence(event.metadata?.subagentEvidence));
+      lines.push(`- ${event.id} · ${event.type} · ${event.peerId} · ${truncate(event.summary || event.verdict || "", 120)}${subagentSummary ? ` · ${subagentSummary}` : ""}`);
+    }
   }
   lines.push("", state.status === "closed" ? "Ready to close: already closed" : state.readyToClose ? "Ready to close: yes" : "Ready to close: no");
   return lines.join("\n");
@@ -606,6 +613,16 @@ function producerPeerIdsForIndependentReview(events = []) {
     if (event.peerId && ["claim", "task", "handoff", "finding"].includes(type) && implementationEvidence) producers.add(event.peerId);
   }
   return producers;
+}
+
+function isIndependentTopLevelVote(vote = {}, producerPeerIds = new Set()) {
+  if (!vote.peerId || producerPeerIds.has(vote.peerId)) return false;
+  const metadata = plainObject(vote.metadata) ? vote.metadata : {};
+  if (metadata.subagent === true) return false;
+  if (metadata.parentPeerId) return false;
+  if (metadata.countsForIndependentVote === false) return false;
+  if (vote.countsForIndependentVote === false) return false;
+  return true;
 }
 
 function resolvedProposalForWorkKey(goal, workKey) {
@@ -926,6 +943,9 @@ function projectEventSummary(event) {
     dependsOn: event.dependsOn,
     mode: event.mode,
     lane: event.lane,
+    role: cleanText(event.role || event.metadata?.role),
+    parentPeerId: cleanText(event.parentPeerId || event.metadata?.parentPeerId),
+    countsForIndependentVote: event.countsForIndependentVote === false || event.metadata?.countsForIndependentVote === false ? false : undefined,
     workKey: event.workKey,
     duplicatePolicy: event.duplicatePolicy,
     resolves: event.resolves,
@@ -933,9 +953,42 @@ function projectEventSummary(event) {
     confidence: event.confidence,
     status: event.status,
     staleAfterMs: event.staleAfterMs,
+    subagentEvidence: projectSubagentEvidence(event.metadata?.subagentEvidence),
     at: event.at,
     expiresAt: event.expiresAt,
   });
+}
+
+export function projectSubagentEvidence(input = {}) {
+  if (!plainObject(input)) return undefined;
+  const runs = Array.isArray(input.runs) ? input.runs.filter(plainObject) : [];
+  const artifactRefs = qualityList(input.artifactRefs, input.artifacts, ...runs.map((run) => run.artifactRef || run.artifactRefs));
+  const statuses = runs.map((run) => cleanText(run.status).toLowerCase()).filter(Boolean);
+  const blocked = statuses.filter((status) => ["blocked", "error", "cancelled"].includes(status)).length;
+  const done = statuses.filter((status) => ["done", "complete", "completed", "ok"].includes(status)).length;
+  return stripEmpty({
+    provider: cleanText(input.provider),
+    mode: cleanText(input.mode),
+    runCount: positiveNumber(input.runCount) || runs.length || undefined,
+    childCount: positiveNumber(input.childCount) || runs.length || undefined,
+    doneCount: positiveNumber(input.doneCount) || done || undefined,
+    blockedCount: positiveNumber(input.blockedCount) || blocked || undefined,
+    artifactRefs,
+    summary: cleanText(input.summary),
+  });
+}
+
+export function formatSubagentEvidenceSummary(evidence = {}) {
+  if (!plainObject(evidence)) return "";
+  const provider = evidence.provider ? `${evidence.provider} ` : "";
+  const counts = [
+    evidence.childCount ? `${evidence.childCount} child` : "",
+    evidence.doneCount ? `${evidence.doneCount} done` : "",
+    evidence.blockedCount ? `${evidence.blockedCount} blocked` : "",
+  ].filter(Boolean).join(", ");
+  const artifacts = evidence.artifactRefs?.length ? ` · artifacts ${evidence.artifactRefs.slice(0, 3).join(", ")}` : "";
+  const summary = evidence.summary ? ` · ${truncate(evidence.summary, 80)}` : "";
+  return `${provider}subagents${counts ? ` ${counts}` : ""}${artifacts}${summary}`;
 }
 
 function projectWorkItems(events = []) {

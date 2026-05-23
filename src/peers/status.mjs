@@ -1,5 +1,5 @@
 import { derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement, normalizePeerContextBudget } from "./context-budget.mjs";
-import { deriveGoalState, derivePeerGoalWorkKey } from "./goal-board.mjs";
+import { deriveGoalState, derivePeerGoalWorkKey, formatSubagentEvidenceSummary, projectSubagentEvidence } from "./goal-board.mjs";
 import { summarizePeerIdleWatcherState, shouldSurfaceCoordinationInFooter } from "./idle-watcher.mjs";
 import { redactPeerAuditValue } from "./protocol.mjs";
 
@@ -220,6 +220,14 @@ export function formatPeerGoalDashboard(goal, options = {}) {
   if (peerRows.length) {
     lines.push("", "Peer contribution/load:");
     for (const row of peerRows.slice(0, 8)) lines.push(`- ${row.peerId}: active ${row.activeClaims}/${row.activeTasks} · stale ${row.staleClaims} · handoffs ${row.handoffs} · findings ${row.findings} · votes ${row.votes}`);
+  }
+
+  const subagentEvidenceRows = (state.events || [])
+    .map((event) => ({ event, summary: formatSubagentEvidenceSummary(projectSubagentEvidence(event.metadata?.subagentEvidence)) }))
+    .filter((row) => row.summary);
+  if (subagentEvidenceRows.length) {
+    lines.push("", "Subagent evidence:");
+    for (const row of subagentEvidenceRows.slice(-8)) lines.push(`- ${row.event.id} · ${row.event.peerId} · ${row.summary}`);
   }
 
   if (state.activeClaims.length) {
