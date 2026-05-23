@@ -531,7 +531,11 @@ export function formatPeerGoal(goal) {
   }
   if (state.unresolvedTaskHandoffs?.length) {
     lines.push("", "Unresolved peer handoffs:");
-    for (const task of state.unresolvedTaskHandoffs.slice(-8)) lines.push(`- ${task.handoffEventId || task.id} · ${task.handoffPeerId || task.peerId} · ${task.status || "unknown"} · ${task.handoffSummary || task.summary}`);
+    for (const task of state.unresolvedTaskHandoffs.slice(-8)) {
+      const handoffId = task.handoffEventId || task.id;
+      lines.push(`- ${handoffId} · ${task.handoffPeerId || task.peerId} · ${task.status || "unknown"} · ${task.handoffSummary || task.summary}`);
+      if (handoffId) lines.push(`  resolve: /peer goal resolve ${shellQuote(state.id)} ${shellQuote(handoffId)} ${shellQuote("accepted or superseded unsuccessful peer handoff")}`);
+    }
   }
   if (state.openProposals.length) {
     lines.push("", "Open proposals:");

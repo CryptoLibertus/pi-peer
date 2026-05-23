@@ -1486,6 +1486,7 @@ test("completed goal-linked tasks do not keep showing as running", async (t) => 
     assert.equal(suggestions[0].kind, "task-handoff");
     assert.equal(suggestions[0].priority, "P0");
     assert.match(suggestions[0].summary, /Resolve 1 unsuccessful peer handoff/);
+    assert.match(formatPeerGoal(state), new RegExp(`/peer goal resolve ${goalId} ${state.tasks[0].handoffEventId}`));
 
     await appendPeerGoalEvent(root, goalId, {
       type: "resolve",
