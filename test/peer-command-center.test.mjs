@@ -141,3 +141,72 @@ test("recommendations put no-goal starter after active subruns and missing setup
     "/peer do start goal \"Ship command center\"",
   ]);
 });
+
+test("currentGoalId selects the current goal over older blocked goals", () => {
+  const state = buildPeerCommandCenterState({
+    currentGoalId: "goal_current",
+    goals: [
+      {
+        id: "goal_old",
+        objective: "Old blocked work",
+        readyToClose: false,
+        currentVotes: [],
+        blockingObjections: [{ id: "obj_old" }],
+        unresolvedTaskHandoffs: [],
+        staleClaims: [],
+      },
+      {
+        id: "goal_current",
+        objective: "Current work",
+        readyToClose: false,
+        currentVotes: [],
+        blockingObjections: [],
+        unresolvedTaskHandoffs: [{ handoffEventId: "evt_current" }],
+        staleClaims: [],
+      },
+    ],
+  });
+
+  assert.equal(state.currentGoal.id, "goal_current");
+  assert.match(formatPeerCommandCenter(state), /Goals: goal_current ready no/);
+  assert.deepEqual(derivePeerCommandCenterRecommendations(state).map((item) => item.command), [
+    "/peer do resolve-handoffs",
+    "/peer do review goal_current",
+    "/peer setup",
+  ]);
+});
+
+test("failed votes recommend deterministic coordination even when current votes include a pass", () => {
+  const state = buildPeerCommandCenterState({
+    setup: { exists: true },
+    goals: [
+      {
+        id: "goal_review",
+        objective: "Address failed vote",
+        readyToClose: false,
+        currentVotes: [{ verdict: "pass" }],
+        failedVotes: [{ verdict: "fail", id: "vote_1" }],
+        blockingObjections: [],
+        unresolvedTaskHandoffs: [],
+        staleClaims: [],
+      },
+    ],
+  });
+
+  assert.deepEqual(derivePeerCommandCenterRecommendations(state).map((item) => item.command), [
+    "/peer do coordinate goal_review",
+  ]);
+});
+
+test("no-goal starter safely quotes objectives on one line", () => {
+  const state = buildPeerCommandCenterState({
+    setup: { exists: false },
+    objective: "Ship \"setup\"\nnow",
+    goals: [],
+  });
+
+  const command = derivePeerCommandCenterRecommendations(state).at(-1).command;
+
+  assert.equal(command, "/peer do start goal \"Ship \\\"setup\\\" now\"");
+  assert.equal(command.split("\n").length, 1);
+});

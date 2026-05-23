@@ -8,7 +8,7 @@ export function buildPeerCommandCenterState(input = {}) {
   const activePeers = peers.filter((peer) => peer.status === "active");
   const localPeerId = runtimeStatus.localPeerId || "unknown";
   const goals = Array.isArray(input.goals) ? input.goals : [];
-  const currentGoal = selectCurrentGoal(input.currentGoal, goals);
+  const currentGoal = selectCurrentGoal(input.currentGoal, goals, input.currentGoalId);
 
   const state = {
     enabled: runtimeStatus.enabled === true,
@@ -52,7 +52,7 @@ export function buildPeerCommandCenterState(input = {}) {
 }
 
 export function derivePeerCommandCenterRecommendations(state = {}) {
-  const goal = state.currentGoal || selectCurrentGoal(undefined, array(state.goals));
+  const goal = state.currentGoal || selectCurrentGoal(undefined, array(state.goals), state.currentGoalId);
   const commands = [];
   const control = state.control || {};
 
@@ -60,17 +60,18 @@ export function derivePeerCommandCenterRecommendations(state = {}) {
   if (goal && array(goal.staleClaims).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "coordinate stale claims"));
   if (goal && array(goal.unresolvedTaskHandoffs).length) commands.push(recommend("/peer do resolve-handoffs", "resolve peer handoffs"));
   if (goal && array(goal.blockingObjections).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "clear blockers"));
+  if (goal && array(goal.failedVotes).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "resolve failed votes"));
   if (goal && shouldRecommendReview(goal)) commands.push(recommend(`/peer do review ${goal.id}`, "collect current review"));
   if (array(control.activeSubruns).length) commands.push(recommend("/peer subrun status", "check active subruns"));
   if (state.setup?.exists === false) commands.push(recommend("/peer setup", "configure peer command center"));
-  if (!goal) commands.push(recommend(`/peer do start goal "${state.objective || "new peer goal"}"`, "start a peer goal"));
+  if (!goal) commands.push(recommend(`/peer do start goal ${shellQuote(state.objective || "new peer goal")}`, "start a peer goal"));
 
   return dedupeRecommendations(commands);
 }
 
 export function formatPeerCommandCenter(state = {}) {
   const recommendations = dedupeRecommendations(array(state.recommendations).length ? state.recommendations : derivePeerCommandCenterRecommendations(state));
-  const currentGoal = state.currentGoal || selectCurrentGoal(undefined, array(state.goals));
+  const currentGoal = state.currentGoal || selectCurrentGoal(undefined, array(state.goals), state.currentGoalId);
   const lines = [
     "Peer command center",
     `Local: ${state.local?.peerId || "unknown"} · role ${state.local?.role || "unknown"} · domain ${state.local?.domain || "unknown"} · subagents ${state.local?.canSpawnSubagents ? "yes" : "no"}`,
@@ -128,10 +129,19 @@ function groupActivePeers(activePeers) {
     }));
 }
 
-function selectCurrentGoal(currentGoal, goals) {
+function selectCurrentGoal(currentGoal, goals, currentGoalId) {
   if (currentGoal) return currentGoal;
   const openGoals = array(goals).filter((goal) => goal?.status !== "closed");
+  if (currentGoalId) {
+    const byId = openGoals.find((goal) => goal?.id === currentGoalId);
+    if (byId) return byId;
+  }
   return openGoals.find((goal) => array(goal.blockingObjections).length || array(goal.unresolvedTaskHandoffs).length) || openGoals[0];
+}
+
+function shellQuote(value) {
+  const safe = String(value ?? "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim() || "new peer goal";
+  return `"${safe.replace(/["\\$`]/g, "\\$&")}"`;
 }
 
 function normalizeOrgData(orgState = {}) {
