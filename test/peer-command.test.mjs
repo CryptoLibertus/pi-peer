@@ -32,6 +32,92 @@ test("parses peer context command", () => {
   assert.equal(parsed.subcommand, "context");
 });
 
+test("parses peer command center facade", () => {
+  const parsed = parsePeerCommand("center");
+  assert.equal(parsed.subcommand, "center");
+});
+
+test("parses wizard-style peer setup facade", () => {
+  const show = parsePeerCommand("setup");
+  assert.equal(show.subcommand, "setup");
+  assert.equal(show.setupAction, "show");
+  assert.equal(show.setupWizard, true);
+
+  const coordinateChoice = parsePeerCommand("setup 1");
+  assert.equal(coordinateChoice.setupAction, "choice");
+  assert.equal(coordinateChoice.setupChoice, "coordinate");
+
+  const subagentsChoice = parsePeerCommand("setup subagents");
+  assert.equal(subagentsChoice.setupAction, "choice");
+  assert.equal(subagentsChoice.setupChoice, "subagents");
+
+  const reset = parsePeerCommand("setup reset");
+  assert.equal(reset.setupAction, "reset");
+
+  const id = parsePeerCommand("setup id planner-a");
+  assert.equal(id.setupAction, "id");
+  assert.equal(id.localPeerId, "planner-a");
+});
+
+test("preserves legacy setup flags outside the wizard facade", () => {
+  const parsed = parsePeerCommand("setup --id planner-a --role planner --domain protocol --subagents");
+  assert.equal(parsed.subcommand, "setup");
+  assert.equal(parsed.localPeerId, "planner-a");
+  assert.equal(parsed.role, "planner");
+  assert.equal(parsed.domain, "protocol");
+  assert.equal(parsed.setupWizard, false);
+  assert.deepEqual(parsed.capabilities.orchestration, {
+    subagents: true,
+    provider: "pi-subagents",
+    modes: ["single", "parallel", "chain", "async"],
+    maxDepth: 1,
+    maxConcurrency: 4,
+    worktree: true,
+    intercom: false,
+  });
+});
+
+test("parses peer do facade intents", () => {
+  const status = parsePeerCommand("do status");
+  assert.equal(status.subcommand, "do");
+  assert.equal(status.intent, "status");
+  assert.deepEqual(status.intentArgs, []);
+
+  const start = parsePeerCommand("do start goal Ship simpler peer setup --constraint safe");
+  assert.equal(start.intent, "start");
+  assert.deepEqual(start.intentArgs, ["goal", "Ship", "simpler", "peer", "setup"]);
+  assert.deepEqual(start.constraints, ["safe"]);
+
+  const review = parsePeerCommand("do review goal_123");
+  assert.equal(review.intent, "review");
+  assert.deepEqual(review.intentArgs, ["goal_123"]);
+});
+
+test("parses peer subrun facade actions", () => {
+  const status = parsePeerCommand("subrun status --goal goal_123");
+  assert.equal(status.subcommand, "subrun");
+  assert.equal(status.subrunAction, "status");
+  assert.equal(status.goalId, "goal_123");
+
+  const start = parsePeerCommand("subrun start Review implementation plan --goal goal_123 --mode parallel --provider pi-subagents");
+  assert.equal(start.subrunAction, "start");
+  assert.equal(start.summary, "Review implementation plan");
+  assert.equal(start.goalId, "goal_123");
+  assert.equal(start.mode, "parallel");
+  assert.equal(start.provider, "pi-subagents");
+
+  const progress = parsePeerCommand("subrun progress sub_123 Found one issue --artifact artifact:review");
+  assert.equal(progress.subrunAction, "progress");
+  assert.equal(progress.subrunId, "sub_123");
+  assert.equal(progress.summary, "Found one issue");
+  assert.deepEqual(progress.artifactRefs, ["artifact:review"]);
+
+  const complete = parsePeerCommand("subrun complete sub_123 Done --done 2 --blocked 1");
+  assert.equal(complete.subrunAction, "complete");
+  assert.equal(complete.doneCount, 2);
+  assert.equal(complete.blockedCount, 1);
+});
+
 test("parses hive and swarm start as safe self-selection goal starters", () => {
   const hive = parsePeerCommand("hive start Ship autonomous workers --constraint no-overlap --path src --path test --lane research,review --proposal \"Validate handoff evidence\"");
   assert.equal(hive.subcommand, "hive");
@@ -252,6 +338,10 @@ test("peer help documents claim lane, write shorthand, and stale flags", () => {
   assert.match(help, /\/peer org role set/);
   assert.match(help, /--domain/);
   assert.match(help, /--subagents/);
+  assert.match(help, /\/peer setup/);
+  assert.match(help, /\/peer center/);
+  assert.match(help, /\/peer do <intent>/);
+  assert.match(help, /\/peer subrun/);
 });
 
 test("parses goal closure policy flags", () => {

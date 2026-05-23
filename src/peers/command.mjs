@@ -1,6 +1,6 @@
 import { flagEnabled, parseFlags, splitCommandLine } from "../utils.mjs";
 
-export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "init", "setup", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve"]);
+export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "center", "init", "setup", "do", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve"]);
 
 const PEER_GOAL_ALIASES = Object.freeze({
   goals: ["list"],
@@ -84,6 +84,12 @@ export function parsePeerCommand(rawArgs = "") {
   if (subcommand === "hive" || subcommand === "swarm") {
     return parsePeerHiveCommand(parsed, flags, positionals);
   }
+  if (subcommand === "do") {
+    return parsePeerDoCommand(parsed, flags, positionals);
+  }
+  if (subcommand === "subrun") {
+    return parsePeerSubrunCommand(parsed, flags, positionals);
+  }
   if (subcommand === "self-improve" || subcommand === "improve") {
     return parsePeerSelfImproveCommand(parsed, flags, positionals);
   }
@@ -116,30 +122,11 @@ export function parsePeerCommand(rawArgs = "") {
     if (messageIds.length === 0) return { ...parsed, error: "/peer await requires <message-id> [message-id...]" };
     return { ...parsed, messageIds, timeoutMs: positiveIntegerFlag(flags.timeoutMs) };
   }
-  if (subcommand === "init" || subcommand === "setup") {
-    const localPeerId = stringFlag(flags.id || flags.localPeerId, undefined);
-    const role = stringFlag(flags.role, undefined);
-    const domain = stringFlag(flags.domain, undefined);
-    const persona = stringFlag(flags.persona, undefined);
-    const trust = stringFlag(flags.trust, undefined);
-    const capabilities = capabilitiesFromFlags(flags);
-    const peer = stringFlag(flags.peer, undefined);
-    const peerRole = stringFlag(flags.peerRole, undefined);
-    const peerDomain = stringFlag(flags.peerDomain, undefined);
-    const peerTrust = stringFlag(flags.peerTrust, undefined);
-    const peerCapabilities = capabilitiesFromFlags({ intents: flags.peerIntents });
-    const seedPeers = peer ? { [peer]: { ...(peerRole ? { role: peerRole } : {}), ...(peerDomain ? { domain: peerDomain } : {}), ...(peerTrust ? { trust: peerTrust } : {}), ...(Object.keys(peerCapabilities).length ? { capabilities: peerCapabilities } : {}) } } : undefined;
-    return stripUndefined({
-      ...parsed,
-      localPeerId,
-      role,
-      domain,
-      persona,
-      trust,
-      ...(Object.keys(capabilities).length ? { capabilities } : {}),
-      seedPeers,
-      enabled: !flagEnabled(flags.disabled),
-    });
+  if (subcommand === "init") {
+    return parsePeerInitCommand(parsed, flags);
+  }
+  if (subcommand === "setup") {
+    return parsePeerSetupCommand(parsed, flags, positionals);
   }
   return parsed;
 }
@@ -148,6 +135,10 @@ export function formatPeerHelp() {
   return [
     "# Peer Commands",
     "",
+    "- `/peer setup` — open the wizard; use `/peer setup 1`, `/peer setup subagents`, `/peer setup reset`, or legacy setup flags",
+    "- `/peer center` — open the peer command center facade",
+    "- `/peer do <intent> [args...] [--constraint <a,b>] [--path <a,b>] [--lane <a,b>]` — run a high-level peer workflow intent",
+    "- `/peer subrun status|start|progress|complete|cancel ...` — coordinate subagent run status and evidence",
     "- `/peer status` — show local peer runtime, endpoint/auth, discovered peers, pending messages, context pressure, and warnings",
     "- `/peer context` — show local context usage/pressure when Pi exposes it to extensions",
     "- `/peer list` — list configured and discovered peers",
@@ -294,6 +285,94 @@ function parsePeerOrgCommand(parsed, flags, positionals) {
     domain,
     canSpawnSubagents: flags.subagents === undefined ? undefined : flagEnabled(flags.subagents),
   };
+}
+
+function parsePeerInitCommand(parsed, flags) {
+  const localPeerId = stringFlag(flags.id || flags.localPeerId, undefined);
+  const role = stringFlag(flags.role, undefined);
+  const domain = stringFlag(flags.domain, undefined);
+  const persona = stringFlag(flags.persona, undefined);
+  const trust = stringFlag(flags.trust, undefined);
+  const capabilities = capabilitiesFromFlags(flags);
+  const peer = stringFlag(flags.peer, undefined);
+  const peerRole = stringFlag(flags.peerRole, undefined);
+  const peerDomain = stringFlag(flags.peerDomain, undefined);
+  const peerTrust = stringFlag(flags.peerTrust, undefined);
+  const peerCapabilities = capabilitiesFromFlags({ intents: flags.peerIntents });
+  const seedPeers = peer ? { [peer]: { ...(peerRole ? { role: peerRole } : {}), ...(peerDomain ? { domain: peerDomain } : {}), ...(peerTrust ? { trust: peerTrust } : {}), ...(Object.keys(peerCapabilities).length ? { capabilities: peerCapabilities } : {}) } } : undefined;
+  return stripUndefined({
+    ...parsed,
+    localPeerId,
+    role,
+    domain,
+    persona,
+    trust,
+    ...(Object.keys(capabilities).length ? { capabilities } : {}),
+    seedPeers,
+    enabled: !flagEnabled(flags.disabled),
+  });
+}
+
+function parsePeerSetupCommand(parsed, flags, positionals) {
+  if (hasLegacySetupFlags(flags)) return { ...parsePeerInitCommand(parsed, flags), setupWizard: false };
+  const action = positionals[0] || "show";
+  if (action === "show") return { ...parsed, setupAction: "show", setupWizard: true };
+  if (action === "reset" || action === "done") return { ...parsed, setupAction: action, setupWizard: true };
+  if (action === "id") {
+    const localPeerId = positionals[1];
+    if (!localPeerId) return { ...parsed, setupAction: "id", setupWizard: true, error: "/peer setup id requires <peer-id>" };
+    return { ...parsed, setupAction: "id", setupWizard: true, localPeerId };
+  }
+  const setupChoice = setupChoiceFromToken(action);
+  if (!setupChoice) return { ...parsed, setupAction: action, setupWizard: true, error: `Unknown /peer setup choice '${action}'` };
+  return { ...parsed, setupAction: "choice", setupWizard: true, setupChoice };
+}
+
+function parsePeerDoCommand(parsed, flags, positionals) {
+  const intent = positionals[0] || "status";
+  const validIntents = ["setup", "status", "start", "coordinate", "review", "research", "work", "resolve-handoffs", "subagents"];
+  const withIntent = { ...parsed, intent, intentArgs: positionals.slice(1) };
+  if (!validIntents.includes(intent)) return { ...withIntent, error: `Unknown /peer do intent '${intent}'` };
+  return {
+    ...withIntent,
+    constraints: listFlag(flags.constraint || flags.constraints),
+    paths: listFlag(flags.path || flags.paths),
+    lanes: listFlag(flags.lane || flags.lanes),
+  };
+}
+
+function parsePeerSubrunCommand(parsed, flags, positionals) {
+  const action = positionals[0] || "status";
+  const rest = positionals.slice(1);
+  const withAction = { ...parsed, subrunAction: action };
+  if (!["status", "start", "progress", "complete", "cancel"].includes(action)) return { ...withAction, error: `Unknown /peer subrun action '${action}'` };
+  const common = {
+    ...withAction,
+    goalId: stringFlag(flags.goal || flags.goalId, undefined),
+    mode: stringFlag(flags.mode, undefined),
+    provider: stringFlag(flags.provider, undefined),
+    workKey: stringFlag(flags.workKey || flags.key, undefined),
+    artifactRefs: listFlag(flags.artifact || flags.artifacts || flags.artifactRef || flags.artifactRefs),
+    doneCount: positiveIntegerFlag(flags.done || flags.doneCount),
+    blockedCount: positiveIntegerFlag(flags.blocked || flags.blockedCount),
+    childCount: positiveIntegerFlag(flags.child || flags.children || flags.childCount),
+  };
+  if (action === "status") return stripUndefined(common);
+  if (action === "start") {
+    const summary = rest.join(" ").trim();
+    if (!summary) return { ...common, error: "/peer subrun start requires <summary>" };
+    return stripUndefined({ ...common, summary });
+  }
+  const subrunId = rest[0];
+  const summary = rest.slice(1).join(" ").trim();
+  if (!subrunId) return { ...common, error: `/peer subrun ${action} requires <subrun-id>${action === "cancel" ? "" : " <summary>"}` };
+  if ((action === "progress" || action === "complete") && !summary) return { ...common, subrunId, error: `/peer subrun ${action} requires <subrun-id> <summary>` };
+  return stripUndefined({
+    ...common,
+    subrunId,
+    summary: summary || undefined,
+    reason: action === "cancel" ? stringFlag(flags.reason, summary || undefined) : undefined,
+  });
 }
 
 function parsePeerGoalCommand(parsed, flags, positionals) {
@@ -479,6 +558,66 @@ function claimedPathsFlag(value) {
 
 function stripUndefined(object) {
   return Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
+}
+
+function hasLegacySetupFlags(flags = {}) {
+  const legacyFlags = [
+    "id",
+    "localPeerId",
+    "role",
+    "domain",
+    "persona",
+    "trust",
+    "peer",
+    "peerRole",
+    "peerDomain",
+    "peerTrust",
+    "peerIntents",
+    "disabled",
+    "intents",
+    "write",
+    "writeAccess",
+    "readOnly",
+    "subagents",
+    "subagentProvider",
+    "subagentsProvider",
+    "subagentMode",
+    "subagentModes",
+    "subagentMaxDepth",
+    "maxSubagentDepth",
+    "subagentConcurrency",
+    "maxSubagentConcurrency",
+    "noSubagentWorktree",
+    "subagentIntercom",
+  ];
+  return legacyFlags.some((flag) => flags[flag] !== undefined);
+}
+
+function setupChoiceFromToken(token) {
+  const choices = {
+    "1": "coordinate",
+    coordinator: "coordinate",
+    planner: "coordinate",
+    coordinate: "coordinate",
+    "2": "implement",
+    implement: "implement",
+    implementation: "implement",
+    code: "implement",
+    worker: "implement",
+    "3": "review",
+    review: "review",
+    reviewer: "review",
+    "4": "research",
+    research: "research",
+    researcher: "research",
+    "5": "subagents",
+    subagent: "subagents",
+    subagents: "subagents",
+    "6": "status",
+    status: "status",
+    inspect: "status",
+  };
+  return choices[token];
 }
 
 function capabilitiesFromFlags(flags = {}) {
