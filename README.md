@@ -23,7 +23,7 @@ Without coordination, parallel agents step on files, duplicate the same task, lo
 - **Write collision control:** write claims conflict on overlapping paths before work starts.
 - **Semantic dedupe:** read/review/research lanes use stable work keys so the same review is not dispatched twice.
 - **Long-running task tracking:** goal-linked peer sends create tasks, claims, heartbeats, handoffs, and releases.
-- **Durable control-plane ledger:** peer task and hive supervisor lifecycle events are appended to `.pi/peer-control-ledger.jsonl` so restarted coordinators can reconcile disconnected work instead of trusting process memory alone.
+- **Durable control-plane ledger:** peer task, hive supervisor, and private subagent run summaries are appended to `.pi/peer-control-ledger.jsonl` so restarted coordinators can reconcile disconnected work instead of trusting process memory alone.
 - **Compact peer context views:** `peer_get` and `/peer get` default to bounded summaries for goals, tasks, messages, runtime, and audit data, with `view: full` / `--full` / `--raw` for exact JSON when needed.
 - **Flat goal-board coordination:** peers can propose, claim, post findings, object, resolve, vote, and close without a central planner micromanaging every step.
 - **Closed-loop swarm experiments:** `/peer hive run` creates a bounded supervisor loop that repeatedly scouts the board, dispatches read-only lanes, and stops at a deadline.

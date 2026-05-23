@@ -20,6 +20,8 @@ test("initPeerOrg creates the org charter and never overwrites it", async (t) =>
 
     assert.equal(first.created, true);
     assert.equal(first.existed, false);
+    assert.equal(first.path, join(root, ".pi/peer-org.json"));
+    assert.equal(first.relativePath, ".pi/peer-org.json");
     const original = await readFile(first.path, "utf8");
 
     const second = await initPeerOrg(root, {
@@ -28,6 +30,8 @@ test("initPeerOrg creates the org charter and never overwrites it", async (t) =>
 
     assert.equal(second.created, false);
     assert.equal(second.existed, true);
+    assert.equal(second.path, join(root, ".pi/peer-org.json"));
+    assert.equal(second.relativePath, ".pi/peer-org.json");
     assert.equal(await readFile(first.path, "utf8"), original);
     assert.equal(second.org.peers["worker-a"].role, "implementer");
     assert.equal(second.org.peers["worker-a"].domain, "protocol");

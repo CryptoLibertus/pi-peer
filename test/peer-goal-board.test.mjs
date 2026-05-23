@@ -578,24 +578,29 @@ test("subagent evidence renders while child votes do not satisfy independent vot
   assert.equal(state.readyToClose, true);
 });
 
-test("top-level child vote markers and count overrides cannot satisfy independent votes", () => {
-  const state = deriveGoalState({
-    id: "goal_top_level_child_votes",
+test("top-level child vote markers and count overrides persist without satisfying independent votes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-top-level-child-votes-test-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const created = await createPeerGoal(root, {
     objective: "top-level child vote markers",
-    status: "open",
+    peerId: "planner",
     closurePolicy: { minIndependentVotes: 1 },
-    events: [
-      { id: "v_child_parent", type: "vote", at: "2026-01-01T00:00:00.000Z", peerId: "child-a", verdict: "pass", parentPeerId: "worker-a" },
-      { id: "v_child_flag", type: "vote", at: "2026-01-01T00:00:01.000Z", peerId: "child-b", verdict: "pass", subagent: true },
-      { id: "v_count_false", type: "vote", at: "2026-01-01T00:00:02.000Z", peerId: "reviewer-b", verdict: "pass", countsForIndependentVote: false },
-    ],
   });
 
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "child-a", verdict: "pass", parentPeerId: "worker-a" });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "child-b", verdict: "pass", subagent: true });
+  await appendPeerGoalEvent(root, created.id, { type: "vote", peerId: "reviewer-b", verdict: "pass", role: "reviewer", countsForIndependentVote: false });
+
+  const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[created.id]);
   assert.equal(state.passingVotes.length, 3);
   assert.equal(state.independentPassingVotes.length, 0);
   assert.equal(state.readyToClose, false);
-  assert.equal(state.votes.find((vote) => vote.id === "v_child_parent").parentPeerId, "worker-a");
-  assert.equal(state.votes.find((vote) => vote.id === "v_count_false").countsForIndependentVote, false);
+  assert.equal(state.votes.find((vote) => vote.peerId === "child-a").parentPeerId, "worker-a");
+  assert.equal(state.votes.find((vote) => vote.peerId === "child-b").subagent, true);
+  assert.equal(state.votes.find((vote) => vote.peerId === "reviewer-b").role, "reviewer");
+  assert.equal(state.votes.find((vote) => vote.peerId === "reviewer-b").countsForIndependentVote, false);
 });
 
 test("projectSubagentEvidence accepts completedCount as done count alias", () => {
