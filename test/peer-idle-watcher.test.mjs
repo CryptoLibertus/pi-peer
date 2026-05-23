@@ -291,6 +291,36 @@ test("derivePeerIdleActivationOfferPlan routes one protocol offer per work key t
   }), []);
 });
 
+test("derivePeerIdleActivationOfferPlan does not protocol-push handoff cleanup", () => {
+  const board = {
+    goals: {
+      goal_handoff: {
+        id: "goal_handoff",
+        objective: "Resolve failed peer handoff",
+        status: "open",
+        events: [
+          { id: "evt_task", type: "task", at: "2026-01-01T00:00:00.000Z", peerId: "planner", summary: "Review failed task", taskId: "msg_1", status: "running" },
+          { id: "evt_handoff", type: "handoff", at: "2026-01-01T00:00:01.000Z", peerId: "worker", summary: "Closed without response", taskId: "msg_1", status: "blocked" },
+        ],
+      },
+    },
+  };
+
+  const localActivation = derivePeerIdleActivation(board, {
+    localPeerId: "planner",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.equal(localActivation.kind, "task-handoff");
+
+  const plan = derivePeerIdleActivationOfferPlan(board, [{ peerId: "worker2", status: "active", compatible: true, role: "worker" }], {
+    localPeerId: "planner",
+    nowMs: 1_000,
+    config: { cooldownMs: 10_000 },
+  });
+  assert.deepEqual(plan, []);
+});
+
 test("derivePeerIdleActivation lets urgent blockers bypass same-goal cooldowns", () => {
   const state = { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() };
   const first = derivePeerIdleActivation(openGoalBoard, {

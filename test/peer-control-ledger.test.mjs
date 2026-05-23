@@ -9,8 +9,10 @@ import {
   controlLedgerPath,
   derivePeerControlState,
   loadPeerControlLedger,
+  reconcileDisconnectedPeerGoalTasks,
   reconcilePeerControlLedger,
 } from "../src/peers/control-ledger.mjs";
+import { beginPeerGoalTask, createPeerGoal, deriveGoalState, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../src/peers/goal-board.mjs";
 
 async function withRoot(t, fn) {
   const root = await mkdtemp(join(tmpdir(), "pi-peer-control-ledger-"));
@@ -42,6 +44,51 @@ test("control ledger reconciler marks missing live active tasks disconnected", a
     assert.equal(result.records[0].status, "disconnected");
     assert.equal(result.state.disconnectedTasks.length, 1);
     assert.equal(result.state.activeTasks.length, 0);
+  });
+});
+
+test("disconnected control tasks are mirrored to goal board handoffs", async (t) => {
+  await withRoot(t, async (root) => {
+    const goal = await createPeerGoal(root, { id: "goal_1", objective: "debug ghost peer task", peerId: "planner" });
+    const link = await beginPeerGoalTask(root, goal.id, {
+      targetPeerId: "worker",
+      requesterPeerId: "planner",
+      prompt: "review",
+      workKey: "review:1",
+      claimMode: "read",
+      lane: "review",
+    });
+    await recordPeerGoalTaskDispatch(root, goal.id, {
+      requesterPeerId: "planner",
+      targetPeerId: "worker",
+      prompt: "review",
+      messageId: "msg_lost",
+      conversationId: "conv_1",
+      workKey: "review:1",
+      lane: "review",
+      claimEventId: link.claimEvent.id,
+    });
+    await appendPeerControlRecord(root, {
+      kind: "task",
+      action: "dispatched",
+      messageId: "msg_lost",
+      conversationId: "conv_1",
+      goalId: goal.id,
+      peerId: "worker",
+      workKey: "review:1",
+      metadata: { claimEventId: link.claimEvent.id, lane: "review" },
+    });
+
+    const result = await reconcilePeerControlLedger(root, { messages: [] });
+    const synced = await reconcileDisconnectedPeerGoalTasks(root, result.state.disconnectedTasks);
+
+    assert.equal(synced.length, 1);
+    const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goal.id]);
+    assert.equal(state.activeTasks.length, 0);
+    assert.equal(state.activeClaims.length, 0);
+    assert.equal(state.unresolvedTaskHandoffs.length, 1);
+    assert.equal(state.unresolvedTaskHandoffs[0].taskId, "msg_lost");
+    assert.equal(state.unresolvedTaskHandoffs[0].status, "blocked");
   });
 });
 

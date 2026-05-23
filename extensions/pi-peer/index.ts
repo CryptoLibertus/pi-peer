@@ -23,12 +23,13 @@ import {
 } from "../../src/peers/tool-results.mjs";
 import { PEER_TOOL_NAMES, PEER_TOOL_PROMPT_GUIDELINES } from "../../src/peers/guidance.mjs";
 import { buildPeerIdleActivationPrompt, createPeerIdleWatcher, derivePeerIdleActivationOfferPlan, markPeerIdleActivation } from "../../src/peers/idle-watcher.mjs";
-import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcilePeerControlLedger } from "../../src/peers/control-ledger.mjs";
+import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcileDisconnectedPeerGoalTasks, reconcilePeerControlLedger } from "../../src/peers/control-ledger.mjs";
 import { formatHiveRunPeerHealthPauseSummary, summarizeHiveRunPeerHealth } from "../../src/peers/hive-supervisor.mjs";
 import { formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
 
 const MESSAGE_TYPE = "pi-peer";
+const DEFAULT_PEER_IDLE_OFFER_TIMEOUT_MS = 2 * 60 * 1000;
 const runtimeByCwd = new Map<string, Promise<any>>();
 const hiveRunsByKey = new Map<string, any>();
 
@@ -804,7 +805,11 @@ function activeHiveRunKeysForRoot(root: string) {
 
 async function reconcilePeerControlState(root: string, runtime: any) {
   const messages = runtime?.comms?.listMessages ? await runtime.comms.listMessages().catch(() => []) : [];
-  return reconcilePeerControlLedger(root, { messages, activeHiveRunKeys: activeHiveRunKeysForRoot(root) }).catch(() => undefined);
+  const result = await reconcilePeerControlLedger(root, { messages, activeHiveRunKeys: activeHiveRunKeysForRoot(root) }).catch(() => undefined);
+  if (result?.state?.disconnectedTasks?.length) {
+    await reconcileDisconnectedPeerGoalTasks(root, result.state.disconnectedTasks).catch(() => undefined);
+  }
+  return result;
 }
 
 async function resumePersistedHiveRuns(root: string, runtime: any) {
@@ -1395,7 +1400,8 @@ async function dispatchPeerIdleProtocolOffer(root: string, runtime: any, offer: 
       metadata,
     });
     await recordPeerSendGoalDispatch(root, runtime, goalLink, handle, { targetPeerId: offer.peerId, prompt: activation.summary, claimedPaths: [] });
-    trackPeerSendGoalCompletion(root, goalLink, handle, { targetPeerId: offer.peerId, prompt: activation.summary, claimedPaths: [] });
+    const idleOfferTimeoutMs = Math.max(30_000, Math.min(Number(runtime.__peerIdleWatcher?.config?.offerTimeoutMs) || DEFAULT_PEER_IDLE_OFFER_TIMEOUT_MS, 15 * 60_000));
+    trackPeerSendGoalCompletion(root, goalLink, handle, { targetPeerId: offer.peerId, prompt: activation.summary, claimedPaths: [], taskTimeoutMs: idleOfferTimeoutMs });
     markPeerIdleActivation(offer.state, activation, Date.now());
     return { peerId: offer.peerId, messageId: handle.messageId, conversationId: handle.conversationId, workKey: activation.workKey };
   } catch (error: any) {
@@ -1577,6 +1583,7 @@ function trackPeerSendGoalCompletion(root: string | undefined, goalLink: any, ha
   if (!goalLink?.goalId || !handle?.response || typeof handle.response.then !== "function") return;
   const boardRoot = root || process.cwd();
   const heartbeatTimer = startPeerGoalClaimHeartbeat(boardRoot, goalLink, handle, options);
+  const timeoutTimer = startPeerGoalTaskTimeout(handle, options);
   void handle.response.then(async (response: any) => {
     await appendPeerControlRecord(boardRoot, {
       kind: "task",
@@ -1620,7 +1627,18 @@ function trackPeerSendGoalCompletion(root: string | undefined, goalLink: any, ha
     }
   }).catch(() => {}).finally(() => {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (timeoutTimer) clearTimeout(timeoutTimer);
   });
+}
+
+function startPeerGoalTaskTimeout(handle: any, options: any = {}) {
+  const taskTimeoutMs = Number(options.taskTimeoutMs);
+  if (!Number.isFinite(taskTimeoutMs) || taskTimeoutMs <= 0 || typeof handle?.cancel !== "function") return undefined;
+  const timer = setTimeout(() => {
+    void handle.cancel(`Timed out waiting for peer task after ${Math.round(taskTimeoutMs)}ms`).catch?.(() => {});
+  }, taskTimeoutMs);
+  timer.unref?.();
+  return timer;
 }
 
 function startPeerGoalClaimHeartbeat(root: string, goalLink: any, handle: any, options: any) {

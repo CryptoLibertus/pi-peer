@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve as resolvePath } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { completePeerGoalTask, deriveGoalState, loadPeerGoalBoard } from "./goal-board.mjs";
 
 export const PEER_CONTROL_LEDGER_RELATIVE_PATH = ".pi/peer-control-ledger.jsonl";
 
@@ -114,7 +115,7 @@ export async function reconcilePeerControlLedger(root, input = {}) {
       workKey: task.workKey,
       peerId: task.peerId,
       summary: "Reconciled active task without live local pending message",
-      metadata: { reconciled: true, previousStatus: task.status },
+      metadata: { ...(plainObject(task.metadata) ? task.metadata : {}), reconciled: true, previousStatus: task.status },
     }));
   }
   for (const run of state.activeHiveRuns) {
@@ -130,6 +131,62 @@ export async function reconcilePeerControlLedger(root, input = {}) {
   }
   const nextLoaded = records.length ? await loadPeerControlLedger(root) : loaded;
   return { records, state: derivePeerControlState(nextLoaded.records, { nowMs: input.nowMs }), warnings: loaded.warnings };
+}
+
+export async function reconcileDisconnectedPeerGoalTasks(root, tasksOrRecords = []) {
+  const tasks = normalizeDisconnectedGoalTaskInputs(tasksOrRecords);
+  if (!tasks.length) return [];
+  const board = await loadPeerGoalBoard(root).catch(() => undefined);
+  const synced = [];
+  for (const task of tasks) {
+    if (!task.goalId || !task.messageId) continue;
+    const goal = board?.goals?.[task.goalId];
+    if (!goal) continue;
+    const state = deriveGoalState(goal);
+    const activeTask = state.activeTasks?.find((item) => item.taskId === task.messageId);
+    if (!activeTask) continue;
+    const releasableClaims = [...(state.activeClaims || []), ...(state.staleClaims || []), ...(state.expiredClaims || [])];
+    const claimEventId = task.claimEventId && releasableClaims.some((claim) => claim.id === task.claimEventId) ? task.claimEventId : undefined;
+    const result = await completePeerGoalTask(root, task.goalId, {
+      targetPeerId: task.peerId,
+      messageId: task.messageId,
+      conversationId: task.conversationId,
+      claimEventId,
+      status: "blocked",
+      responseStatus: "DISCONNECTED",
+      summary: task.summary || `DISCONNECTED: peer message ${task.messageId} was recovered without a live pending transport`,
+      releaseSummary: `Peer message ${task.messageId} disconnected/recovered without live pending transport`,
+      workKey: task.workKey,
+      lane: task.lane,
+      metadata: { disconnected: true, reconciled: true, controlRecordId: task.recordId, previousStatus: task.previousStatus },
+    });
+    synced.push({ messageId: task.messageId, goalId: task.goalId, handoffEventId: result.handoffEvent?.id, releaseEventId: result.releaseEvent?.id });
+  }
+  return synced;
+}
+
+function normalizeDisconnectedGoalTaskInputs(inputs = []) {
+  return (Array.isArray(inputs) ? inputs : [])
+    .map((input) => {
+      if (!plainObject(input)) return undefined;
+      const record = input.kind ? normalizePeerControlRecord(input) : input;
+      const metadata = plainObject(record.metadata) ? record.metadata : {};
+      const status = cleanText(record.status || statusForTaskAction(record.action));
+      if ((record.kind && record.kind !== "task") || status !== "disconnected") return undefined;
+      return stripEmpty({
+        recordId: record.id,
+        goalId: cleanText(record.goalId || metadata.goalId),
+        messageId: cleanText(record.messageId || record.taskId || metadata.messageId),
+        conversationId: cleanText(record.conversationId || metadata.conversationId),
+        peerId: cleanText(record.peerId || record.targetPeerId || metadata.targetPeerId),
+        workKey: cleanText(record.workKey || metadata.workKey),
+        lane: cleanText(record.lane || metadata.lane || metadata.workLane),
+        claimEventId: cleanText(record.claimEventId || metadata.claimEventId),
+        previousStatus: cleanText(metadata.previousStatus),
+        summary: cleanText(record.summary),
+      });
+    })
+    .filter(Boolean);
 }
 
 function applyTaskRecord(tasks, record) {

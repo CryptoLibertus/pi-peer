@@ -9,6 +9,7 @@ export const DEFAULT_PEER_IDLE_COORDINATION_SURFACE = "footer";
 const FALSE_VALUES = new Set(["0", "false", "off", "no", "disabled"]);
 const TRUE_VALUES = new Set(["1", "true", "on", "yes", "enabled"]);
 const DEFAULT_ALLOWED_KINDS = ["blocker", "task-handoff", "failed-vote", "stale-claim", "open-proposal", "work-item", "close", "next-step", "review"];
+const LOCAL_ONLY_ACTIVATION_KINDS = new Set(["task-handoff", "stale-claim"]);
 
 export function normalizePeerIdleWatcherConfig(input = {}, options = {}) {
   const env = options.env || process.env;
@@ -259,7 +260,7 @@ export function derivePeerIdleActivationOfferPlan(board, peers = [], options = {
       localPersona: peer.persona,
       localCapabilities: peer.capabilities,
     });
-    if (!activation) continue;
+    if (!activation || LOCAL_ONLY_ACTIVATION_KINDS.has(activation.kind)) continue;
     const workKey = activation.workKey || peerIdleActivationKey(activation);
     if (seenWorkKeys.has(workKey)) continue;
     seenWorkKeys.add(workKey);
