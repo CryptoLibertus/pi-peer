@@ -224,6 +224,9 @@ export function compactPeerControl(value = {}) {
     completedCount: value.completedTasks?.length || 0,
     activeHiveRuns: compactEvents(value.activeHiveRuns, 20),
     hiveRunCount: value.hiveRuns?.length || 0,
+    activeSubruns: compactTasks(value.activeSubruns, 20),
+    subrunCount: value.subruns?.length || 0,
+    completedSubrunCount: value.completedSubruns?.length || 0,
     warnings: value.warnings,
   });
 }
