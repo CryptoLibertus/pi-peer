@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { buildPeerCommandCenterState, derivePeerCommandCenterRecommendations, formatPeerCommandCenter } from "../src/peers/command-center.mjs";
+import { buildPeerCommandCenterState, derivePeerCommandCenterRecommendations, formatPeerCommandCenter, routePeerIntent } from "../src/peers/command-center.mjs";
+import { loadPeerGoalBoard } from "../src/peers/goal-board.mjs";
 
 test("command center renders local profile, org, peers, goal blockers, and subruns", () => {
   const state = buildPeerCommandCenterState({
@@ -209,4 +213,73 @@ test("no-goal starter safely quotes objectives on one line", () => {
 
   assert.equal(command, "/peer do start goal \"Ship \\\"setup\\\" now\"");
   assert.equal(command.split("\n").length, 1);
+});
+
+test("routePeerIntent status returns command center text", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, { intent: "status", intentArgs: [] }, {
+    runtimeStatus: {
+      localPeerId: "planner-a",
+      localRole: "coordinator",
+      localDomain: "coordination",
+      peers: [],
+    },
+    orgState: { exists: false, org: { peers: {}, spawnPolicy: {} } },
+    controlState: { activeTasks: [], disconnectedTasks: [], activeSubruns: [] },
+    goals: [],
+    setupSession: { exists: false },
+  });
+
+  assert.equal(result.mutated, false);
+  assert.match(result.text, /Peer command center/);
+});
+
+test("routePeerIntent start goal creates a goal and seed proposals", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "start",
+    intentArgs: ["goal", "Ship", "simpler", "setup"],
+    constraints: ["safe"],
+  }, {
+    peerId: "planner-a",
+    runtimeStatus: { localPeerId: "planner-a" },
+  });
+
+  assert.equal(result.mutated, true);
+  assert.match(result.text, /Created peer goal/);
+
+  const board = await loadPeerGoalBoard(root);
+  const current = board.goals[board.currentGoalId];
+  assert.equal(current.objective, "Ship simpler setup");
+  assert.ok(current.events.filter((event) => event.type === "proposal").length >= 3);
+});
+
+test("routePeerIntent work without explicit paths is conservative", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "work",
+    intentArgs: ["goal_123"],
+    paths: [],
+  }, {
+    peerId: "worker-a",
+    runtimeStatus: { localPeerId: "worker-a" },
+    goals: [{
+      id: "goal_123",
+      objective: "Ship",
+      activeClaims: [],
+      activeTasks: [],
+      staleClaims: [],
+      unresolvedTaskHandoffs: [],
+      blockingObjections: [],
+      openProposals: [],
+      currentVotes: [],
+    }],
+  });
+
+  assert.equal(result.mutated, false);
+  assert.match(result.text, /No write claim created/);
+  assert.match(result.text, /\/peer goal claim goal_123/);
 });

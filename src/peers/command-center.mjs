@@ -1,3 +1,6 @@
+import { appendPeerGoalEvent, createPeerGoal } from "./goal-board.mjs";
+import { formatPeerSetupPrompt } from "./setup-wizard.mjs";
+
 export function buildPeerCommandCenterState(input = {}) {
   const runtimeStatus = input.runtimeStatus || {};
   const orgState = input.orgState || {};
@@ -104,6 +107,154 @@ export function formatPeerIntentResult(result = {}) {
   return "";
 }
 
+export async function routePeerIntent(root, parsed = {}, context = {}) {
+  const intent = text(parsed.intent, "status").toLowerCase();
+  const args = array(parsed.intentArgs).map((item) => String(item)).filter((item) => item.trim());
+  const peerId = resolvePeerId(context);
+
+  if (intent === "setup") {
+    return { mutated: false, text: formatPeerSetupPrompt({ peerId }) };
+  }
+
+  if (intent === "status" || intent === "center") {
+    return {
+      mutated: false,
+      text: formatPeerCommandCenter(buildPeerCommandCenterState({ ...context, setup: context.setup || context.setupSession })),
+    };
+  }
+
+  if (intent === "start") {
+    const objectiveArgs = args[0] === "goal" ? args.slice(1) : args;
+    const objective = objectiveArgs.join(" ").trim();
+    if (!objective) return { mutated: false, text: "No peer goal created: /peer do start goal <objective>" };
+
+    const goal = await createPeerGoal(root, {
+      objective,
+      constraints: parsed.constraints,
+      peerId,
+    });
+    await seedPeerGoalProposals(root, goal.id, peerId);
+
+    return {
+      mutated: true,
+      goalId: goal.id,
+      text: [
+        `Created peer goal ${goal.id}: ${goal.objective}`,
+        `Next: /peer scout ${goal.id}`,
+        "Then: /peer center",
+      ].join("\n"),
+    };
+  }
+
+  if (intent === "coordinate") {
+    const goal = resolveRouteGoal(args[0], context);
+    return { mutated: false, text: formatPeerIntentResult({ commands: coordinateCommands(goal) }) || "No coordination cleanup commands available." };
+  }
+
+  if (intent === "review" || intent === "research") {
+    const goalId = args[0];
+    if (!goalId) return { mutated: false, text: `/peer do ${intent} <goal-id>` };
+    return {
+      mutated: false,
+      text: laneClaimCommand(goalId, intent, `${intent} goal ${goalId}`, `peer-do:${intent}:${goalId}`),
+    };
+  }
+
+  if (intent === "work") {
+    const goalId = args[0];
+    if (!goalId) return { mutated: false, text: "/peer do work <goal-id> --path <path>" };
+    const paths = array(parsed.paths).map((item) => String(item)).filter((item) => item.trim());
+    if (!paths.length) {
+      return {
+        mutated: false,
+        text: [
+          "No write claim created: /peer do work requires explicit --path values before suggesting a write claim.",
+          laneClaimCommand(goalId, "implementation", `implementation-planning for goal ${goalId}`, `peer-do:implementation-planning:${goalId}`),
+        ].join("\n"),
+      };
+    }
+    return {
+      mutated: false,
+      text: writeClaimCommand(goalId, `implementation for goal ${goalId}`, paths, `peer-do:implementation:${goalId}:${paths.join(",")}`),
+    };
+  }
+
+  if (intent === "resolve-handoffs") {
+    const goal = resolveRouteGoal(args[0], context);
+    const commands = handoffResolveCommands(goal);
+    return { mutated: false, text: formatPeerIntentResult({ commands }) || "No unresolved peer handoffs found." };
+  }
+
+  if (intent === "subagents") {
+    const goal = resolveRouteGoal(args[0], context);
+    const activeSubruns = array(context.controlState?.activeSubruns);
+    const lines = ["/peer subrun status"];
+    if (!activeSubruns.length) {
+      const goalArg = goal?.id ? ` --goal ${shellQuote(goal.id)}` : "";
+      lines.push(`/peer subrun start ${shellQuote(`Subagent lane for ${goal?.objective || "current peer goal"}`)}${goalArg}`);
+    }
+    return { mutated: false, text: lines.join("\n") };
+  }
+
+  return { mutated: false, text: formatPeerCommandCenter(buildPeerCommandCenterState({ ...context, setup: context.setup || context.setupSession })) };
+}
+
+async function seedPeerGoalProposals(root, goalId, peerId) {
+  const proposals = [
+    { lane: "research", summary: "Map constraints, risks, options, and missing context before implementation.", workKey: "epic:research" },
+    { lane: "review", summary: "Review the plan and acceptance criteria before closure.", workKey: "epic:review" },
+    { lane: "implementation", summary: "Plan implementation work, then claim write paths only after naming them.", workKey: "epic:implementation" },
+  ];
+  for (const proposal of proposals) {
+    await appendPeerGoalEvent(root, goalId, {
+      type: "proposal",
+      peerId,
+      lane: proposal.lane,
+      summary: proposal.summary,
+      workKey: proposal.workKey,
+      metadata: { readOnlySeed: true },
+    });
+  }
+}
+
+function coordinateCommands(goal) {
+  if (!goal?.id) return [];
+  return [
+    ...array(goal.staleClaims).map((claim) => `/peer goal release ${commandArg(goal.id)} ${commandArg(claim.id)} ${commandArg("stale claim superseded or no longer active")}`),
+    ...array(goal.blockingObjections).map((objection) => `/peer goal resolve ${commandArg(goal.id)} ${commandArg(objection.id)} ${commandArg("blocking objection addressed or superseded")}`),
+    ...array(goal.openProposals).map((proposal) => `/peer goal resolve ${commandArg(goal.id)} ${commandArg(proposal.id)} ${commandArg("accepted deferred or superseded proposal")}`),
+    ...array(goal.failedVotes || goal.currentVotes?.filter?.((vote) => vote.verdict === "fail")).map(() => `/peer goal vote ${commandArg(goal.id)} pass-with-risks ${commandArg("failed vote addressed after coordination")}`),
+    ...handoffResolveCommands(goal),
+  ];
+}
+
+function handoffResolveCommands(goal) {
+  if (!goal?.id) return [];
+  return array(goal.unresolvedTaskHandoffs).map((handoff) => {
+    const handoffId = handoff.handoffEventId || handoff.id || handoff.eventId;
+    return handoffId ? `/peer goal resolve ${commandArg(goal.id)} ${commandArg(handoffId)} ${commandArg("accepted or superseded unsuccessful peer handoff")}` : undefined;
+  }).filter(Boolean);
+}
+
+function laneClaimCommand(goalId, lane, summary, workKey) {
+  return `/peer goal claim ${commandArg(goalId)} ${commandArg(summary)} --mode read --lane ${commandArg(lane)} --key ${commandArg(workKey)}`;
+}
+
+function writeClaimCommand(goalId, summary, paths, workKey) {
+  const pathFlags = paths.map((item) => `--path ${commandArg(item)}`).join(" ");
+  return `/peer goal claim ${commandArg(goalId)} ${commandArg(summary)} --mode write --lane ${commandArg("implementation")} ${pathFlags} --key ${commandArg(workKey)}`;
+}
+
+function resolveRouteGoal(goalId, context = {}) {
+  const state = buildPeerCommandCenterState({ ...context, currentGoalId: goalId || context.currentGoalId, setup: context.setup || context.setupSession });
+  if (goalId) return array(state.goals).find((goal) => goal?.id === goalId) || { id: goalId };
+  return state.currentGoal;
+}
+
+function resolvePeerId(context = {}) {
+  return text(context.peerId || context.runtimeStatus?.localPeerId || context.localPeerId, "unknown");
+}
+
 function groupActivePeers(activePeers) {
   const roles = new Map();
   for (const peer of activePeers) {
@@ -142,6 +293,12 @@ function selectCurrentGoal(currentGoal, goals, currentGoalId) {
 function shellQuote(value) {
   const safe = String(value ?? "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim() || "new peer goal";
   return `"${safe.replace(/["\\$`]/g, "\\$&")}"`;
+}
+
+function commandArg(value) {
+  const safe = String(value ?? "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  if (/^[A-Za-z0-9._:@/%+=,-]+$/.test(safe)) return safe;
+  return shellQuote(safe);
 }
 
 function normalizeOrgData(orgState = {}) {
