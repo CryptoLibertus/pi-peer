@@ -1,6 +1,6 @@
 import { flagEnabled, parseFlags, splitCommandLine } from "../utils.mjs";
 
-export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve"]);
+export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "init", "setup", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve"]);
 
 const PEER_GOAL_ALIASES = Object.freeze({
   goals: ["list"],
@@ -87,6 +87,9 @@ export function parsePeerCommand(rawArgs = "") {
   if (subcommand === "self-improve" || subcommand === "improve") {
     return parsePeerSelfImproveCommand(parsed, flags, positionals);
   }
+  if (subcommand === "org") {
+    return parsePeerOrgCommand(parsed, flags, positionals);
+  }
   if (subcommand === "progress") {
     const summary = positionals.join(" ").trim();
     if (!summary) return { ...parsed, error: "/peer progress requires <summary>" };
@@ -116,18 +119,21 @@ export function parsePeerCommand(rawArgs = "") {
   if (subcommand === "init" || subcommand === "setup") {
     const localPeerId = stringFlag(flags.id || flags.localPeerId, undefined);
     const role = stringFlag(flags.role, undefined);
+    const domain = stringFlag(flags.domain, undefined);
     const persona = stringFlag(flags.persona, undefined);
     const trust = stringFlag(flags.trust, undefined);
     const capabilities = capabilitiesFromFlags(flags);
     const peer = stringFlag(flags.peer, undefined);
     const peerRole = stringFlag(flags.peerRole, undefined);
+    const peerDomain = stringFlag(flags.peerDomain, undefined);
     const peerTrust = stringFlag(flags.peerTrust, undefined);
     const peerCapabilities = capabilitiesFromFlags({ intents: flags.peerIntents });
-    const seedPeers = peer ? { [peer]: { ...(peerRole ? { role: peerRole } : {}), ...(peerTrust ? { trust: peerTrust } : {}), ...(Object.keys(peerCapabilities).length ? { capabilities: peerCapabilities } : {}) } } : undefined;
+    const seedPeers = peer ? { [peer]: { ...(peerRole ? { role: peerRole } : {}), ...(peerDomain ? { domain: peerDomain } : {}), ...(peerTrust ? { trust: peerTrust } : {}), ...(Object.keys(peerCapabilities).length ? { capabilities: peerCapabilities } : {}) } } : undefined;
     return stripUndefined({
       ...parsed,
       localPeerId,
       role,
+      domain,
       persona,
       trust,
       ...(Object.keys(capabilities).length ? { capabilities } : {}),
@@ -145,8 +151,11 @@ export function formatPeerHelp() {
     "- `/peer status` — show local peer runtime, endpoint/auth, discovered peers, pending messages, context pressure, and warnings",
     "- `/peer context` — show local context usage/pressure when Pi exposes it to extensions",
     "- `/peer list` — list configured and discovered peers",
-    "- `/peer setup [--id <peer-id>] [--role planner|worker|reviewer] [--peer <peer-id>]` — guided alias for creating .pi/peers.json with protocol/capability metadata; never overwrites",
+    "- `/peer setup [--id <peer-id>] [--role planner|worker|reviewer] [--domain <domain>] [--subagents] [--peer <peer-id>]` — guided alias for creating .pi/peers.json with protocol/capability metadata; never overwrites",
     "- `/peer init [--id <peer-id>]` — create .pi/peers.json if missing; never overwrites",
+    "- `/peer org init [--role coordinator] [--domain coordination] [--subagents true|false]` — create .pi/peer-org.json role/domain charter; never overwrites",
+    "- `/peer org status` — show peer manager roles, domains, spawn policy, and evidence policy",
+    "- `/peer org role set <peer-id> --role <role> [--domain <domain>] [--subagents true|false]` — assign a top-level peer manager role/domain in .pi/peer-org.json",
     "- `/peer doctor` — check peer config, protocol compatibility, endpoint, discovered peers, and resumable tasks",
     "- `/peer reconnect` — refresh local discovery and show current status",
     "- `/peer resume <message-id>` — resume a disconnected restored peer message after reconnect",
@@ -253,6 +262,36 @@ function parsePeerSelfImproveCommand(parsed, flags, positionals) {
     evals: listFlag(flags.eval || flags.evals || flags.check || flags.checks),
     dispatch: flagEnabled(flags.dispatch || flags.send),
     autoCommit: flagEnabled(flags.autoCommit || flags.commit),
+  };
+}
+
+function parsePeerOrgCommand(parsed, flags, positionals) {
+  const action = positionals[0] || "status";
+  const rest = positionals.slice(1);
+  const withAction = { ...parsed, orgAction: action };
+  if (!["init", "status", "role"].includes(action)) return { ...withAction, error: `Unknown /peer org action '${action}'` };
+  if (action === "status") return withAction;
+  if (action === "init") {
+    return {
+      ...withAction,
+      role: stringFlag(flags.role, undefined),
+      domain: stringFlag(flags.domain, undefined),
+      canSpawnSubagents: flagDefaultEnabled(flags.subagents, true),
+    };
+  }
+  const roleAction = rest[0];
+  if (roleAction !== "set") return { ...withAction, roleAction, error: "/peer org role requires set <peer-id> --role <role> [--domain <domain>]" };
+  const peerId = rest[1];
+  const role = stringFlag(flags.role, undefined);
+  const domain = stringFlag(flags.domain, undefined);
+  if (!peerId || !role) return { ...withAction, roleAction, peerId, error: "/peer org role set requires <peer-id> --role <role> [--domain <domain>]" };
+  return {
+    ...withAction,
+    roleAction,
+    peerId,
+    role,
+    domain,
+    canSpawnSubagents: flags.subagents === undefined ? undefined : flagEnabled(flags.subagents),
   };
 }
 
@@ -447,6 +486,18 @@ function capabilitiesFromFlags(flags = {}) {
   if (intents.length) capabilities.intents = intents;
   if (flagEnabled(flags.write) || flagEnabled(flags.writeAccess)) capabilities.writeAccess = true;
   if (flagEnabled(flags.readOnly)) capabilities.writeAccess = false;
+  if (flagEnabled(flags.subagents)) {
+    const modes = listFlag(flags.subagentMode || flags.subagentModes);
+    capabilities.orchestration = {
+      subagents: true,
+      provider: stringFlag(flags.subagentProvider || flags.subagentsProvider, "pi-subagents"),
+      modes: modes.length ? modes : ["single", "parallel", "chain", "async"],
+      maxDepth: positiveIntegerFlag(flags.subagentMaxDepth || flags.maxSubagentDepth) || 1,
+      maxConcurrency: positiveIntegerFlag(flags.subagentConcurrency || flags.maxSubagentConcurrency) || 4,
+      worktree: !flagEnabled(flags.noSubagentWorktree),
+      intercom: flagEnabled(flags.subagentIntercom),
+    };
+  }
   return capabilities;
 }
 
