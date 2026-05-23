@@ -26,6 +26,7 @@ import { buildPeerIdleActivationPrompt, createPeerIdleWatcher, derivePeerIdleAct
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcilePeerControlLedger } from "../../src/peers/control-ledger.mjs";
 import { formatHiveRunPeerHealthPauseSummary, summarizeHiveRunPeerHealth } from "../../src/peers/hive-supervisor.mjs";
 import { formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
+import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, setPeerOrgRole } from "../../src/peers/org.mjs";
 
 const MESSAGE_TYPE = "pi-peer";
 const runtimeByCwd = new Map<string, Promise<any>>();
@@ -80,8 +81,8 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("peer", {
-    description: "Pi-to-Pi peers: setup, doctor, status, list, send, get, await, progress, goal, hive, self-improve",
-    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "init", "setup", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
+    description: "Pi-to-Pi peers: setup, org, doctor, status, list, send, get, await, progress, goal, hive, self-improve",
+    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "init", "setup", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (rawArgs, ctx) => {
@@ -328,7 +329,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
 
   try {
     if (parsed.subcommand === "init" || parsed.subcommand === "setup") {
-      const result = await initPeerConfig(ctx.cwd || process.cwd(), { localPeerId: parsed.localPeerId, role: parsed.role, persona: parsed.persona, trust: parsed.trust, capabilities: parsed.capabilities, seedPeers: parsed.seedPeers, enabled: parsed.enabled });
+      const result = await initPeerConfig(ctx.cwd || process.cwd(), { localPeerId: parsed.localPeerId, role: parsed.role, domain: parsed.domain, persona: parsed.persona, trust: parsed.trust, capabilities: parsed.capabilities, seedPeers: parsed.seedPeers, enabled: parsed.enabled });
       await resetRuntimeFor(ctx.cwd);
       const runtime = await runtimeFor(pi, ctx.cwd);
       if (runtime.enabled) await runtime.start(ctx);
@@ -338,6 +339,11 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
     }
 
     const runtime = await runtimeFor(pi, ctx?.cwd);
+    if (parsed.subcommand === "org") {
+      const text = await handlePeerOrgCommand(parsed, ctx, runtime);
+      await refresh();
+      return sendPeerMessage(pi, text);
+    }
     if (parsed.subcommand === "status") {
       updatePeerContextBudget(runtime, ctx);
       if (runtime.enabled) await runtime.refreshLocalPeers();
@@ -498,6 +504,35 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
     await refresh().catch(() => {});
     return sendPeerMessage(pi, formatPeerCommandError(error?.message || String(error)));
   }
+}
+
+async function handlePeerOrgCommand(parsed: any, ctx: any, runtime: any) {
+  const root = ctx?.cwd || process.cwd();
+  const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId || parsed.localPeerId || "unknown";
+  if (parsed.orgAction === "init") {
+    const result = await initPeerOrg(root, {
+      peers: {
+        [peerId]: {
+          role: parsed.role || "coordinator",
+          domain: parsed.domain || "coordination",
+          canSpawnSubagents: parsed.canSpawnSubagents,
+        },
+      },
+    });
+    return `${formatPeerOrgInitResult(result)}\n\n${formatPeerOrgStatus({ ...result, exists: true })}`;
+  }
+  if (parsed.orgAction === "status") {
+    return formatPeerOrgStatus(await loadPeerOrg(root, { allowMissing: true }));
+  }
+  if (parsed.orgAction === "role" && parsed.roleAction === "set") {
+    const result = await setPeerOrgRole(root, parsed.peerId, {
+      role: parsed.role,
+      domain: parsed.domain,
+      canSpawnSubagents: parsed.canSpawnSubagents,
+    });
+    return `Updated peer org role for ${parsed.peerId}.\n\n${formatPeerOrgStatus({ ...result, exists: true })}`;
+  }
+  throw new Error(`Unknown peer org action '${parsed.orgAction}'`);
 }
 
 async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any) {
