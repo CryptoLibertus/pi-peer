@@ -172,6 +172,76 @@ test("subagents choice enables optional orchestration metadata", async (t) => {
   });
 });
 
+test("partial orchestration metadata fills missing fields without overwriting existing values", async (t) => {
+  await withRoot(t, async (root) => {
+    await mkdir(join(root, ".pi"), { recursive: true });
+    await writeFile(join(root, ".pi/peers.json"), `${JSON.stringify({
+      enabled: true,
+      localPeerId: "planner-a",
+      manifest: {
+        capabilities: {
+          orchestration: {
+            subagents: true,
+            provider: "custom-provider",
+            modes: ["single"],
+          },
+        },
+      },
+      peers: {},
+    }, null, 2)}\n`, "utf8");
+
+    await applyPeerSetupChoice(root, {
+      choice: "subagents",
+      peerId: "planner-a",
+      runtime: { summary: { localPeerIdSource: "PI_PEER_ID" } },
+    });
+
+    const raw = JSON.parse(await readFile(join(root, ".pi/peers.json"), "utf8"));
+    assert.deepEqual(raw.manifest.capabilities.orchestration, {
+      subagents: true,
+      provider: "custom-provider",
+      modes: ["single"],
+      maxDepth: 1,
+      maxConcurrency: 4,
+      worktree: true,
+      intercom: false,
+    });
+  });
+});
+
+test("concurrent setup choices against existing peers config preserve both peer entries", async (t) => {
+  await withRoot(t, async (root) => {
+    await mkdir(join(root, ".pi"), { recursive: true });
+    await writeFile(join(root, ".pi/peers.json"), `${JSON.stringify({
+      enabled: true,
+      localPeerId: "base-a",
+      peers: {
+        "base-a": { role: "coordinator", domain: "coordination" },
+      },
+    }, null, 2)}\n`, "utf8");
+
+    await Promise.all([
+      applyPeerSetupChoice(root, {
+        choice: "implement",
+        peerId: "worker-a",
+        runtime: { summary: { localPeerIdSource: "PI_PEER_ID" } },
+      }),
+      applyPeerSetupChoice(root, {
+        choice: "review",
+        peerId: "reviewer-a",
+        runtime: { summary: { localPeerIdSource: "PI_PEER_ID" } },
+      }),
+    ]);
+
+    const raw = JSON.parse(await readFile(join(root, ".pi/peers.json"), "utf8"));
+    assert.equal(raw.peers["base-a"].role, "coordinator");
+    assert.equal(raw.peers["worker-a"].role, "implementer");
+    assert.equal(raw.peers["worker-a"].domain, "implementation");
+    assert.equal(raw.peers["reviewer-a"].role, "reviewer");
+    assert.equal(raw.peers["reviewer-a"].domain, "review");
+  });
+});
+
 test("status choice writes only setup session state", async (t) => {
   await withRoot(t, async (root) => {
     const result = await applyPeerSetupChoice(root, {

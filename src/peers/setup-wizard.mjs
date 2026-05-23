@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { initPeerConfig, loadPeerRuntimeConfig, PEER_CONFIG_RELATIVE_PATH } from "./config.mjs";
@@ -54,6 +54,9 @@ export const PEER_SETUP_CHOICES = Object.freeze({
 });
 
 const SETUP_ID_GUIDANCE = "Run /peer setup id <peer-id> first, then repeat /peer setup <choice>.";
+const PEER_CONFIG_LOCK_TIMEOUT_MS = 5_000;
+const PEER_CONFIG_LOCK_RETRY_MS = 25;
+const PEER_CONFIG_LOCK_STALE_MS = 30_000;
 
 const SUBAGENT_CAPABILITIES = Object.freeze({
   orchestration: Object.freeze({
@@ -179,7 +182,7 @@ export async function applyPeerSetupChoice(root, input = {}) {
       domain: setup.domain,
       capabilities,
     });
-  if (configExists) await fillExistingPeerConfig(root, peerId, setup, capabilities);
+  if (configExists || init.existed) await fillExistingPeerConfig(root, peerId, setup, capabilities);
 
   const orgResult = await setPeerOrgRole(root, peerId, {
     role: setup.role,
@@ -276,25 +279,74 @@ function assertStableIdentitySource(source) {
 
 async function fillExistingPeerConfig(root, peerId, setup, capabilities) {
   const path = resolve(root, PEER_CONFIG_RELATIVE_PATH);
-  const raw = JSON.parse(await readFile(path, "utf8"));
-  const config = plainObject(raw) ? raw : {};
 
-  if (config.enabled === undefined) config.enabled = true;
-  if (!cleanPeerId(config.localPeerId)) config.localPeerId = peerId;
-  const profile = ensureLocalPeerProfile(config, peerId);
-  if (!cleanText(profile.role) && setup.role) profile.role = setup.role;
-  if (!cleanText(profile.domain) && setup.domain) profile.domain = setup.domain;
+  return withPeerConfigLock(root, async () => {
+    const raw = JSON.parse(await readFile(path, "utf8"));
+    const config = plainObject(raw) ? raw : {};
 
-  if (capabilities?.orchestration) {
-    if (!plainObject(config.manifest)) config.manifest = {};
-    if (!plainObject(config.manifest.capabilities)) config.manifest.capabilities = {};
-    if (!plainObject(config.manifest.capabilities.orchestration)) {
-      config.manifest.capabilities.orchestration = clonePlain(capabilities.orchestration);
+    if (config.enabled === undefined) config.enabled = true;
+    if (!cleanPeerId(config.localPeerId)) config.localPeerId = peerId;
+    const profile = ensureLocalPeerProfile(config, peerId);
+    if (!cleanText(profile.role) && setup.role) profile.role = setup.role;
+    if (!cleanText(profile.domain) && setup.domain) profile.domain = setup.domain;
+
+    if (capabilities?.orchestration) {
+      if (!plainObject(config.manifest)) config.manifest = {};
+      if (!plainObject(config.manifest.capabilities)) config.manifest.capabilities = {};
+      mergeMissingOrchestrationFields(config.manifest.capabilities, capabilities.orchestration);
+    }
+
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    return config;
+  });
+}
+
+async function withPeerConfigLock(root, fn) {
+  const lockPath = `${resolve(root, PEER_CONFIG_RELATIVE_PATH)}.lock`;
+  const start = Date.now();
+  await mkdir(dirname(lockPath), { recursive: true });
+  while (true) {
+    try {
+      await mkdir(lockPath);
+      await writeFile(`${lockPath}/owner`, `${process.pid}\n${new Date().toISOString()}\n`, "utf8").catch(() => {});
+      try {
+        return await fn();
+      } finally {
+        await rm(lockPath, { recursive: true, force: true }).catch(() => {});
+      }
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      if (await removeStalePeerConfigLock(lockPath)) continue;
+      if (Date.now() - start >= PEER_CONFIG_LOCK_TIMEOUT_MS) throw new Error(`timed out waiting for peer setup config lock ${lockPath}`);
+      await sleep(PEER_CONFIG_LOCK_RETRY_MS);
     }
   }
+}
 
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+async function removeStalePeerConfigLock(lockPath) {
+  try {
+    const info = await stat(lockPath);
+    if (Date.now() - info.mtimeMs < PEER_CONFIG_LOCK_STALE_MS) return false;
+    await rm(lockPath, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return true;
+    return false;
+  }
+}
+
+function mergeMissingOrchestrationFields(capabilities, defaults) {
+  if (!plainObject(capabilities.orchestration)) {
+    capabilities.orchestration = clonePlain(defaults);
+    return capabilities.orchestration;
+  }
+  for (const [key, value] of Object.entries(defaults)) {
+    if (capabilities.orchestration[key] === undefined) {
+      capabilities.orchestration[key] = clonePlain(value);
+    }
+  }
+  return capabilities.orchestration;
 }
 
 async function peerConfigExists(root) {
@@ -364,4 +416,8 @@ function plainObject(value) {
 
 function clonePlain(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
