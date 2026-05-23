@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { derivePeerGoalWorkKey } from "../src/peers/goal-board.mjs";
-import { deriveFanoutSuggestion, derivePeerRuntimeStatus, formatPeerGoalDashboard, formatPeerStatusText } from "../src/peers/status.mjs";
+import { deriveFanoutSuggestion, derivePeerRuntimeStatus, formatPeerFooterStatusLine, formatPeerGoalDashboard, formatPeerStatusText } from "../src/peers/status.mjs";
 
 test("fanout suggestion groups available peers by persona-aware lanes", () => {
   const suggestion = deriveFanoutSuggestion([
@@ -88,6 +88,40 @@ test("peer status summarizes the last idle activation", () => {
   const text = formatPeerStatusText(status);
   assert.match(text, /idle watcher running/);
   assert.match(text, /last work-item goal_1 key run:loop:6 \(timer\)/);
+});
+
+test("peer footer status prioritizes coordination activations and protocol offers", () => {
+  const coordinationStatus = derivePeerRuntimeStatus({
+    enabled: true,
+    localPeerId: "self",
+    source: "test",
+    __peerIdleWatcher: {
+      config: { enabled: true },
+      state: {
+        running: true,
+        lastCheck: {
+          reason: "goal-board-change",
+          activated: true,
+          activation: { kind: "task-handoff", goalId: "goal_noise", workKey: "goal_noise|coordination|resolve|read", recommendedLane: "coordination" },
+        },
+      },
+    },
+  }, { peers: [], messages: [] });
+  assert.equal(formatPeerFooterStatusLine(coordinationStatus).text, "🔗 peer coord task-handoff · goal_noise · goal_noise|coordination|resolve|read");
+
+  const offerStatus = derivePeerRuntimeStatus({
+    enabled: true,
+    localPeerId: "self",
+    source: "test",
+    __peerIdleOfferLastSweep: { reason: "agent_end", sent: 1, duplicate: 0, errors: 0, skipped: 2 },
+  }, { peers: [], messages: [] });
+  assert.match(formatPeerFooterStatusLine(offerStatus).text, /peer offers 1 sent/);
+
+  const workStatus = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test" }, {
+    peers: [],
+    messages: [{ messageId: "msg_1", peerId: "worker2", status: "running", request: { body: { intent: "task", metadata: {} } } }],
+  });
+  assert.equal(formatPeerFooterStatusLine(workStatus).text, "🔗 peer work 1 pending · worker2 · task");
 });
 
 test("peer status can show visible unknown context after compaction", () => {

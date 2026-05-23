@@ -1,6 +1,6 @@
 import { derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement, normalizePeerContextBudget } from "./context-budget.mjs";
 import { deriveGoalState, derivePeerGoalWorkKey } from "./goal-board.mjs";
-import { summarizePeerIdleWatcherState } from "./idle-watcher.mjs";
+import { summarizePeerIdleWatcherState, shouldSurfaceCoordinationInFooter } from "./idle-watcher.mjs";
 import { redactPeerAuditValue } from "./protocol.mjs";
 
 export async function collectPeerRuntimeStatus(runtime, options = {}) {
@@ -85,6 +85,29 @@ export function formatPeerStatusLines(status = {}) {
 
 export function formatPeerStatusText(status = {}) {
   return formatPeerStatusLines(status).map((item) => item.text).join("\n");
+}
+
+export function formatPeerFooterStatusLine(status = {}) {
+  const idle = status.idleWatcher || {};
+  if ((status.pendingCount || 0) > 0) {
+    const task = (status.activeTasks || [])[0] || {};
+    const peer = task.peerId ? ` · ${safeStatusText(task.peerId) || task.peerId}` : "";
+    const intent = task.intent ? ` · ${safeStatusText(task.intent) || task.intent}` : "";
+    return line("footer", "accent", `🔗 peer work ${status.pendingCount} pending${peer}${intent}`);
+  }
+  const activation = idle.lastCheck?.activated ? idle.lastCheck.activation : undefined;
+  if (activation && shouldSurfaceCoordinationInFooter(activation, { coordinationSurface: "footer" })) {
+    const kind = safeStatusText(activation.kind) || "coordination";
+    const goal = activation.goalId ? ` · ${safeStatusText(activation.goalId) || activation.goalId}` : "";
+    const key = activation.workKey ? ` · ${truncateStatus(activation.workKey, 42)}` : "";
+    return line("footer", "accent", `🔗 peer coord ${kind}${goal}${key}`);
+  }
+  const sweep = idle.lastProtocolOfferSweep;
+  if (sweep && ((sweep.sent || 0) > 0 || (sweep.duplicate || 0) > 0 || (sweep.errors || 0) > 0)) {
+    const color = (sweep.errors || 0) > 0 ? "warning" : "accent";
+    return line("footer", color, `🔗 peer offers ${formatIdleOfferSweep(sweep)}`);
+  }
+  return line("footer", status.enabled ? "success" : "muted", `🔗 peers ${status.enabled ? "on" : "off"} · ${status.activeCount || 0} active`);
 }
 
 export function shouldShowPeerWidget(status = {}) {

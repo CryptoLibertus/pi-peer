@@ -4,6 +4,7 @@ import { deriveGoalState, derivePeerGoalScoutSuggestions, loadPeerGoalBoard } fr
 export const DEFAULT_PEER_IDLE_WATCHER_INTERVAL_MS = 15_000;
 export const DEFAULT_PEER_IDLE_WATCHER_COOLDOWN_MS = 5 * 60 * 1000;
 export const DEFAULT_PEER_IDLE_WATCHER_MAX_PER_SESSION = 20;
+export const DEFAULT_PEER_IDLE_COORDINATION_SURFACE = "footer";
 
 const FALSE_VALUES = new Set(["0", "false", "off", "no", "disabled"]);
 const TRUE_VALUES = new Set(["1", "true", "on", "yes", "enabled"]);
@@ -21,6 +22,7 @@ export function normalizePeerIdleWatcherConfig(input = {}, options = {}) {
     includeClosed: source.includeClosed === true,
     autoCompact: parseBoolean(env.PI_PEER_AUTO_COMPACT) ?? (source.autoCompact !== false),
     protocolOffers: parseBoolean(env.PI_PEER_IDLE_PROTOCOL_OFFERS) ?? (source.protocolOffers !== false),
+    coordinationSurface: normalizeCoordinationSurface(env.PI_PEER_IDLE_COORDINATION_SURFACE || env.PI_PEER_COORDINATION_SURFACE || source.coordinationSurface),
     allowedKinds: normalizeAllowedKinds(source.allowedKinds),
   };
 }
@@ -87,6 +89,14 @@ export function createPeerIdleWatcher(options = {}) {
       });
       if (!activation) return finish({ activated: false, reason: "no idle activation" });
 
+      markPeerIdleActivation(state, activation, now());
+      const result = finish({ activated: true, activation });
+      if (shouldSurfaceCoordinationInFooter(activation, config)) {
+        await options.onFooterActivation?.(activation, { reason, runtime, ctx }).catch?.(() => {});
+        await refresh(ctx).catch(() => {});
+        return result;
+      }
+
       const prompt = buildPeerIdleActivationPrompt(activation, { localPeerId: runtime.localPeerId });
       pi.sendMessage({
         customType: options.messageType || "pi-peer",
@@ -94,9 +104,8 @@ export function createPeerIdleWatcher(options = {}) {
         display: true,
         details: { kind: "peer_idle_activation", activation },
       }, { deliverAs: "followUp", triggerTurn: true });
-      markPeerIdleActivation(state, activation, now());
       await refresh(ctx).catch(() => {});
-      return finish({ activated: true, activation });
+      return result;
     } catch (error) {
       finish({ activated: false, reason: `error: ${error?.message || String(error)}` });
       throw error;
@@ -332,6 +341,21 @@ export function buildPeerIdleActivationPrompt(activation, options = {}) {
   return `[Pi peer idle watcher]\nYou are local peer '${peerId}' and Pi is idle. A proactive goal-board scout suggestion is available.\n\nGoal: ${activation.goalId}\nSuggestion: ${activation.kind} (${activation.priority}) — ${activation.summary}${lane}${workKey}${rationale}${fit}${paths}${suggestedClaim}\n\nInstructions:\n- First inspect current state with peer_get id '${activation.goalId}'.\n- If useful, take one small safe action that fits the recommended lane: claim a read-only lane with the work key above, post a proposal/finding/vote, or claim write work only when you intend to edit and can name the paths.${resolutionInstruction}\n- If you claim read-only work, post concrete goal-board evidence (finding, handoff, or note) and release the claim before your final response, unless you are blocked and say why.\n- If the suggested claim fails as duplicate, inspect the board and stop with a brief handoff instead of starting parallel work.\n- Do not duplicate active claims, work keys, or proposals. If the board is no longer actionable, say so briefly and stop.\n- For write work, respect goal-board claims and end with the required peer handoff sections.\n- Keep the response concise.`;
 }
 
+export function shouldSurfaceCoordinationInFooter(activation = {}, config = {}) {
+  const surface = normalizeCoordinationSurface(config.coordinationSurface);
+  if (surface === "chat") return false;
+  if (!isCoordinationActivation(activation)) return false;
+  return surface === "footer";
+}
+
+function isCoordinationActivation(activation = {}) {
+  const lane = String(activation.recommendedLane || "").toLowerCase();
+  const intent = String(activation.suggestedIntent || "").toLowerCase();
+  const kind = String(activation.kind || "").toLowerCase();
+  if (lane === "coordination" || intent === "coordinate") return true;
+  return ["blocker", "task-handoff", "failed-vote", "stale-claim", "open-proposal", "close"].includes(kind);
+}
+
 function buildSuggestedReadClaim(activation = {}) {
   if (activation.claimMode !== "read" || !activation.workKey) return "";
   const lane = activation.recommendedLane ? ` --lane ${shellQuote(activation.recommendedLane)}` : "";
@@ -529,6 +553,14 @@ function isContextIdle(ctx) {
 
 function activationNudgeCooldownMs(config = {}) {
   return Math.max(5_000, Math.floor((config.intervalMs || DEFAULT_PEER_IDLE_WATCHER_INTERVAL_MS) * 2));
+}
+
+function normalizeCoordinationSurface(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["chat", "message", "messages"].includes(normalized)) return "chat";
+  if (["both", "all", "chat+footer", "footer+chat"].includes(normalized)) return "both";
+  if (["footer", "status", "status-line", "silent"].includes(normalized)) return "footer";
+  return DEFAULT_PEER_IDLE_COORDINATION_SURFACE;
 }
 
 function normalizeAllowedKinds(value) {

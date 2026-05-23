@@ -10,7 +10,7 @@ import { formatPeerCommandError, formatPeerHelp, formatPeerInitResult, parsePeer
 import { capturePeerContextBudget, derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement } from "../../src/peers/context-budget.mjs";
 import { createPeerRuntime, getPeerRuntimeValue } from "../../src/peers/runtime.mjs";
 import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, derivePeerGoalScoutSuggestions, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../../src/peers/goal-board.mjs";
-import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerGoalDashboard, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
+import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerFooterStatusLine, formatPeerGoalDashboard, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
 import {
   peerAwaitToolResult,
   peerGetToolResult,
@@ -310,10 +310,10 @@ export default function piPeerExtension(pi: ExtensionAPI) {
       if (resolved.enabled) await resolved.refreshLocalPeers().catch(() => []);
       const status = await collectPeerRuntimeStatus(resolved);
       const lines = formatPeerStatusLines(status);
-      const headline = lines[0];
+      const footer = formatPeerFooterStatusLine(status);
       const theme = ctx.ui.theme;
       const color = (line: any) => theme?.fg ? theme.fg(line.color, line.text) : line.text;
-      ctx.ui.setStatus("peer", theme?.fg ? theme.fg(headline.color, headline.text) : headline.text);
+      ctx.ui.setStatus("peer", color(footer));
       ctx.ui.setWidget("peer", lines.map(color), { placement: "belowEditor" });
     } catch {
       // Peer UI is best-effort and must stay safe in non-UI/RPC/print contexts.

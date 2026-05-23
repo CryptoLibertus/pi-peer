@@ -8,6 +8,7 @@ import {
   derivePeerIdleActivationOfferPlan,
   markPeerIdleActivation,
   normalizePeerIdleWatcherConfig,
+  shouldSurfaceCoordinationInFooter,
 } from "../src/peers/idle-watcher.mjs";
 
 const openGoalBoard = {
@@ -31,6 +32,9 @@ test("idle watcher config supports env disable and timing overrides", () => {
   assert.equal(config.maxActivationsPerSession, 2);
   assert.equal(config.autoCompact, true);
   assert.equal(config.protocolOffers, true);
+  assert.equal(config.coordinationSurface, "footer");
+  assert.equal(normalizePeerIdleWatcherConfig({ coordinationSurface: "chat" }, { env: {} }).coordinationSurface, "chat");
+  assert.equal(normalizePeerIdleWatcherConfig({}, { env: { PI_PEER_IDLE_COORDINATION_SURFACE: "both" } }).coordinationSurface, "both");
   assert.equal(normalizePeerIdleWatcherConfig({ protocolOffers: false }, { env: {} }).protocolOffers, false);
   assert.equal(normalizePeerIdleWatcherConfig({}, { env: { PI_PEER_IDLE_PROTOCOL_OFFERS: "off" } }).protocolOffers, false);
   assert.deepEqual(normalizePeerIdleWatcherConfig({ allowedKinds: "close,review" }, { env: {} }).allowedKinds, ["close", "review"]);
@@ -528,6 +532,51 @@ test("derivePeerIdleActivation does not suppress critical blockers for mismatche
   });
   assert.equal(activation.kind, "blocker");
   assert.equal(activation.priority, "P0");
+});
+
+test("coordination idle activations default to footer instead of chat", async () => {
+  const sent = [];
+  const refreshCalls = [];
+  const footerActivations = [];
+  const board = {
+    goals: {
+      goal_handoff: {
+        id: "goal_handoff",
+        objective: "Resolve noisy handoff",
+        status: "open",
+        events: [
+          { id: "evt_task", type: "task", at: "2026-01-01T00:00:00.000Z", peerId: "planner", summary: "Review failed task", taskId: "msg_1", status: "running" },
+          { id: "evt_handoff", type: "handoff", at: "2026-01-01T00:00:01.000Z", peerId: "worker", summary: "Blocked before completion", taskId: "msg_1", status: "blocked" },
+        ],
+      },
+    },
+  };
+  const watcher = createPeerIdleWatcher({
+    runtime: {
+      enabled: true,
+      localPeerId: "planner-a",
+      cwd: "/tmp/project",
+      config: { idleWatcher: { intervalMs: 1_000, cooldownMs: 10_000 } },
+      comms: { listMessages: async () => [] },
+      pendingInboundCount: () => 0,
+    },
+    pi: { sendMessage: (message, options) => sent.push({ message, options }) },
+    activeContext: () => ({ cwd: "/tmp/project", isIdle: () => true, hasPendingMessages: () => false }),
+    loadBoard: async () => board,
+    now: () => 1_000,
+    refresh: async () => refreshCalls.push("refresh"),
+    onFooterActivation: async (activation) => footerActivations.push(activation),
+  });
+
+  const result = await watcher.check("test");
+  assert.equal(result.activated, true);
+  assert.equal(result.activation.kind, "task-handoff");
+  assert.equal(sent.length, 0);
+  assert.equal(refreshCalls.length, 1);
+  assert.equal(footerActivations.length, 1);
+  assert.equal(watcher.state.lastCheck.activated, true);
+  assert.equal(watcher.state.lastCheck.activation.recommendedLane, "coordination");
+  assert.equal(shouldSurfaceCoordinationInFooter(result.activation, watcher.config), true);
 });
 
 test("createPeerIdleWatcher only injects when context is idle and no peer messages are pending", async () => {
