@@ -153,7 +153,7 @@ export function formatPeerHelp() {
     "- `/peer list` — list configured and discovered peers",
     "- `/peer setup [--id <peer-id>] [--role planner|worker|reviewer] [--domain <domain>] [--subagents] [--peer <peer-id>]` — guided alias for creating .pi/peers.json with protocol/capability metadata; never overwrites",
     "- `/peer init [--id <peer-id>]` — create .pi/peers.json if missing; never overwrites",
-    "- `/peer org init [--role coordinator] [--domain coordination] [--subagents true|false]` — create .pi/peer-org.json role/domain charter; never overwrites",
+    "- `/peer org init [--id <peer-id>] [--role coordinator] [--domain coordination] [--subagents true|false]` — create .pi/peer-org.json role/domain charter; never overwrites",
     "- `/peer org status` — show peer manager roles, domains, spawn policy, and evidence policy",
     "- `/peer org role set <peer-id> --role <role> [--domain <domain>] [--subagents true|false]` — assign a top-level peer manager role/domain in .pi/peer-org.json",
     "- `/peer doctor` — check peer config, protocol compatibility, endpoint, discovered peers, and resumable tasks",
@@ -274,6 +274,7 @@ function parsePeerOrgCommand(parsed, flags, positionals) {
   if (action === "init") {
     return {
       ...withAction,
+      localPeerId: stringFlag(flags.id || flags.localPeerId, undefined),
       role: stringFlag(flags.role, undefined),
       domain: stringFlag(flags.domain, undefined),
       canSpawnSubagents: flagDefaultEnabled(flags.subagents, true),
