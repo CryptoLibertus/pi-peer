@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger } from "./control-ledger.mjs";
-import { completePeerGoalTask } from "./goal-board.mjs";
+import { completePeerGoalTask, recordPeerGoalTaskDispatch } from "./goal-board.mjs";
 import { loadPeerOrg } from "./org.mjs";
 
 export const PEER_SUBAGENT_LEDGER_KIND = "subrun";
 
 const SUPPORTED_MODES = new Set(["single", "parallel", "chain", "async"]);
 const PROVIDER_STARTERS = ["startPeerSubagents", "startSubagentRun", "runSubagents"];
+const DYNAMIC_PROVIDER_ALLOWLIST = new Set(["pi-subagents"]);
 
 export function normalizeSubagentRunRequest(input = {}) {
   const source = plainObject(input) ? input : {};
@@ -61,6 +62,10 @@ export async function resolveSubagentProvider(root, input = {}) {
     return { name: "manual", available: true, module: undefined, starter: undefined };
   }
 
+  if (!DYNAMIC_PROVIDER_ALLOWLIST.has(providerName)) {
+    return { name: providerName, available: false, module: undefined, starter: undefined };
+  }
+
   const importModule = request.importModule || ((name) => import(name).catch(() => undefined));
   const providerModule = await importProviderModule(importModule, providerName);
   const starter = PROVIDER_STARTERS.find((name) => typeof providerModule?.[name] === "function");
@@ -104,7 +109,19 @@ export async function startPeerSubagentRun(root, input = {}) {
   });
 
   if (provider.starter) {
-    await provider.module[provider.starter]({ ...request, subrunId, provider: provider.name });
+    try {
+      await provider.module[provider.starter]({ ...request, subrunId, provider: provider.name });
+    } catch (error) {
+      const message = `subagent provider ${provider.name} failed: ${errorMessage(error)}`;
+      await appendPeerControlRecord(root, {
+        ...common,
+        kind: PEER_SUBAGENT_LEDGER_KIND,
+        action: "error",
+        status: "error",
+        summary: message,
+      });
+      return normalizeSubagentRunSummary({ ...request, subrunId, provider: provider.name, status: "error", message, ok: false });
+    }
   }
 
   return normalizeSubagentRunSummary({ ...request, subrunId, provider: provider.name, status: "running", ok: true });
@@ -147,6 +164,15 @@ export async function completePeerSubagentRun(root, input = {}) {
   });
 
   if (request.attachHandoff && request.goalId) {
+    await recordPeerGoalTaskDispatch(root, request.goalId, {
+      requesterPeerId: request.parentPeerId,
+      targetPeerId: request.parentPeerId,
+      prompt: summary,
+      messageId: subrunId,
+      status: "running",
+      workKey: request.workKey,
+      lane: "subagents",
+    });
     await completePeerGoalTask(root, request.goalId, {
       targetPeerId: request.parentPeerId,
       messageId: subrunId,
@@ -266,6 +292,10 @@ async function enrichRequestFromLedger(root, request = {}) {
     provider: request.provider || existing.provider,
     mode: request.mode === "single" && existing.mode ? existing.mode : request.mode,
     workKey: request.workKey || existing.workKey,
+    artifactRefs: normalizeList([...(existing.artifactRefs || []), ...(request.artifactRefs || [])]),
+    childCount: request.childCount ?? existing.childCount,
+    doneCount: request.doneCount ?? existing.completedCount,
+    blockedCount: request.blockedCount ?? existing.blockedCount,
   };
 }
 
@@ -285,6 +315,10 @@ function requiredSubrunId(value) {
   const subrunId = cleanText(value);
   if (!subrunId) throw new Error("peer subagent run requires subrunId");
   return subrunId;
+}
+
+function errorMessage(error) {
+  return cleanText(error?.message || error) || "unknown error";
 }
 
 function normalizeList(value) {
