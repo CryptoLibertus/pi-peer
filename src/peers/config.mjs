@@ -256,7 +256,7 @@ export function deriveLocalPeerProfile(config = {}, options = {}) {
 
 export function summarizePeerProfile(profile = {}) {
   const summary = {};
-  for (const field of ["role", "persona"]) {
+  for (const field of ["role", "domain", "persona"]) {
     const value = safeSummaryString(profile[field]);
     if (value) summary[field] = value;
   }
@@ -304,7 +304,7 @@ function findConfiguredLocalPeer(peers, localPeerId) {
 
 function explicitPeerProfileOptions(options = {}) {
   const profile = {};
-  for (const field of ["role", "persona", "agentMd", "agentInstructions"]) {
+  for (const field of ["role", "domain", "persona", "agentMd", "agentInstructions"]) {
     const value = normalizedString(options[field]);
     if (value) profile[field] = value;
   }
@@ -315,7 +315,7 @@ function normalizePeerProfile(source = {}) {
   const profile = {};
   const peerId = normalizedString(source.peerId);
   if (peerId) profile.peerId = peerId;
-  for (const field of ["role", "persona", "agentMd", "agentInstructions", "agentMdPath", "agentMdContent"]) {
+  for (const field of ["role", "domain", "persona", "agentMd", "agentInstructions", "agentMdPath", "agentMdContent"]) {
     const value = normalizedString(source[field]);
     if (value) profile[field] = value;
   }
@@ -356,10 +356,11 @@ function configuredPeers(config, label, warnings) {
 function buildDefaultPeerEntries(options = {}) {
   const localPeerId = normalizePeerId(options.localPeerId) || defaultLocalPeerId();
   const entries = isPlainObject(options.seedPeers) ? { ...options.seedPeers } : {};
-  if (localPeerId && (options.role || options.persona)) {
+  if (localPeerId && (options.role || options.domain || options.persona)) {
     entries[localPeerId] = {
       ...(entries[localPeerId] || {}),
       ...(normalizedString(options.role) ? { role: normalizedString(options.role) } : {}),
+      ...(normalizedString(options.domain) ? { domain: normalizedString(options.domain) } : {}),
       ...(normalizedString(options.persona) ? { persona: normalizedString(options.persona) } : {}),
       trust: options.trust || entries[localPeerId]?.trust || "conversation",
     };

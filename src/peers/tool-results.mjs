@@ -252,6 +252,7 @@ export function compactPeer(peer = {}) {
   return stripEmpty({
     peerId: peer.peerId,
     role: peer.role,
+    domain: peer.domain,
     persona: peer.persona,
     status: peer.status,
     transport: peer.transport,
@@ -529,6 +530,7 @@ function formatPeerListLine(peer) {
   const parts = [peer.peerId];
   if (peer.current || peer.self) parts.push("current/self");
   if (peer.role) parts.push(`role:${peer.role}`);
+  if (peer.domain) parts.push(`domain:${peer.domain}`);
   parts.push(peer.transport, peer.trust, peer.status);
   if (peer.protocolVersion) parts.push(`protocol:v${peer.protocolVersion}`);
   const caps = capabilitySummary(peer.capabilities);
@@ -541,6 +543,8 @@ function formatPeerListLine(peer) {
 
 function capabilitySummary(capabilities = {}) {
   if (!capabilities || typeof capabilities !== "object") return "";
+  const orchestration = capabilities.orchestration && typeof capabilities.orchestration === "object" ? capabilities.orchestration : {};
+  if (orchestration.subagents === true) return `subagents:${orchestration.provider || "custom"}${Array.isArray(orchestration.modes) && orchestration.modes.length ? `(${orchestration.modes.join(",")})` : ""}`;
   if (Array.isArray(capabilities.intents) && capabilities.intents.length) return `intents=${capabilities.intents.join(",")}`;
   return Object.keys(capabilities).slice(0, 3).join(",");
 }

@@ -89,6 +89,7 @@ export async function createPeerRuntime(cwd, options = {}) {
           projectScope,
           sessionId: options.sessionId || ctx.sessionId,
           role: localPeerProfile.role || options.role,
+          domain: localPeerProfile.domain || options.domain,
           persona: localPeerProfile.persona || options.persona,
           trust: options.trust || config.manifest?.trust || "conversation",
           maxHopCount: options.maxHopCount,

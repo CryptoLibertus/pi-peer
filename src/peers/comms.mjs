@@ -674,6 +674,7 @@ function buildPeerIdentity(peer = {}, options = {}) {
     writeAccess: inferWriteAccess(peer),
   };
   if (nonEmptyString(peer.role)) identity.role = peer.role;
+  if (nonEmptyString(peer.domain)) identity.domain = peer.domain;
   if (nonEmptyString(peer.cwd)) identity.cwd = redactPeerAuditValue(peer.cwd, { homeDir: options.homeDir || "" });
   return identity;
 }
