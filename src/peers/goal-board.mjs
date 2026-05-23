@@ -618,7 +618,9 @@ function producerPeerIdsForIndependentReview(events = []) {
 function isIndependentTopLevelVote(vote = {}, producerPeerIds = new Set()) {
   if (!vote.peerId || producerPeerIds.has(vote.peerId)) return false;
   const metadata = plainObject(vote.metadata) ? vote.metadata : {};
+  if (vote.subagent === true) return false;
   if (metadata.subagent === true) return false;
+  if (vote.parentPeerId) return false;
   if (metadata.parentPeerId) return false;
   if (metadata.countsForIndependentVote === false) return false;
   if (vote.countsForIndependentVote === false) return false;
@@ -971,7 +973,7 @@ export function projectSubagentEvidence(input = {}) {
     mode: cleanText(input.mode),
     runCount: positiveNumber(input.runCount) || runs.length || undefined,
     childCount: positiveNumber(input.childCount) || runs.length || undefined,
-    doneCount: positiveNumber(input.doneCount) || done || undefined,
+    doneCount: positiveNumber(input.doneCount) || positiveNumber(input.completedCount) || done || undefined,
     blockedCount: positiveNumber(input.blockedCount) || blocked || undefined,
     artifactRefs,
     summary: cleanText(input.summary),

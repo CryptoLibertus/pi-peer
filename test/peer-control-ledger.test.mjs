@@ -102,6 +102,41 @@ test("control ledger treats explicit completed subrun status as terminal", async
   });
 });
 
+test("control ledger completes subruns and preserves provider artifacts", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendPeerControlRecord(root, {
+      kind: "subrun",
+      action: "started",
+      subrunId: "sub_1",
+      peerId: "worker-a",
+      metadata: {
+        provider: "pi-subagents",
+        mode: "parallel",
+        artifactRefs: ["artifact:started"],
+      },
+    });
+
+    let state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    assert.equal(state.activeSubruns.length, 1);
+    assert.equal(state.activeSubruns[0].subrunId, "sub_1");
+
+    await appendPeerControlRecord(root, {
+      kind: "subrun",
+      action: "done",
+      subrunId: "sub_1",
+      metadata: {
+        artifactRefs: ["artifact:done"],
+      },
+    });
+
+    state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    assert.equal(state.activeSubruns.length, 0);
+    assert.equal(state.completedSubruns.length, 1);
+    assert.equal(state.completedSubruns[0].provider, "pi-subagents");
+    assert.deepEqual(state.completedSubruns[0].artifactRefs, ["artifact:started", "artifact:done"]);
+  });
+});
+
 test("control ledger normalizes explicit failed subrun status as terminal error", async (t) => {
   await withRoot(t, async (root) => {
     await appendPeerControlRecord(root, { kind: "subrun", action: "noop", status: "failed", subrunId: "run_failed_status" });

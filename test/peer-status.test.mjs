@@ -6,7 +6,7 @@ import { deriveFanoutSuggestion, derivePeerRuntimeStatus, formatPeerFooterStatus
 
 test("fanout suggestion groups available peers by persona-aware lanes", () => {
   const suggestion = deriveFanoutSuggestion([
-    { peerId: "reviewer-a", role: "reviewer", status: "active" },
+    { peerId: "reviewer-a", role: "reviewer", domain: "protocol", status: "active" },
     { peerId: "worker3", status: "active" },
     { peerId: "planner-a", role: "coordinator", status: "active" },
     { peerId: "self", current: true, status: "active" },
@@ -16,6 +16,7 @@ test("fanout suggestion groups available peers by persona-aware lanes", () => {
   assert.deepEqual(suggestion.lanes.review, ["reviewer-a"]);
   assert.deepEqual(suggestion.lanes.implementation, ["worker3"]);
   assert.deepEqual(suggestion.lanes.coordination, ["planner-a"]);
+  assert.equal(suggestion.availablePeerDetails.find((peer) => peer.peerId === "reviewer-a").domain, "protocol");
   assert.match(suggestion.warning, /lanes/);
 });
 
@@ -32,6 +33,27 @@ test("peer status includes local context pressure when available", () => {
   assert.match(text, /context critical/);
   assert.match(text, /5\.0k left/);
   assert.match(text, /judgement compact_or_delegate/);
+});
+
+test("peer status surfaces local domain and subagent capability summary", () => {
+  const status = derivePeerRuntimeStatus({
+    enabled: true,
+    localPeerId: "planner-a",
+    source: "test",
+    summary: { localPeerProfile: { role: "planner", domain: "protocol" } },
+    config: {
+      manifest: {
+        capabilities: {
+          orchestration: { subagents: true, provider: "pi-subagents", modes: ["single", "parallel"] },
+        },
+      },
+    },
+  }, { peers: [], messages: [] });
+
+  const text = formatPeerStatusText(status);
+  assert.match(text, /role planner/);
+  assert.match(text, /domain protocol/);
+  assert.match(text, /subagents:pi-subagents\(single,parallel\)/);
 });
 
 test("peer status includes idle watcher diagnostics", () => {
@@ -151,6 +173,36 @@ test("goal dashboard surfaces unresolved peer handoff resolution actions", () =>
   assert.match(text, /h1 · worker: blocked · agent_end missing final text/);
   assert.match(text, /\/peer goal resolve goal_unresolved_handoff h1/);
   assert.doesNotMatch(text, /no mutation suggested/);
+});
+
+test("goal dashboard surfaces compact subagent evidence", () => {
+  const text = formatPeerGoalDashboard({
+    id: "goal_subagents",
+    objective: "Test subagent evidence dashboard",
+    status: "open",
+    events: [
+      {
+        id: "h1",
+        type: "handoff",
+        at: "2026-01-01T00:00:00.000Z",
+        peerId: "worker-a",
+        summary: "implementation complete",
+        status: "done",
+        metadata: {
+          subagentEvidence: {
+            provider: "pi-subagents",
+            childCount: 2,
+            completedCount: 1,
+            blockedCount: 1,
+            artifactRefs: ["artifact:subrun-1"],
+          },
+        },
+      },
+    ],
+  });
+
+  assert.match(text, /Subagent evidence:/);
+  assert.match(text, /h1 · worker-a · pi-subagents subagents 2 child, 1 done, 1 blocked · artifacts artifact:subrun-1/);
 });
 
 test("goal dashboard groups proposal state and prints safe next actions", () => {
