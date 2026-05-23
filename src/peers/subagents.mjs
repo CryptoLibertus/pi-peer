@@ -193,7 +193,7 @@ export function formatPeerSubagentRunResult(result = {}) {
 }
 
 export function formatPeerSubagentStatus(input = {}) {
-  const state = input.state || derivePeerControlState(input.records || []);
+  const state = input.controlState || input.state || derivePeerControlState(input.records || []);
   const active = Array.isArray(state.activeSubruns) ? state.activeSubruns.length : 0;
   const completed = Array.isArray(state.completedSubruns) ? state.completedSubruns.length : 0;
   const lines = [`Subruns: ${active} active · ${completed} completed`];

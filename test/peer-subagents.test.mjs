@@ -77,7 +77,7 @@ test("subrun progress, complete, and status format compact state", async (t) => 
     assert.equal(state.completedSubruns.length, 1);
     assert.deepEqual(state.completedSubruns[0].artifactRefs, ["artifact:sources", "artifact:summary"]);
 
-    const statusText = formatPeerSubagentStatus({ state });
+    const statusText = formatPeerSubagentStatus({ controlState: state });
     assert.match(statusText, /Subruns: 0 active · 1 completed/);
     assert.match(statusText, new RegExp(started.subrunId));
     assert.match(statusText, /done/);
