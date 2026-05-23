@@ -17,9 +17,11 @@ test("command center renders local profile, org, peers, goal blockers, and subru
     },
     orgState: {
       exists: true,
-      spawnPolicy: { enabled: true, provider: "optional", privateTeams: true },
-      peers: {
-        "planner-a": { canSpawnSubagents: true },
+      org: {
+        spawnPolicy: { enabled: true, provider: "optional", privateTeams: true },
+        peers: {
+          "planner-a": { canSpawnSubagents: true },
+        },
       },
     },
     goals: [

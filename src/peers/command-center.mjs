@@ -1,6 +1,7 @@
 export function buildPeerCommandCenterState(input = {}) {
   const runtimeStatus = input.runtimeStatus || {};
   const orgState = input.orgState || {};
+  const orgData = normalizeOrgData(orgState);
   const setup = input.setup || {};
   const controlState = input.controlState || {};
   const peers = Array.isArray(runtimeStatus.peers) ? runtimeStatus.peers : [];
@@ -15,7 +16,7 @@ export function buildPeerCommandCenterState(input = {}) {
       peerId: localPeerId,
       role: text(runtimeStatus.localRole || runtimeStatus.localProfile?.role || runtimeStatus.role, "unknown"),
       domain: text(runtimeStatus.localDomain || runtimeStatus.localProfile?.domain || runtimeStatus.domain, "unknown"),
-      canSpawnSubagents: localCanSpawnSubagents(localPeerId, orgState, runtimeStatus),
+      canSpawnSubagents: localCanSpawnSubagents(localPeerId, orgData, runtimeStatus),
     },
     peers: {
       active: activePeers.map((peer) => ({
@@ -28,9 +29,9 @@ export function buildPeerCommandCenterState(input = {}) {
     org: {
       exists: orgState.exists === true,
       spawnPolicy: {
-        enabled: orgState.spawnPolicy?.enabled === true,
-        provider: text(orgState.spawnPolicy?.provider, "unknown"),
-        privateTeams: orgState.spawnPolicy?.privateTeams === true,
+        enabled: orgData.spawnPolicy?.enabled === true,
+        provider: text(orgData.spawnPolicy?.provider, "unknown"),
+        privateTeams: orgData.spawnPolicy?.privateTeams === true,
       },
     },
     setup: {
@@ -133,14 +134,22 @@ function selectCurrentGoal(currentGoal, goals) {
   return openGoals.find((goal) => array(goal.blockingObjections).length || array(goal.unresolvedTaskHandoffs).length) || openGoals[0];
 }
 
-function localCanSpawnSubagents(localPeerId, orgState, runtimeStatus) {
-  const orgPeer = orgPeerConfig(orgState, localPeerId);
+function normalizeOrgData(orgState = {}) {
+  const nested = orgState.org && typeof orgState.org === "object" ? orgState.org : {};
+  return {
+    peers: nested.peers || orgState.peers,
+    spawnPolicy: nested.spawnPolicy || orgState.spawnPolicy,
+  };
+}
+
+function localCanSpawnSubagents(localPeerId, orgData, runtimeStatus) {
+  const orgPeer = orgPeerConfig(orgData, localPeerId);
   if (orgPeer && typeof orgPeer.canSpawnSubagents === "boolean") return orgPeer.canSpawnSubagents;
   return runtimeStatus.localCapabilities?.orchestration?.subagents === true;
 }
 
-function orgPeerConfig(orgState = {}, localPeerId) {
-  const peers = orgState.peers;
+function orgPeerConfig(orgData = {}, localPeerId) {
+  const peers = orgData.peers;
   if (Array.isArray(peers)) return peers.find((peer) => peer.peerId === localPeerId || peer.id === localPeerId);
   if (peers && typeof peers === "object") return peers[localPeerId];
   return undefined;
