@@ -190,6 +190,30 @@ test("parses peer factory commands", () => {
   assert.equal(metrics.factoryAction, "metrics");
 });
 
+test("parses peer factory pr commands", () => {
+  const status = parsePeerCommand("factory pr status");
+  assert.equal(status.subcommand, "factory");
+  assert.equal(status.factoryAction, "pr");
+  assert.equal(status.prAction, "status");
+
+  const record = parsePeerCommand("factory pr record merged --run fac_123 --goal goal_123 --url https://github.com/example/repo/pull/1 --evidence 'merged by reviewer'");
+  assert.equal(record.factoryAction, "pr");
+  assert.equal(record.prAction, "record");
+  assert.equal(record.action, "merged");
+  assert.equal(record.runId, "fac_123");
+  assert.equal(record.goalId, "goal_123");
+  assert.equal(record.prUrl, "https://github.com/example/repo/pull/1");
+  assert.equal(record.evidence, "merged by reviewer");
+
+  const commands = parsePeerCommand("factory pr commands --title 'Add factory control plane' --body 'Verification-first control plane.' --branch feature/factory --remote origin");
+  assert.equal(commands.factoryAction, "pr");
+  assert.equal(commands.prAction, "commands");
+  assert.equal(commands.title, "Add factory control plane");
+  assert.equal(commands.body, "Verification-first control plane.");
+  assert.equal(commands.branch, "feature/factory");
+  assert.equal(commands.remote, "origin");
+});
+
 test("parses peer factory optional actions and validation", () => {
   const status = parsePeerCommand("factory status fac_123");
   assert.equal(status.factoryAction, "status");
@@ -223,6 +247,9 @@ test("parses peer factory optional actions and validation", () => {
   assert.match(parsePeerCommand("factory attempt fac_123").error, /attempt requires <run-id> <start\|finish>/);
   assert.match(parsePeerCommand("factory rework").error, /rework requires <run-id>/);
   assert.match(parsePeerCommand("factory plan-review").error, /plan-review requires <goal-id>/);
+  assert.match(parsePeerCommand("factory pr record unknown --run fac_123").error, /record requires <created\|ci-failed\|ci-passed\|merged\|post-merge-verified\|stale\|closed>/);
+  assert.match(parsePeerCommand("factory pr record merged").error, /record requires --run <run-id>/);
+  assert.match(parsePeerCommand("factory pr commands --title title").error, /commands requires --title <title> --body <body>/);
 });
 
 test("parses peer do plan intent", () => {
@@ -238,6 +265,7 @@ test("parses peer do plan intent", () => {
 
 test("extension wires factory commands without requiring peer runtime transport", () => {
   assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/factory\.mjs"/);
+  assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/pr-shepherd\.mjs"/);
   assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/plan-adversary\.mjs"/);
   assert.match(extensionSource, /loadFactoryReworkPolicy/);
   assert.match(extensionSource, /reworkRecordTypeForAction/);
@@ -248,6 +276,8 @@ test("extension wires factory commands without requiring peer runtime transport"
   assert.match(extensionSource, /type:\s*"plan-review"/);
   assert.match(extensionSource, /severity:\s*"blocking"/);
   assert.match(extensionSource, /formatPeerFactoryMetrics\(derivePeerFactoryMetrics/);
+  assert.match(extensionSource, /handlePeerFactoryPrCommand\(parsed, root, peerId\)/);
+  assert.match(extensionSource, /Suggested PR commands \(not executed\)/);
 
   const factoryBranch = extensionSource.indexOf("handlePeerFactoryCommand(parsed, ctx, runtime)");
   const firstEnsureEnabled = extensionSource.indexOf("ensureEnabled(runtime);", factoryBranch);

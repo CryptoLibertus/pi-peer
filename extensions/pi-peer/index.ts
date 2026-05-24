@@ -40,6 +40,7 @@ import {
   startFactoryRun,
   deriveFactoryState,
 } from "../../src/peers/factory.mjs";
+import { appendPrRecord, derivePrShepherdCommands, derivePrShepherdState, formatPrShepherdStatus, loadPrRecords } from "../../src/peers/pr-shepherd.mjs";
 import { derivePlanAdversaryReview, formatPlanAdversaryReview, hasMatchingPlanAdversaryObjection, normalizePlanContract, planAdversaryObjectionFingerprint, planAdversaryRunStatus } from "../../src/peers/plan-adversary.mjs";
 import { buildReworkDecisionRun, deriveReworkDecision, formatReworkDecision, reworkRecordTypeForAction } from "../../src/peers/rework.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
@@ -775,6 +776,10 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
   const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown";
   const action = parsed.subcommand === "metrics" ? "metrics" : parsed.factoryAction || "status";
 
+  if (action === "pr") {
+    return handlePeerFactoryPrCommand(parsed, root, peerId);
+  }
+
   if (action === "init") {
     const result = await initFactory(root);
     return [
@@ -929,6 +934,31 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
   }
 
   return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
+}
+
+async function handlePeerFactoryPrCommand(parsed: any, root: string, peerId: string) {
+  if (parsed.prAction === "commands") {
+    const commands = derivePrShepherdCommands(parsed);
+    return ["Suggested PR commands (not executed):", ...commands.map((command: string) => `- ${command}`)].join("\n");
+  }
+
+  if (parsed.prAction === "record") {
+    await appendPrRecord(root, {
+      action: parsed.action,
+      runId: parsed.runId,
+      goalId: parsed.goalId,
+      prUrl: parsed.prUrl,
+      evidence: parsed.evidence,
+      metadata: { peerId },
+    });
+  } else if (parsed.prAction && parsed.prAction !== "status") {
+    throw new Error(`Unknown peer factory pr action '${parsed.prAction}'`);
+  }
+
+  const loaded = await loadPrRecords(root);
+  const text = formatPrShepherdStatus(derivePrShepherdState(loaded.records));
+  if (!loaded.warnings?.length) return text;
+  return `${text}\nWarnings: ${loaded.warnings.map((warning: any) => warning.message).join("; ")}`;
 }
 
 function inferPlanLanes(goalState: any) {

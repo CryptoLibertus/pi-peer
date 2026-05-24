@@ -149,6 +149,7 @@ export function formatPeerHelp() {
     "- `/peer do <intent> [args...] [--constraint <a,b>] [--path <a,b>] [--lane <a,b>]` — run a high-level peer workflow intent",
     "- `/peer subrun status|start|progress|complete|cancel ...` — coordinate subagent run status and evidence",
     "- `/peer factory init|status|run|gate|attempt|rework|plan-review|metrics ...` — coordinate factory control-plane runs, gates, attempts, and metrics",
+    "- `/peer factory pr status|record|commands ...` — record PR lifecycle events and print suggested PR commands without executing them",
     "- `/peer metrics` — alias for `/peer factory metrics`",
     "- `/peer status` — show local peer runtime, endpoint/auth, discovered peers, pending messages, context pressure, and warnings",
     "- `/peer context` — show local context usage/pressure when Pi exposes it to extensions",
@@ -433,8 +434,9 @@ function parsePeerFactoryCommand(parsed, flags, positionals) {
   const action = positionals[0] || "status";
   const rest = positionals.slice(1);
   const withAction = { ...parsed, factoryAction: action };
-  const validActions = ["init", "status", "run", "gate", "attempt", "rework", "plan-review", "metrics"];
+  const validActions = ["init", "status", "run", "gate", "attempt", "rework", "plan-review", "metrics", "pr"];
   if (!validActions.includes(action)) return { ...withAction, error: `Unknown /peer factory action '${action}'` };
+  if (action === "pr") return parsePeerFactoryPrCommand(withAction, flags, rest);
   if (action === "init" || action === "metrics") return withAction;
   if (action === "status") return stripUndefined({ ...withAction, runId: rest[0] });
   if (action === "run") {
@@ -498,6 +500,38 @@ function parsePeerFactoryCommand(parsed, flags, positionals) {
     paths: listFlag(flags.path || flags.paths),
     gates: listFlag(flags.gate || flags.gates),
     lanes: listFlag(flags.lane || flags.lanes),
+  });
+}
+
+function parsePeerFactoryPrCommand(parsed, flags, positionals) {
+  const action = positionals[0] || "status";
+  const withAction = { ...parsed, prAction: action };
+  if (!["status", "record", "commands"].includes(action)) return { ...withAction, error: `Unknown /peer factory pr action '${action}'` };
+  if (action === "status") return withAction;
+  if (action === "record") {
+    const lifecycleAction = positionals[1];
+    const validLifecycleActions = ["created", "ci-failed", "ci-passed", "merged", "post-merge-verified", "stale", "closed"];
+    if (!validLifecycleActions.includes(lifecycleAction)) return { ...withAction, action: lifecycleAction, error: "/peer factory pr record requires <created|ci-failed|ci-passed|merged|post-merge-verified|stale|closed>" };
+    const runId = stringFlag(flags.run || flags.runId, undefined);
+    if (!runId) return { ...withAction, action: lifecycleAction, error: "/peer factory pr record requires --run <run-id>" };
+    return stripUndefined({
+      ...withAction,
+      action: lifecycleAction,
+      runId,
+      goalId: stringFlag(flags.goal || flags.goalId, undefined),
+      prUrl: stringFlag(flags.url || flags.prUrl, undefined),
+      evidence: stringFlag(flags.evidence, undefined),
+    });
+  }
+  const title = stringFlag(flags.title, undefined);
+  const body = stringFlag(flags.body, undefined);
+  if (!title || !body) return { ...withAction, error: "/peer factory pr commands requires --title <title> --body <body>" };
+  return stripUndefined({
+    ...withAction,
+    title,
+    body,
+    branch: stringFlag(flags.branch, undefined),
+    remote: stringFlag(flags.remote, undefined),
   });
 }
 
