@@ -64,9 +64,12 @@ test("parses peer context lifecycle commands", () => {
   assert.equal(retro.runId, "fac_123");
 });
 
-test("parses peer command center facade", () => {
-  const parsed = parsePeerCommand("center");
-  assert.equal(parsed.subcommand, "center");
+test("parses peer command center and work launcher facades", () => {
+  const center = parsePeerCommand("center");
+  assert.equal(center.subcommand, "center");
+
+  const work = parsePeerCommand("work");
+  assert.equal(work.subcommand, "work");
 });
 
 test("parses wizard-style peer setup facade", () => {
@@ -601,6 +604,7 @@ test("peer help documents claim lane, write shorthand, and stale flags", () => {
   assert.match(help, /--subagents/);
   assert.match(help, /\/peer setup/);
   assert.match(help, /\/peer center/);
+  assert.match(help, /\/peer work/);
   assert.match(help, /\/peer do <intent>/);
   assert.match(help, /\/peer subrun/);
   assert.match(help, /\/peer factory init\|status\|run\|gate\|attempt\|rework\|plan-review\|metrics/);

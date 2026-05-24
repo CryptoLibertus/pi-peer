@@ -1,6 +1,6 @@
 import { flagEnabled, parseFlags, splitCommandLine } from "../utils.mjs";
 
-export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "center", "init", "setup", "do", "mission", "accomplish", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics"]);
+export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "center", "work", "init", "setup", "do", "mission", "accomplish", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics"]);
 
 const PEER_GOAL_ALIASES = Object.freeze({
   goals: ["list"],
@@ -149,6 +149,7 @@ export function formatPeerHelp() {
     "",
     "- `/peer setup` — open the wizard; use `/peer setup 1`, `/peer setup subagents`, `/peer setup reset`, or legacy setup flags",
     "- `/peer center` — open the peer command center facade",
+    "- `/peer work` — open a compact TUI launcher that pre-fills common peer work commands",
     "- `/peer do <intent> [args...]` or `/peer do <objective>` `[--constraint <a,b>] [--path <a,b>] [--lane <a,b>]` — run a high-level peer workflow intent or start a natural-language mission",
     "- `/peer accomplish <objective>` — alias for `/peer do mission <objective>`",
     "- `/peer subrun status|start|progress|complete|cancel ...` — coordinate subagent run status and evidence",

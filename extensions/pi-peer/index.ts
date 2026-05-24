@@ -1,9 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { watch } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
-import { Text } from "@earendil-works/pi-tui";
+import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 
 import { installPeerRuntimeLifecycle } from "../../src/peers/extension-lifecycle.mjs";
 import { initPeerConfig } from "../../src/peers/config.mjs";
@@ -46,7 +47,7 @@ import { derivePlanAdversaryReview, formatPlanAdversaryReview, hasMatchingPlanAd
 import { buildReworkDecisionRun, deriveReworkDecision, formatReworkDecision, reworkRecordTypeForAction } from "../../src/peers/rework.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
 import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
-import { buildPeerCommandCenterState, formatPeerCommandCenter, routePeerIntent } from "../../src/peers/command-center.mjs";
+import { buildPeerCommandCenterState, buildPeerWorkLauncherItems, formatPeerCommandCenter, formatPeerWorkLauncher, routePeerIntent } from "../../src/peers/command-center.mjs";
 import { cancelPeerSubagentRun, completePeerSubagentRun, formatPeerSubagentRunResult, formatPeerSubagentStatus, recordPeerSubagentRunProgress, startPeerSubagentRun } from "../../src/peers/subagents.mjs";
 import { derivePeerFactoryMetrics, formatPeerFactoryMetrics } from "../../src/peers/metrics.mjs";
 
@@ -104,8 +105,8 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("peer", {
-    description: "Pi-to-Pi peers: setup, center, do, subrun, org, doctor, status, list, send, get, await, progress, goal, hive, self-improve, factory, metrics",
-    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "init", "setup", "do", "mission", "accomplish", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
+    description: "Pi-to-Pi peers: setup, center, work, do, subrun, org, doctor, status, list, send, get, await, progress, goal, hive, self-improve, factory, metrics",
+    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "work", "init", "setup", "do", "mission", "accomplish", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (rawArgs, ctx) => {
@@ -345,6 +346,61 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   }
 }
 
+async function showPeerWorkLauncher(pi: ExtensionAPI, ctx: any, state: any) {
+  const items = buildPeerWorkLauncherItems(state);
+  if (!ctx?.hasUI || !ctx.ui?.custom || !items.length) {
+    return sendPeerMessage(pi, formatPeerWorkLauncher(state));
+  }
+
+  const selectedId = await ctx.ui.custom((tui: any, theme: any, _keybindings: any, done: (value: string | null) => void) => {
+    const container = new Container();
+    container.addChild(new DynamicBorder((str: string) => theme.fg("accent", str)));
+    container.addChild(new Text(theme.fg("accent", theme.bold("Peer Work")), 1, 0));
+    container.addChild(new Text(theme.fg("dim", "Pick a command. It will be placed in the editor so you can tweak it before running."), 1, 0));
+
+    const selectItems: SelectItem[] = items.map((item: any) => ({
+      value: item.id,
+      label: item.label,
+      description: `${item.description || item.command} · ${item.command}`,
+    }));
+    const selectList = new SelectList(selectItems, Math.min(selectItems.length, 10), {
+      selectedPrefix: (text: string) => theme.fg("accent", text),
+      selectedText: (text: string) => theme.fg("accent", text),
+      description: (text: string) => theme.fg("muted", text),
+      scrollInfo: (text: string) => theme.fg("dim", text),
+      noMatch: (text: string) => theme.fg("warning", text),
+    });
+    selectList.onSelect = (item: SelectItem) => done(String(item.value));
+    selectList.onCancel = () => done(null);
+    container.addChild(selectList);
+    container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter fill editor • esc cancel"), 1, 0));
+    container.addChild(new DynamicBorder((str: string) => theme.fg("accent", str)));
+
+    return {
+      render(width: number) {
+        return container.render(width);
+      },
+      invalidate() {
+        container.invalidate();
+      },
+      handleInput(data: string) {
+        selectList.handleInput(data);
+        tui.requestRender();
+      },
+    };
+  }, { overlay: true, overlayOptions: { width: "72%", minWidth: 56, maxHeight: "80%" } });
+
+  if (!selectedId) return sendPeerMessage(pi, "Peer work launcher cancelled.");
+  const selected = items.find((item: any) => item.id === selectedId);
+  if (!selected) return sendPeerMessage(pi, formatPeerWorkLauncher(state));
+  if (typeof ctx.ui?.setEditorText !== "function") {
+    return sendPeerMessage(pi, `Copy this peer work command:\n${selected.command}`);
+  }
+  ctx.ui.setEditorText(selected.command);
+  if (typeof ctx.ui?.notify === "function") ctx.ui.notify(`Prepared peer work: ${selected.label}`, "info");
+  return sendPeerMessage(pi, `Prepared peer work command in the editor:\n${selected.command}`);
+}
+
 async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, refresh: () => Promise<void>) {
   const parsed = parsePeerCommand(rawArgs);
   if (parsed.error) return sendPeerMessage(pi, formatPeerCommandError(parsed.error));
@@ -408,6 +464,13 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       const input = await collectPeerCommandCenterInput(ctx, runtime);
       await refresh();
       return sendPeerMessage(pi, formatPeerCommandCenter(buildPeerCommandCenterState(input)));
+    }
+    if (parsed.subcommand === "work") {
+      if (runtime.enabled) await runtime.refreshLocalPeers();
+      const input = await collectPeerCommandCenterInput(ctx, runtime);
+      const state = buildPeerCommandCenterState(input);
+      await refresh();
+      return showPeerWorkLauncher(pi, ctx, state);
     }
     if (parsed.subcommand === "do") {
       const root = ctx.cwd || process.cwd();

@@ -136,6 +136,45 @@ export function formatPeerCommandCenter(state = {}) {
   return lines.join("\n");
 }
 
+export function buildPeerWorkLauncherItems(state = {}) {
+  const recommendations = dedupeRecommendations(array(state.recommendations).length ? state.recommendations : derivePeerCommandCenterRecommendations(state));
+  const currentGoal = state.currentGoal || selectCurrentGoal(undefined, array(state.goals), state.currentGoalId);
+  const items = [];
+  const add = (id, label, description, command) => {
+    if (!command || items.some((item) => item.command === command)) return;
+    items.push({ id, label, description, command });
+  };
+
+  if (state.setup?.exists === false) {
+    add("setup", "Set up this peer", "Choose a role before sending work", "/peer setup");
+    return items;
+  }
+
+  for (const [index, item] of recommendations.slice(0, 3).entries()) {
+    add(`recommended-${index + 1}`, index === 0 ? "Do the next recommended action" : `Recommended action ${index + 1}`, item.reason || "From the peer command center", item.command);
+  }
+
+  if (currentGoal?.id && !isFlagLike(currentGoal.id)) {
+    add("plan", "Plan current goal", currentGoal.objective || currentGoal.id, `/peer do plan ${commandArg(currentGoal.id)} --gate test --gate pack`);
+    add("research", "Ask for research", "Claim a read-only research lane", `/peer do research ${commandArg(currentGoal.id)}`);
+    add("review", "Ask for review", "Claim a read-only review lane", `/peer do review ${commandArg(currentGoal.id)}`);
+    add("work", "Claim implementation", "Edit the path placeholder before running", `/peer do work ${commandArg(currentGoal.id)} --path <path>`);
+    add("verify", "Verify test + pack", "Record factory gates after running checks", `/peer do verify ${commandArg(currentGoal.id)} --gate test --gate pack`);
+  }
+
+  add("mission", "Start verified mission", "Creates/reuses a goal and factory run", `/peer do ${commandArg(state.objective || "Describe the work")} --gate test --gate pack`);
+  add("center", "Open command center", "Show full peer state and recommendations", "/peer center");
+  return items;
+}
+
+export function formatPeerWorkLauncher(state = {}) {
+  const items = buildPeerWorkLauncherItems(state);
+  const lines = ["Peer work launcher", "Pick one in the TUI, or copy a command:"];
+  if (!items.length) lines.push("1. /peer center");
+  items.forEach((item, index) => lines.push(`${index + 1}. ${item.command} — ${item.description || item.label}`));
+  return lines.join("\n");
+}
+
 export function formatPeerIntentResult(result = {}) {
   if (typeof result.text === "string" && result.text.trim()) return result.text.trim();
   const commands = array(result.commands).map((item) => typeof item === "string" ? item : item?.command).filter(Boolean);

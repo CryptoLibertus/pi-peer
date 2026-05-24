@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { parsePeerCommand } from "../src/peers/command.mjs";
-import { buildPeerCommandCenterState, derivePeerCommandCenterRecommendations, formatPeerCommandCenter, routePeerIntent } from "../src/peers/command-center.mjs";
+import { buildPeerCommandCenterState, buildPeerWorkLauncherItems, derivePeerCommandCenterRecommendations, formatPeerCommandCenter, formatPeerWorkLauncher, routePeerIntent } from "../src/peers/command-center.mjs";
 import { deriveFactoryState } from "../src/peers/factory.mjs";
 import { loadPeerGoalBoard } from "../src/peers/goal-board.mjs";
 
@@ -65,6 +65,42 @@ test("command center renders local profile, org, peers, goal blockers, and subru
   assert.match(text, /Org: configured .*private teams enabled .*provider optional/);
   assert.match(text, /Goals: goal_123 ready no .*blockers 1 .*active tasks 0 .*subruns 1/);
   assert.match(text, /\/peer do resolve-handoffs/);
+});
+
+test("work launcher builds compact command choices for issuing peer work", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    objective: "Ship easier peer work",
+    goals: [{
+      id: "goal_123",
+      objective: "Ship easier peer work",
+      readyToClose: true,
+      currentVotes: [{ verdict: "pass" }],
+      factoryRecords: [{ type: "plan-review", goalId: "goal_123" }],
+    }],
+  });
+
+  const items = buildPeerWorkLauncherItems(state);
+  const commands = items.map((item) => item.command);
+
+  assert.equal(items[0].command, "/peer do verify goal_123");
+  assert.equal(commands.includes("/peer do work goal_123 --path <path>"), true);
+  assert.equal(commands.includes("/peer do verify goal_123 --gate test --gate pack"), true);
+  assert.match(formatPeerWorkLauncher(state), /Peer work launcher/);
+  for (const command of commands) {
+    const parsed = parsePeerLine(command);
+    assert.equal(parsed.error, undefined, command);
+  }
+});
+
+test("work launcher falls back to setup when peer setup is missing", () => {
+  const state = buildPeerCommandCenterState({ setupSession: { exists: false } });
+  assert.deepEqual(buildPeerWorkLauncherItems(state), [{
+    id: "setup",
+    label: "Set up this peer",
+    description: "Choose a role before sending work",
+    command: "/peer setup",
+  }]);
 });
 
 test("command center renders compact factory metrics", () => {
