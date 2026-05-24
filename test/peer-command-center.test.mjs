@@ -435,6 +435,27 @@ test("routePeerIntent start goal can link a factory run", async () => {
   assert.match(result.text, new RegExp(`Next: /peer do plan ${result.goalId}`));
 });
 
+test("routePeerIntent start goal reports factory linkage failure with recovery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "start",
+    intentArgs: ["goal", "Ship", "recoverable", "workflow"],
+  }, {
+    peerId: "planner-a",
+    runtimeStatus: { localPeerId: "planner-a" },
+    startFactoryRun: async () => {
+      throw new Error("ledger unavailable");
+    },
+  });
+
+  assert.equal(result.mutated, true);
+  assert.match(result.goalId, /^goal_/);
+  assert.match(result.text, new RegExp(`Created peer goal ${result.goalId}, but factory run failed: ledger unavailable`));
+  assert.match(result.text, new RegExp(`Retry: /peer factory run "Ship recoverable workflow" --goal ${result.goalId} --source peer-do`));
+  assert.match(result.text, new RegExp(`Next: /peer do plan ${result.goalId}`));
+});
+
 test("routePeerIntent work without explicit paths is conservative", async () => {
   const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
 

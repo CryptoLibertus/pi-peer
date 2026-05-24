@@ -10,10 +10,12 @@ import {
   FACTORY_RUNS_FILE,
   appendFactoryRunRecord,
   deriveFactoryState,
+  findFactoryRunByLink,
   formatFactoryStatus,
   initFactory,
   loadFactoryReworkPolicy,
   loadFactoryRuns,
+  startLinkedFactoryRun,
   startFactoryRun,
 } from "../src/peers/factory.mjs";
 
@@ -70,6 +72,32 @@ test("factory run records start, attempts, gates, and terminal status", async (t
     assert.equal(state.runs[0].attempts.length, 1);
     assert.equal(state.runs[0].gateResults.test.status, "pass");
     assert.match(formatFactoryStatus(state), /verified 1/);
+  });
+});
+
+test("factory linked runs can be found and reused by source and goal", async (t) => {
+  await withRoot(t, async (root) => {
+    const first = await startLinkedFactoryRun(root, {
+      objective: "Ship linked workflow",
+      goalId: "goal_linked",
+      peerId: "planner-a",
+      source: "peer-do",
+    });
+    const second = await startLinkedFactoryRun(root, {
+      objective: "Ship linked workflow again",
+      goalId: "goal_linked",
+      peerId: "planner-b",
+      source: "peer-do",
+    });
+
+    const loaded = await loadFactoryRuns(root);
+    const state = deriveFactoryState(loaded.records);
+    const found = findFactoryRunByLink(state, { goalId: "goal_linked", source: "peer-do" });
+
+    assert.equal(second.runId, first.runId);
+    assert.equal(second.reused, true);
+    assert.equal(state.runs.length, 1);
+    assert.equal(found.runId, first.runId);
   });
 });
 

@@ -27,7 +27,7 @@ import { PEER_TOOL_NAMES, PEER_TOOL_PROMPT_GUIDELINES } from "../../src/peers/gu
 import { buildPeerIdleActivationPrompt, createPeerIdleWatcher, derivePeerIdleActivationOfferPlan, markPeerIdleActivation } from "../../src/peers/idle-watcher.mjs";
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcileDisconnectedPeerGoalTasks, reconcilePeerControlLedger } from "../../src/peers/control-ledger.mjs";
 import { formatHiveRunPeerHealthPauseSummary, summarizeHiveRunPeerHealth } from "../../src/peers/hive-supervisor.mjs";
-import { formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
+import { formatSelfImproveFactoryWarning, formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, linkSelfImproveFactoryRun, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
 import {
   appendFactoryRunRecord,
   formatFactoryRun,
@@ -36,6 +36,7 @@ import {
   initFactory,
   loadFactoryReworkPolicy,
   loadFactoryRuns,
+  startLinkedFactoryRun,
   startFactoryRun,
   deriveFactoryState,
 } from "../../src/peers/factory.mjs";
@@ -410,7 +411,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       const root = ctx.cwd || process.cwd();
       if (runtime.enabled) await runtime.refreshLocalPeers();
       const input = await collectPeerCommandCenterInput(ctx, runtime);
-      const result = await routePeerIntent(root, parsed, { ...input, peerId: runtime.localPeerId || runtime.summary?.localPeerId || "unknown", startFactoryRun });
+      const result = await routePeerIntent(root, parsed, { ...input, peerId: runtime.localPeerId || runtime.summary?.localPeerId || "unknown", startFactoryRun: startLinkedFactoryRun });
       await refresh();
       return sendPeerMessage(pi, result.text);
     }
@@ -705,17 +706,21 @@ async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any)
     peerId,
     factory: true,
   });
-  const factoryRun = await startFactoryRun(root, {
-    objective: parsed.objective,
-    goalId: result.goalId,
-    peerId,
-    paths: result.paths,
-    gates: result.evals,
-    source: "self-improve",
-    metadata: { selfImprove: { runId: result.runId } },
-  });
-  result.factory = { ...(result.factory || {}), runId: factoryRun.runId };
-  result.factoryRunId = factoryRun.runId;
+  let factoryWarning: string | undefined;
+  try {
+    const factoryRun = await startLinkedFactoryRun(root, {
+      objective: parsed.objective,
+      goalId: result.goalId,
+      peerId,
+      paths: result.paths,
+      gates: result.evals,
+      source: "self-improve",
+      metadata: { selfImprove: { runId: result.runId } },
+    });
+    await linkSelfImproveFactoryRun(root, result, factoryRun);
+  } catch (error) {
+    factoryWarning = formatSelfImproveFactoryWarning(result, error);
+  }
   result.dispatchRequested = parsed.dispatch === true;
 
   if (parsed.dispatch && result.peers?.length && result.durationMs) {
@@ -759,10 +764,10 @@ async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any)
       peerId,
       coordinatorClaimId: coordinatorClaim.event.id,
     });
-    return `${formatSelfImproveRunResult(result)}\n\n${formatHiveDispatchLines(dispatches).join("\n")}`;
+    return [formatSelfImproveRunResult(result), factoryWarning, formatHiveDispatchLines(dispatches).join("\n")].filter(Boolean).join("\n\n");
   }
 
-  return formatSelfImproveRunResult(result);
+  return [formatSelfImproveRunResult(result), factoryWarning].filter(Boolean).join("\n\n");
 }
 
 async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {

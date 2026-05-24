@@ -74,6 +74,25 @@ export async function startFactoryRun(root, input = {}) {
   };
 }
 
+export async function startLinkedFactoryRun(root, input = {}) {
+  const loaded = await loadFactoryRuns(root);
+  const existing = findFactoryRunByLink(deriveFactoryState(loaded.records), input);
+  if (existing) return { ...existing, reused: true };
+  return startFactoryRun(root, input);
+}
+
+export function findFactoryRunByLink(stateOrRecords, link = {}) {
+  const source = cleanText(link.source);
+  const goalId = cleanText(link.goalId);
+  if (!source || !goalId) return undefined;
+  const runs = Array.isArray(stateOrRecords?.runs)
+    ? stateOrRecords.runs
+    : Array.isArray(stateOrRecords)
+      ? deriveFactoryState(stateOrRecords).runs
+      : [];
+  return runs.find((run) => cleanText(run.source) === source && cleanText(run.goalId) === goalId);
+}
+
 export async function appendFactoryRunRecord(root, record = {}) {
   if (!root) throw new Error("factory ledger requires root");
   await mkdir(join(root, FACTORY_DIR), { recursive: true });

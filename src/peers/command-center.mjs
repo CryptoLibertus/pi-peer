@@ -162,7 +162,13 @@ export async function routePeerIntent(root, parsed = {}, context = {}) {
     const factoryRun = await startPeerDoFactoryRun(root, parsed, context, { goalId: goal.id, objective, peerId });
 
     const lines = [`Created peer goal ${goal.id}: ${goal.objective}`];
-    if (factoryRun?.runId) {
+    if (factoryRun?.error) {
+      lines[0] = `Created peer goal ${goal.id}, but factory run failed: ${factoryRun.error}`;
+      lines.push(
+        `Retry: /peer factory run ${commandArg(objective)} --goal ${commandArg(goal.id)} --source peer-do`,
+        `Next: /peer do plan ${goal.id}`,
+      );
+    } else if (factoryRun?.runId) {
       lines.push(`Factory run: ${factoryRun.runId}`, `Next: /peer do plan ${goal.id}`, "Then: /peer center");
     } else {
       lines.push(`Next: /peer scout ${goal.id}`, "Then: /peer center");
@@ -253,14 +259,18 @@ async function seedPeerGoalProposals(root, goalId, peerId) {
 
 async function startPeerDoFactoryRun(root, parsed, context, input) {
   if (typeof context.startFactoryRun !== "function") return undefined;
-  return context.startFactoryRun(root, {
-    objective: input.objective,
-    goalId: input.goalId,
-    peerId: input.peerId,
-    paths: parsed.paths,
-    gates: parsed.gates,
-    source: "peer-do",
-  });
+  try {
+    return await context.startFactoryRun(root, {
+      objective: input.objective,
+      goalId: input.goalId,
+      peerId: input.peerId,
+      paths: parsed.paths,
+      gates: parsed.gates,
+      source: "peer-do",
+    });
+  } catch (error) {
+    return { error: errorMessage(error) };
+  }
 }
 
 function coordinateCommands(goal) {
@@ -364,6 +374,10 @@ function commandArg(value) {
   const safe = String(value ?? "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
   if (/^[A-Za-z0-9._:@/%+=,-]+$/.test(safe)) return safe;
   return shellQuote(safe);
+}
+
+function errorMessage(error) {
+  return error?.message ? String(error.message) : String(error || "unknown error");
 }
 
 function normalizeOrgData(orgState = {}) {

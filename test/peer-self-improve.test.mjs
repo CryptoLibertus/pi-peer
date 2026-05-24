@@ -10,9 +10,11 @@ import {
   SELF_IMPROVE_CONSTITUTION_FILE,
   SELF_IMPROVE_EXPERIMENTS_FILE,
   SELF_IMPROVE_GOALS_FILE,
+  formatSelfImproveFactoryWarning,
   formatSelfImproveRunResult,
   formatSelfImproveStatus,
   initSelfImprove,
+  linkSelfImproveFactoryRun,
   loadSelfImproveState,
   startSelfImproveRun,
 } from "../src/peers/self-improve.mjs";
@@ -84,6 +86,30 @@ test("self-improve run can emit factory metadata", async (t) => {
 
     assert.equal(result.factory?.source, "self-improve");
     assert.equal(result.factory?.objective, "Improve verification");
+  });
+});
+
+test("self-improve factory linkage records experiment and formats recovery warning", async (t) => {
+  await withRoot(t, async (root) => {
+    const result = await startSelfImproveRun(root, {
+      objective: "Improve verification",
+      loops: 1,
+      peerId: "planner",
+      factory: true,
+    });
+
+    await linkSelfImproveFactoryRun(root, result, { runId: "fac_linked" });
+
+    const experimentText = await readFile(join(root, SELF_IMPROVE_EXPERIMENTS_FILE), "utf8");
+    assert.match(experimentText, /"type":"factory-linked"/);
+    assert.match(experimentText, /"factoryRunId":"fac_linked"/);
+    assert.match(formatSelfImproveStatus(await loadSelfImproveState(root)), /factory fac_linked/);
+
+    const warning = formatSelfImproveFactoryWarning(result, new Error("ledger unavailable"));
+    assert.match(warning, /Factory warning: failed to link factory run for self-improvement run/);
+    assert.match(warning, new RegExp(result.runId));
+    assert.match(warning, new RegExp(result.goalId));
+    assert.match(warning, new RegExp(`Retry: /peer factory run "Improve verification" --goal ${result.goalId} --source self-improve`));
   });
 });
 

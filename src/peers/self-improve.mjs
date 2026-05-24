@@ -168,7 +168,6 @@ export async function startSelfImproveRun(root, input = {}) {
         objective,
         gates: evals,
         paths,
-        runId: undefined,
       }
       : undefined,
   };
@@ -215,6 +214,29 @@ export function formatSelfImproveRunResult(result = {}) {
   ].filter((line) => line !== undefined).join("\n");
 }
 
+export async function linkSelfImproveFactoryRun(root, result = {}, factoryRun = {}) {
+  const factoryRunId = cleanText(factoryRun.runId);
+  if (!factoryRunId) return result;
+  result.factory = { ...(result.factory || {}), runId: factoryRunId };
+  result.factoryRunId = factoryRunId;
+  await appendExperimentRecord(root, {
+    type: "factory-linked",
+    runId: result.runId,
+    goalId: result.goalId,
+    factoryRunId,
+  });
+  return result;
+}
+
+export function formatSelfImproveFactoryWarning(result = {}, error) {
+  const message = errorMessage(error);
+  return [
+    `Factory warning: failed to link factory run for self-improvement run ${result.runId || "unknown"} on goal ${result.goalId || "unknown"}: ${message}`,
+    `Retry: /peer factory run ${commandArg(result.factory?.objective || result.objective || "self-improve")} --goal ${commandArg(result.goalId)} --source self-improve`,
+    `Next: /peer do plan ${commandArg(result.goalId)}`,
+  ].join("\n");
+}
+
 export function formatSelfImproveStatus(state = {}) {
   if (!state.initialized) return "Self-improvement is not initialized. Run `/peer self-improve init`.";
   const goals = Array.isArray(state.goals?.goals) ? state.goals.goals : [];
@@ -232,7 +254,10 @@ export function formatSelfImproveStatus(state = {}) {
   }
   if (recent.length) {
     lines.push("", "Recent experiments:");
-    for (const item of recent) lines.push(`- ${item.runId || "run"} · ${item.type || "record"} · ${item.goalId || "no-goal"} · ${item.objective || item.summary || ""}`);
+    for (const item of recent) {
+      const factory = item.factoryRunId ? ` · factory ${item.factoryRunId}` : "";
+      lines.push(`- ${item.runId || "run"} · ${item.type || "record"} · ${item.goalId || "no-goal"}${factory} · ${item.objective || item.summary || ""}`);
+    }
   }
   return lines.join("\n");
 }
@@ -338,6 +363,16 @@ function normalizeList(value) {
 
 function cleanText(value) {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+}
+
+function commandArg(value) {
+  const safe = String(value ?? "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  if (/^[A-Za-z0-9._:@/%+=,-]+$/.test(safe)) return safe;
+  return `"${safe.replace(/["\\$`]/g, "\\$&")}"`;
+}
+
+function errorMessage(error) {
+  return error?.message ? String(error.message) : String(error || "unknown error");
 }
 
 function positiveInteger(value) {
