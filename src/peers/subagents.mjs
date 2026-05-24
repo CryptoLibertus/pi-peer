@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger } from "./control-ledger.mjs";
 import { completePeerGoalTask, recordPeerGoalTaskDispatch } from "./goal-board.mjs";
 import { loadPeerOrg } from "./org.mjs";
+import { DEFAULT_TOOL_REGISTRY, deriveToolsetForRole } from "./tool-registry.mjs";
 
 export const PEER_SUBAGENT_LEDGER_KIND = "subrun";
 
@@ -28,6 +29,12 @@ export function normalizeSubagentRunRequest(input = {}) {
     importModule: typeof source.importModule === "function" ? source.importModule : undefined,
     org: source.org,
     capabilities: source.capabilities,
+    role: cleanKey(source.role),
+    parentPeerRole: cleanKey(source.parentPeerRole || source.peerRole),
+    domain: cleanKey(source.domain),
+    toolRegistry: source.toolRegistry,
+    toolset: source.toolset,
+    toolsetIds: source.toolsetIds,
   });
 }
 
@@ -254,6 +261,7 @@ async function importProviderModule(importModule, providerName) {
 }
 
 function subrunMetadata(input = {}) {
+  const toolsetIds = deriveSubrunToolsetIds(input);
   return stripEmpty({
     provider: cleanKey(input.provider),
     mode: cleanKey(input.mode),
@@ -264,7 +272,18 @@ function subrunMetadata(input = {}) {
     parentPeerId: cleanText(input.parentPeerId),
     goalId: cleanText(input.goalId),
     workKey: cleanText(input.workKey),
+    role: cleanKey(input.role),
+    parentPeerRole: cleanKey(input.parentPeerRole),
+    domain: cleanKey(input.domain),
+    toolsetIds,
   });
+}
+
+function deriveSubrunToolsetIds(input = {}) {
+  const explicit = normalizeToolsetIds(input.toolset || input.toolsetIds);
+  if (explicit.length > 0) return explicit;
+  if (!input.role && !input.parentPeerRole && !input.peerRole && !input.domain) return [];
+  return deriveToolsetForRole(input.toolRegistry || DEFAULT_TOOL_REGISTRY, input).map((tool) => tool.id);
 }
 
 function subagentEvidence(input = {}) {
@@ -325,6 +344,13 @@ function normalizeList(value) {
   if (Array.isArray(value)) return [...new Set(value.map(cleanText).filter(Boolean))];
   if (typeof value === "string") return value.split(",").map(cleanText).filter(Boolean);
   return [];
+}
+
+function normalizeToolsetIds(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((tool) => cleanText(tool?.id || tool)).filter(Boolean))];
+  }
+  return normalizeList(value);
 }
 
 function nonNegativeInteger(value) {

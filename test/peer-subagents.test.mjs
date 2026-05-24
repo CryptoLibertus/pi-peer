@@ -168,6 +168,25 @@ test("cancelPeerSubagentRun records terminal cancelled subrun", async (t) => {
   });
 });
 
+test("subrun metadata includes curated toolset for parent peer role", async (t) => {
+  await withRoot(t, async (root) => {
+    const started = await startPeerSubagentRun(root, {
+      summary: "Reviewer-backed checks",
+      goalId: "goal_123",
+      parentPeerId: "reviewer-a",
+      parentPeerRole: "reviewer",
+      provider: "manual",
+    });
+
+    const state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    const subrun = state.activeSubruns.find((run) => run.subrunId === started.subrunId);
+
+    assert.ok(subrun);
+    assert.equal(subrun.metadata.toolsetIds.includes("peer_get"), true);
+    assert.equal(subrun.metadata.toolsetIds.includes("peer_send"), true);
+  });
+});
+
 test("resolveSubagentProvider supports injected provider modules", async (t) => {
   await withRoot(t, async (root) => {
     const provider = await resolveSubagentProvider(root, {
