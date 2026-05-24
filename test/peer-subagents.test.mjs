@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 
 import { derivePeerControlState, loadPeerControlLedger } from "../src/peers/control-ledger.mjs";
 import { appendPeerGoalEvent, createPeerGoal, deriveGoalState, loadPeerGoalBoard } from "../src/peers/goal-board.mjs";
+import { TOOL_REGISTRY_FILE } from "../src/peers/tool-registry.mjs";
 import {
   cancelPeerSubagentRun,
   completePeerSubagentRun,
@@ -165,6 +166,121 @@ test("cancelPeerSubagentRun records terminal cancelled subrun", async (t) => {
     assert.equal(state.activeSubruns.length, 0);
     assert.equal(state.completedSubruns.length, 1);
     assert.equal(state.completedSubruns[0].status, "cancelled");
+  });
+});
+
+test("subrun metadata includes curated toolset for parent peer role", async (t) => {
+  await withRoot(t, async (root) => {
+    const started = await startPeerSubagentRun(root, {
+      summary: "Reviewer-backed checks",
+      goalId: "goal_123",
+      parentPeerId: "reviewer-a",
+      parentPeerRole: "reviewer",
+      provider: "manual",
+    });
+
+    const state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    const subrun = state.activeSubruns.find((run) => run.subrunId === started.subrunId);
+
+    assert.ok(subrun);
+    assert.equal(subrun.metadata.toolsetIds.includes("peer_get"), true);
+    assert.equal(subrun.metadata.toolsetIds.includes("peer_send"), true);
+  });
+});
+
+test("subrun metadata uses custom root tool registry when role is present", async (t) => {
+  await withRoot(t, async (root) => {
+    await mkdir(join(root, ".pi/tools"), { recursive: true });
+    await writeFile(join(root, TOOL_REGISTRY_FILE), JSON.stringify({
+      version: 1,
+      tools: [
+        {
+          id: "custom_review",
+          risk: "low",
+          roles: ["reviewer"],
+          permissions: ["read-review-state"],
+          failureModes: ["custom-failure"],
+        },
+      ],
+    }), "utf8");
+
+    const started = await startPeerSubagentRun(root, {
+      summary: "Custom reviewer checks",
+      goalId: "goal_123",
+      parentPeerId: "reviewer-a",
+      parentPeerRole: "reviewer",
+      provider: "manual",
+    });
+
+    const state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    const subrun = state.activeSubruns.find((run) => run.subrunId === started.subrunId);
+
+    assert.ok(subrun);
+    assert.deepEqual(subrun.metadata.toolsetIds, ["custom_review"]);
+    assert.equal(subrun.metadata.toolsetIds.includes("peer_get"), false);
+    assert.equal(subrun.metadata.toolset, undefined);
+  });
+});
+
+test("subrun lifecycle preserves custom registry-derived toolset ids", async (t) => {
+  await withRoot(t, async (root) => {
+    await mkdir(join(root, ".pi/tools"), { recursive: true });
+    await writeFile(join(root, TOOL_REGISTRY_FILE), JSON.stringify({
+      version: 1,
+      tools: [
+        {
+          id: "custom_review",
+          risk: "low",
+          roles: ["reviewer"],
+          permissions: ["read-review-state"],
+          failureModes: ["custom-failure"],
+        },
+      ],
+    }), "utf8");
+
+    const started = await startPeerSubagentRun(root, {
+      summary: "Custom reviewer checks",
+      goalId: "goal_123",
+      parentPeerId: "reviewer-a",
+      parentPeerRole: "reviewer",
+      provider: "manual",
+    });
+
+    await recordPeerSubagentRunProgress(root, {
+      subrunId: started.subrunId,
+      parentPeerRole: "reviewer",
+      summary: "Still reviewing",
+    });
+
+    const state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    const subrun = state.activeSubruns.find((run) => run.subrunId === started.subrunId);
+
+    assert.ok(subrun);
+    assert.deepEqual(subrun.metadata.toolsetIds, ["custom_review"]);
+    assert.equal(subrun.metadata.toolsetIds.includes("peer_send"), false);
+    assert.equal(subrun.metadata.toolsetIds.includes("peer_get"), false);
+  });
+});
+
+test("subrun metadata falls back when optional root tool registry is corrupt", async (t) => {
+  await withRoot(t, async (root) => {
+    await mkdir(join(root, ".pi/tools"), { recursive: true });
+    await writeFile(join(root, TOOL_REGISTRY_FILE), "{not-json", "utf8");
+
+    const started = await startPeerSubagentRun(root, {
+      summary: "Reviewer checks with corrupt registry",
+      goalId: "goal_123",
+      parentPeerId: "reviewer-a",
+      parentPeerRole: "reviewer",
+      provider: "manual",
+    });
+
+    const state = derivePeerControlState((await loadPeerControlLedger(root)).records);
+    const subrun = state.activeSubruns.find((run) => run.subrunId === started.subrunId);
+
+    assert.ok(subrun);
+    assert.equal(subrun.metadata.toolsetIds.includes("peer_get"), true);
+    assert.equal(subrun.metadata.toolRegistryWarning, "corrupt peer tool registry");
   });
 });
 

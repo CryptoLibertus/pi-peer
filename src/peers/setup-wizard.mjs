@@ -6,13 +6,21 @@ import { setPeerOrgRole } from "./org.mjs";
 
 export const PEER_SETUP_SESSION_RELATIVE_PATH = ".pi/peer-setup-session.json";
 
+const DEFAULT_SESSION_METADATA = Object.freeze({
+  factoryArtifactsRelevant: false,
+  toolRegistryRelevant: false,
+  automationsRelevant: false,
+  automationsEnabled: false,
+});
+
 export const PEER_SETUP_CHOICES = Object.freeze({
   coordinate: Object.freeze({
-    label: "Coordinate other peers",
+    label: "Coordinate peers",
     role: "coordinator",
     domain: "coordination",
     canSpawnSubagents: true,
     countsForIndependentVote: true,
+    ...DEFAULT_SESSION_METADATA,
   }),
   implement: Object.freeze({
     label: "Implement code",
@@ -20,6 +28,7 @@ export const PEER_SETUP_CHOICES = Object.freeze({
     domain: "implementation",
     canSpawnSubagents: true,
     countsForIndependentVote: false,
+    ...DEFAULT_SESSION_METADATA,
   }),
   review: Object.freeze({
     label: "Review work",
@@ -27,6 +36,7 @@ export const PEER_SETUP_CHOICES = Object.freeze({
     domain: "review",
     canSpawnSubagents: true,
     countsForIndependentVote: true,
+    ...DEFAULT_SESSION_METADATA,
   }),
   research: Object.freeze({
     label: "Research",
@@ -34,6 +44,7 @@ export const PEER_SETUP_CHOICES = Object.freeze({
     domain: "research",
     canSpawnSubagents: true,
     countsForIndependentVote: true,
+    ...DEFAULT_SESSION_METADATA,
   }),
   subagents: Object.freeze({
     label: "Manage private subagents",
@@ -42,6 +53,38 @@ export const PEER_SETUP_CHOICES = Object.freeze({
     canSpawnSubagents: true,
     countsForIndependentVote: true,
     forceSubagents: true,
+    ...DEFAULT_SESSION_METADATA,
+    toolRegistryRelevant: true,
+  }),
+  factory: Object.freeze({
+    label: "Run factory verification",
+    role: "verifier",
+    domain: "verification",
+    canSpawnSubagents: false,
+    countsForIndependentVote: true,
+    ...DEFAULT_SESSION_METADATA,
+    factoryArtifactsRelevant: true,
+    toolRegistryRelevant: true,
+  }),
+  context: Object.freeze({
+    label: "Improve context",
+    role: "context-curator",
+    domain: "context",
+    canSpawnSubagents: false,
+    countsForIndependentVote: true,
+    ...DEFAULT_SESSION_METADATA,
+    factoryArtifactsRelevant: true,
+  }),
+  pr: Object.freeze({
+    label: "Shepherd PRs",
+    role: "pr-shepherd",
+    domain: "delivery",
+    canSpawnSubagents: false,
+    countsForIndependentVote: true,
+    ...DEFAULT_SESSION_METADATA,
+    factoryArtifactsRelevant: true,
+    toolRegistryRelevant: true,
+    automationsRelevant: true,
   }),
   status: Object.freeze({
     label: "Inspect status only",
@@ -50,6 +93,7 @@ export const PEER_SETUP_CHOICES = Object.freeze({
     canSpawnSubagents: false,
     countsForIndependentVote: undefined,
     inspectOnly: true,
+    ...DEFAULT_SESSION_METADATA,
   }),
 });
 
@@ -129,7 +173,19 @@ export function normalizePeerSetupChoice(value) {
     "5": "subagents",
     subagent: "subagents",
     subagents: "subagents",
-    "6": "status",
+    "6": "factory",
+    factory: "factory",
+    verify: "factory",
+    verifier: "factory",
+    verification: "factory",
+    "7": "context",
+    context: "context",
+    "8": "pr",
+    pr: "pr",
+    prs: "pr",
+    shepherd: "pr",
+    ship: "pr",
+    "9": "status",
     status: "status",
     inspect: "status",
   };
@@ -141,12 +197,15 @@ export function formatPeerSetupPrompt(input = {}) {
   return [
     "What do you want this session to do?",
     "",
-    "1. Coordinate other peers",
+    "1. Coordinate peers",
     "2. Implement code",
     "3. Review work",
     "4. Research",
     "5. Manage private subagents",
-    "6. Inspect status only",
+    "6. Run factory verification",
+    "7. Improve context",
+    "8. Shepherd PRs",
+    "9. Inspect status only",
     "",
     "Reply with /peer setup <number>.",
     peer ? `Current peer: ${peer}` : undefined,
@@ -164,9 +223,11 @@ export async function applyPeerSetupChoice(root, input = {}) {
       version: 1,
       choice,
       inspectOnly: true,
+      ...sessionMetadata(setup),
       updatedAt: new Date().toISOString(),
     });
-    return { ok: true, choice, inspectOnly: true, session };
+    const nextCommands = ["/peer center", "/peer setup done"];
+    return { ok: true, choice, inspectOnly: true, ...sessionMetadata(setup), nextCommands, session };
   }
 
   const runtime = input.runtime || await loadRuntimeIdentity(root, input);
@@ -198,8 +259,10 @@ export async function applyPeerSetupChoice(root, input = {}) {
     role: setup.role,
     domain: setup.domain,
     canSpawnSubagents: setup.canSpawnSubagents,
+    ...sessionMetadata(setup),
     updatedAt: new Date().toISOString(),
   });
+  const nextCommands = ["/peer center", "/peer setup done"];
 
   return {
     ok: true,
@@ -209,6 +272,8 @@ export async function applyPeerSetupChoice(root, input = {}) {
     domain: setup.domain,
     canSpawnSubagents: setup.canSpawnSubagents,
     capabilities,
+    ...sessionMetadata(setup),
+    nextCommands,
     init,
     org: orgResult,
     session,
@@ -386,9 +451,22 @@ function normalizePeerSetupSession(input = {}, meta = {}) {
     ...(cleanKey(source.domain) ? { domain: cleanKey(source.domain) } : {}),
     ...(typeof source.canSpawnSubagents === "boolean" ? { canSpawnSubagents: source.canSpawnSubagents } : {}),
     ...(source.inspectOnly === true ? { inspectOnly: true } : {}),
+    ...(typeof source.factoryArtifactsRelevant === "boolean" ? { factoryArtifactsRelevant: source.factoryArtifactsRelevant } : {}),
+    ...(typeof source.toolRegistryRelevant === "boolean" ? { toolRegistryRelevant: source.toolRegistryRelevant } : {}),
+    ...(typeof source.automationsRelevant === "boolean" ? { automationsRelevant: source.automationsRelevant } : {}),
+    ...(typeof source.automationsEnabled === "boolean" ? { automationsEnabled: source.automationsEnabled } : {}),
     ...(cleanText(source.updatedAt) ? { updatedAt: cleanText(source.updatedAt) } : {}),
   };
   return session;
+}
+
+function sessionMetadata(setup = {}) {
+  return {
+    factoryArtifactsRelevant: setup.factoryArtifactsRelevant === true,
+    toolRegistryRelevant: setup.toolRegistryRelevant === true,
+    automationsRelevant: setup.automationsRelevant === true,
+    automationsEnabled: false,
+  };
 }
 
 function stripRuntimeFields(session = {}) {

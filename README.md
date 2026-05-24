@@ -99,18 +99,52 @@ For the primary workflow, start with the guided command center:
 
 `/peer setup <choice>` configures the local peer for a common role:
 
-1. Coordinate other peers
+1. Coordinate peers
 2. Implement code
 3. Review work
 4. Research
 5. Manage private subagents
-6. Inspect status only
+6. Run factory verification
+7. Improve context
+8. Shepherd PRs
+9. Inspect status only
 
 `/peer center` shows the local role and domain, active peers, goal-board state, subruns, and recommended next commands.
 
 `/peer do <intent>` handles common workflows such as status, review, research, work, resolve-handoffs, and subagents without requiring the full command tree.
 
 Private subagent teams are optional. `/peer subrun start <summary>` records compact local subagent work in `.pi/peer-control-ledger.jsonl`; when `pi-subagents` is missing, the command records a blocked/manual state instead of crashing.
+
+## Verification-first factory workflow
+
+The factory workflow turns peer collaboration into structured, reviewable runs:
+
+1. `/peer setup`
+2. `/peer center`
+3. `/peer do start goal "Objective"`
+4. `/peer do plan <goal-id>`, then run the printed `/peer factory plan-review ...` command
+5. `/peer do verify <goal-id>`, then run the printed `/peer factory run ...` command
+6. `/peer do rework <run-id>` when gates fail, then run the printed `/peer factory rework ...` command
+7. `/peer do metrics`, then run the printed `/peer factory metrics` command
+
+Factory state is stored locally under `.pi/factory/`. It records run starts, attempts, gate results, rework decisions, plan reviews, and PR lifecycle records; metrics are derived from those local ledgers when requested. The default behavior is record-and-recommend; automatic shell execution and PR operations require explicit future opt-in.
+
+Advanced factory and context commands:
+
+```bash
+/peer factory init
+/peer factory status [run-id]
+/peer factory run "Objective" --goal <goal-id> --gate <gate-id>
+/peer factory attempt <run-id> <start|finish>
+/peer factory gate <run-id> <gate-id> <pass|fail|skip>
+/peer factory rework <run-id>
+/peer factory plan-review <goal-id>
+/peer factory metrics
+/peer context patch --trigger <trigger> --change <change> --metric <metric> --eval <eval-name> --owner <peer-id> --review-date YYYY-MM-DD
+/peer context eval <patch-id> <pass|fail> --eval <eval-name> --evidence <text>
+/peer factory pr status
+/peer factory automate status
+```
 
 ## Setup and health checks
 

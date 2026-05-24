@@ -1,4 +1,5 @@
 import { appendPeerGoalEvent, createPeerGoal } from "./goal-board.mjs";
+import { derivePeerFactoryMetrics } from "./metrics.mjs";
 import { formatPeerSetupPrompt } from "./setup-wizard.mjs";
 
 export function buildPeerCommandCenterState(input = {}) {
@@ -12,6 +13,12 @@ export function buildPeerCommandCenterState(input = {}) {
   const localPeerId = runtimeStatus.localPeerId || "unknown";
   const goals = Array.isArray(input.goals) ? input.goals : [];
   const currentGoal = selectCurrentGoal(input.currentGoal, goals, input.currentGoalId);
+  const factoryState = input.factoryState || {};
+  const contextState = input.contextState || {};
+  const metrics = input.metrics || derivePeerFactoryMetrics({ factoryState, contextState, goals, controlState });
+  const factoryError = text(input.factoryError || factoryState.error, "");
+  const factoryInitialized = input.factoryInitialized === true || factoryState.initialized === true;
+  const contextError = text(input.contextError || contextState.error, "");
 
   const state = {
     enabled: runtimeStatus.enabled === true,
@@ -48,6 +55,14 @@ export function buildPeerCommandCenterState(input = {}) {
       activeSubruns: array(controlState.activeSubruns),
       completedSubruns: array(controlState.completedSubruns),
     },
+    factoryRecords: array(input.factoryRecords),
+    factoryState,
+    factoryKnown: Object.hasOwn(input, "factoryState") || Object.hasOwn(input, "factoryRecords"),
+    factoryInitialized,
+    factoryError,
+    contextState,
+    contextError,
+    metrics,
     objective: input.objective || currentGoal?.objective || "new peer goal",
   };
   state.recommendations = derivePeerCommandCenterRecommendations(state);
@@ -58,18 +73,37 @@ export function derivePeerCommandCenterRecommendations(state = {}) {
   const goal = state.currentGoal || selectCurrentGoal(undefined, array(state.goals), state.currentGoalId);
   const commands = [];
   const control = state.control || {};
+  const failedRun = firstFactoryRunNeedingRework(state);
+  const primary = primaryPeerCommandCenterRecommendation(state, goal, control, failedRun);
 
+  if (primary) commands.push(primary);
+  if (state.factoryError) commands.push(recommend("/peer factory status", "inspect factory ledger error"));
+  if (state.contextError) commands.push(recommend("/peer context status", "inspect context lifecycle error"));
+  if (failedRun) commands.push(reworkRecommendation(failedRun.runId));
   if (array(control.disconnectedTasks).length) commands.push(recommend("/peer reconnect", "resume disconnected peer tasks"));
-  if (goal && array(goal.staleClaims).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "coordinate stale claims"));
+  if (goal && array(goal.staleClaims).length) commands.push(goalIntentRecommendation("coordinate", goal.id, "coordinate stale claims"));
   if (goal && array(goal.unresolvedTaskHandoffs).length) commands.push(recommend("/peer do resolve-handoffs", "resolve peer handoffs"));
-  if (goal && array(goal.blockingObjections).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "clear blockers"));
-  if (goal && array(goal.failedVotes).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "resolve failed votes"));
-  if (goal && shouldRecommendReview(goal)) commands.push(recommend(`/peer do review ${goal.id}`, "collect current review"));
+  if (goal && array(goal.blockingObjections).length) commands.push(goalIntentRecommendation("coordinate", goal.id, "clear blockers"));
+  if (goal && array(goal.failedVotes).length) commands.push(goalIntentRecommendation("coordinate", goal.id, "resolve failed votes"));
+  if (goal && !hasPlanReview(goal, state)) commands.push(goalIntentRecommendation("plan", goal.id, "run adversarial plan review"));
+  if (goal && shouldRecommendVerification(goal, state)) commands.push(goalIntentRecommendation("verify", goal.id, "verify current goal"));
+  if (goal && shouldRecommendReview(goal)) commands.push(goalIntentRecommendation("review", goal.id, "collect current review"));
   if (array(control.activeSubruns).length) commands.push(recommend("/peer subrun status", "check active subruns"));
+  if (hasRepeatedContextFailures(state)) commands.push(recommend("/peer context retro", "review repeated context eval failures"));
   if (state.setup?.exists === false) commands.push(recommend("/peer setup", "configure peer command center"));
   if (!goal) commands.push(recommend(`/peer do start goal ${shellQuote(state.objective || "new peer goal")}`, "start a peer goal"));
 
   return dedupeRecommendations(commands);
+}
+
+function primaryPeerCommandCenterRecommendation(state, goal, control, failedRun) {
+  if (state.setup?.exists === false) return recommend("/peer setup", "configure peer command center");
+  if (failedRun) return reworkRecommendation(failedRun.runId);
+  if (goal && !hasPlanReview(goal, state)) return goalIntentRecommendation("plan", goal.id, "run adversarial plan review");
+  if (goal && shouldRecommendVerification(goal, state)) return goalIntentRecommendation("verify", goal.id, "verify current goal");
+  if (array(control.activeSubruns).length) return recommend("/peer subrun status", "check active subruns");
+  if (!goal) return recommend(`/peer do start goal ${shellQuote(state.objective || "new peer goal")}`, "start a peer goal");
+  return recommend("/peer do metrics", "inspect peer factory metrics");
 }
 
 export function formatPeerCommandCenter(state = {}) {
@@ -89,6 +123,9 @@ export function formatPeerCommandCenter(state = {}) {
     for (const domain of group.domains) lines.push(`  ${domain.domain}: ${domain.peers.map((peer) => peer.peerId).join(", ")}`);
   }
 
+  lines.push(formatFactoryLine(state.metrics));
+  if (state.factoryError) lines.push(`Factory warning: ${state.factoryError}`);
+  if (state.contextError) lines.push(`Context warning: ${state.contextError}`);
   lines.push(formatGoalLine(currentGoal, state.control));
   lines.push("Recommended:");
   if (recommendations.length) {
@@ -134,16 +171,22 @@ export async function routePeerIntent(root, parsed = {}, context = {}) {
       peerId,
     });
     await seedPeerGoalProposals(root, goal.id, peerId);
+    const factoryRun = await startPeerDoFactoryRun(root, parsed, context, { goalId: goal.id, objective, peerId });
 
-    return {
-      mutated: true,
-      goalId: goal.id,
-      text: [
-        `Created peer goal ${goal.id}: ${goal.objective}`,
-        `Next: /peer scout ${goal.id}`,
-        "Then: /peer center",
-      ].join("\n"),
-    };
+    const lines = [`Created peer goal ${goal.id}: ${goal.objective}`];
+    if (factoryRun?.error) {
+      lines[0] = `Created peer goal ${goal.id}, but factory run failed: ${factoryRun.error}`;
+      lines.push(
+        `Retry: /peer factory run ${commandArg(objective)} --goal ${commandArg(goal.id)} --source peer-do`,
+        `Next: /peer do plan ${goal.id}`,
+      );
+    } else if (factoryRun?.runId) {
+      lines.push(`Factory run: ${factoryRun.runId}`, `Next: /peer do plan ${goal.id}`, "Then: /peer center");
+    } else {
+      lines.push(`Next: /peer scout ${goal.id}`, "Then: /peer center");
+    }
+
+    return { mutated: true, goalId: goal.id, factoryRunId: factoryRun?.runId, text: lines.join("\n") };
   }
 
   if (intent === "coordinate") {
@@ -177,6 +220,46 @@ export async function routePeerIntent(root, parsed = {}, context = {}) {
       mutated: false,
       text: writeClaimCommand(goalId, `implementation for goal ${goalId}`, paths, `peer-do:implementation:${goalId}:${paths.join(",")}`),
     };
+  }
+
+  if (intent === "plan") {
+    const goalId = args[0];
+    if (!goalId) return { mutated: false, text: "/peer do plan <goal-id>" };
+    if (isFlagLike(goalId)) return { mutated: false, text: "Cannot generate /peer factory plan-review for a goal id that starts with --." };
+    return {
+      mutated: false,
+      text: planReviewCommand(goalId, parsed),
+    };
+  }
+
+  if (intent === "verify") {
+    const goalId = args[0];
+    if (!goalId) return { mutated: false, text: "/peer do verify <goal-id> [--gate <gate>]" };
+    return {
+      mutated: false,
+      text: [`/peer factory run ${commandArg(`Verify ${goalId}`)} ${flagArg("--goal", goalId)}`, factoryFacadeFlags({ gates: parsed.gates })].filter(Boolean).join(" "),
+    };
+  }
+
+  if (intent === "rework") {
+    const runId = args[0];
+    if (!runId) return { mutated: false, text: "/peer do rework <run-id>" };
+    if (isFlagLike(runId)) return { mutated: false, text: "Cannot generate /peer factory rework for a run id that starts with --." };
+    return { mutated: false, text: `/peer factory rework ${commandArg(runId)}` };
+  }
+
+  if (intent === "metrics") {
+    return { mutated: false, text: "/peer factory metrics" };
+  }
+
+  if (intent === "ship") {
+    const runId = args[0];
+    const commands = ["/peer factory pr status", prCommandSuggestion(runId)];
+    return { mutated: false, text: commands.join("\n") };
+  }
+
+  if (intent === "automate") {
+    return { mutated: false, text: "/peer factory automate status" };
   }
 
   if (intent === "resolve-handoffs") {
@@ -217,6 +300,22 @@ async function seedPeerGoalProposals(root, goalId, peerId) {
   }
 }
 
+async function startPeerDoFactoryRun(root, parsed, context, input) {
+  if (typeof context.startFactoryRun !== "function") return undefined;
+  try {
+    return await context.startFactoryRun(root, {
+      objective: input.objective,
+      goalId: input.goalId,
+      peerId: input.peerId,
+      paths: parsed.paths,
+      gates: parsed.gates,
+      source: "peer-do",
+    });
+  } catch (error) {
+    return { error: errorMessage(error) };
+  }
+}
+
 function coordinateCommands(goal) {
   if (!goal?.id) return [];
   return [
@@ -236,6 +335,25 @@ function handoffResolveCommands(goal) {
   }).filter(Boolean);
 }
 
+function hasPlanReview(goal, state) {
+  const records = [
+    ...array(goal.factoryRecords),
+    ...array(goal.planReviews),
+    ...array(state.factoryRecords),
+    ...array(state.factoryState?.records),
+  ];
+  return records.some((record) => record?.type === "plan-review" && (!goal?.id || record.goalId === goal.id));
+}
+
+function planReviewCommand(goalId, parsed) {
+  const flags = [
+    ...array(parsed.paths).map((path) => flagArg("--path", path)),
+    ...array(parsed.gates).map((gate) => flagArg("--gate", gate)),
+    ...array(parsed.lanes).map((lane) => flagArg("--lane", lane)),
+  ];
+  return ["/peer factory plan-review", commandArg(goalId), ...flags].join(" ");
+}
+
 function laneClaimCommand(goalId, lane, summary, workKey) {
   return `/peer goal claim ${commandArg(goalId)} ${commandArg(summary)} --mode read --lane ${commandArg(lane)} --key ${commandArg(workKey)}`;
 }
@@ -243,6 +361,39 @@ function laneClaimCommand(goalId, lane, summary, workKey) {
 function writeClaimCommand(goalId, summary, paths, workKey) {
   const pathFlags = paths.map((item) => `--path=${commandArg(item)}`).join(" ");
   return `/peer goal claim ${commandArg(goalId)} ${commandArg(summary)} --mode write --lane ${commandArg("implementation")} ${pathFlags} --key ${commandArg(workKey)}`;
+}
+
+function factoryFacadeFlags(parsed = {}) {
+  const entries = [
+    ["--constraint", parsed.constraints],
+    ["--path", parsed.paths],
+    ["--lane", parsed.lanes],
+    ["--gate", parsed.gates],
+  ];
+  return entries.flatMap(([flag, values]) => array(values).map((value) => flagArg(flag, value))).join(" ");
+}
+
+function flagArg(flag, value) {
+  return `${flag}=${commandArg(value)}`;
+}
+
+function isFlagLike(value) {
+  return String(value || "").startsWith("--");
+}
+
+function prCommandSuggestion(runId) {
+  const suffix = runId ? ` ${runId}` : "";
+  return [
+    "/peer factory pr commands",
+    "--title",
+    commandArg(`Factory run${suffix}`),
+    "--body",
+    commandArg(`Summarize verification evidence for factory run${suffix || " <run-id>"} before creating this PR.`),
+    "--branch",
+    "HEAD",
+    "--remote",
+    "origin",
+  ].join(" ");
 }
 
 function resolveRouteGoal(goalId, context = {}) {
@@ -301,6 +452,10 @@ function commandArg(value) {
   return shellQuote(safe);
 }
 
+function errorMessage(error) {
+  return error?.message ? String(error.message) : String(error || "unknown error");
+}
+
 function normalizeOrgData(orgState = {}) {
   const nested = orgState.org && typeof orgState.org === "object" ? orgState.org : {};
   return {
@@ -328,6 +483,39 @@ function shouldRecommendReview(goal = {}) {
   return !votes.some((vote) => vote.verdict === "pass" || vote.verdict === "pass-with-risks");
 }
 
+function shouldRecommendVerification(goal = {}, state = {}) {
+  if (!goal?.id || !hasPlanReview(goal, state)) return false;
+  if (goal.verified === true || goal.verificationStatus === "verified") return false;
+  return goal.readyForVerification === true || goal.readyToClose === true;
+}
+
+function firstFactoryRunNeedingRework(state = {}) {
+  const factoryState = state.factoryState || {};
+  const runs = Object.hasOwn(factoryState, "activeRuns")
+    ? [...array(factoryState.activeRuns), ...array(factoryState.runs)]
+    : array(factoryState.runs);
+  return runs.find((run) => run?.runId && hasFailedGate(run));
+}
+
+function hasFailedGate(run = {}) {
+  return Object.values(run.gateResults && typeof run.gateResults === "object" ? run.gateResults : {})
+    .some((result) => ["fail", "failed", "error", "blocked"].includes(text(result?.status, "").toLowerCase()));
+}
+
+function hasFactoryInitialized(state = {}) {
+  if (state.factoryKnown !== true) return true;
+  if (state.factoryError || state.factoryInitialized === true || state.factoryState?.initialized === true) return true;
+  return array(state.factoryState?.runs).length > 0 || Number(state.factoryState?.records || 0) > 0 || array(state.factoryRecords).length > 0;
+}
+
+function hasRepeatedContextFailures(state = {}) {
+  const contextState = state.contextState || {};
+  const failing = Object.hasOwn(contextState, "failingEvalResults")
+    ? array(contextState.failingEvalResults).length
+    : array(contextState.evalResults).filter((result) => text(result?.status, "").toLowerCase() === "fail").length;
+  return failing >= 2;
+}
+
 function formatOrgLine(org = {}) {
   if (!org.exists) return "Org: not configured";
   const privateTeams = org.spawnPolicy?.privateTeams ? "private teams enabled" : "private teams disabled";
@@ -341,8 +529,38 @@ function formatGoalLine(goal, control = {}) {
   return `Goals: ${goal.id || "unknown"} ready ${goal.readyToClose ? "yes" : "no"} · blockers ${array(goal.blockingObjections).length} · active tasks ${activeTasks} · subruns ${subruns}`;
 }
 
+function formatFactoryLine(metrics = {}) {
+  return `Factory: runs ${number(metrics.totalRuns)} · verified ${number(metrics.verifiedRuns)} · autonomy ${percent(metrics.autonomyRate)} · rework avg ${formatNumber(metrics.averageReworkHops)} · escalations ${number(metrics.escalatedRuns ?? Math.round(number(metrics.escalationRate) * number(metrics.totalRuns)))}`;
+}
+
+function percent(value) {
+  return `${Math.round(number(value) * 100)}%`;
+}
+
+function formatNumber(value) {
+  const numeric = number(value);
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1).replace(/\.0$/, "");
+}
+
+function number(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
 function recommend(command, reason) {
   return { command, reason };
+}
+
+function goalIntentRecommendation(intent, goalId, reason) {
+  if (isFlagLike(goalId)) {
+    return recommend("/peer center", `${reason}; goal id starts with -- and cannot be used in /peer do ${intent}`);
+  }
+  return recommend(`/peer do ${intent} ${commandArg(goalId)}`, reason);
+}
+
+function reworkRecommendation(runId) {
+  if (isFlagLike(runId)) return recommend("/peer factory status", "inspect failed run; run id starts with -- and cannot be used in /peer do rework");
+  return recommend(`/peer do rework ${commandArg(runId)}`, "rework failed factory gates");
 }
 
 function dedupeRecommendations(recommendations) {

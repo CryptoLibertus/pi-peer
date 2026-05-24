@@ -21,18 +21,21 @@ async function withRoot(t, fn) {
   return fn(root);
 }
 
-test("formatPeerSetupPrompt asks for the six session uses", () => {
+test("formatPeerSetupPrompt lists nine uses and says /peer setup <number>", () => {
   const prompt = formatPeerSetupPrompt();
 
   assert.equal(prompt, [
     "What do you want this session to do?",
     "",
-    "1. Coordinate other peers",
+    "1. Coordinate peers",
     "2. Implement code",
     "3. Review work",
     "4. Research",
     "5. Manage private subagents",
-    "6. Inspect status only",
+    "6. Run factory verification",
+    "7. Improve context",
+    "8. Shepherd PRs",
+    "9. Inspect status only",
     "",
     "Reply with /peer setup <number>.",
   ].join("\n"));
@@ -40,13 +43,20 @@ test("formatPeerSetupPrompt asks for the six session uses", () => {
 });
 
 test("PEER_SETUP_CHOICES exposes full stable metadata for each setup option", () => {
+  const baseMetadata = {
+    factoryArtifactsRelevant: false,
+    toolRegistryRelevant: false,
+    automationsRelevant: false,
+    automationsEnabled: false,
+  };
   assert.deepEqual(PEER_SETUP_CHOICES, {
     coordinate: {
-      label: "Coordinate other peers",
+      label: "Coordinate peers",
       role: "coordinator",
       domain: "coordination",
       canSpawnSubagents: true,
       countsForIndependentVote: true,
+      ...baseMetadata,
     },
     implement: {
       label: "Implement code",
@@ -54,6 +64,7 @@ test("PEER_SETUP_CHOICES exposes full stable metadata for each setup option", ()
       domain: "implementation",
       canSpawnSubagents: true,
       countsForIndependentVote: false,
+      ...baseMetadata,
     },
     review: {
       label: "Review work",
@@ -61,6 +72,7 @@ test("PEER_SETUP_CHOICES exposes full stable metadata for each setup option", ()
       domain: "review",
       canSpawnSubagents: true,
       countsForIndependentVote: true,
+      ...baseMetadata,
     },
     research: {
       label: "Research",
@@ -68,6 +80,7 @@ test("PEER_SETUP_CHOICES exposes full stable metadata for each setup option", ()
       domain: "research",
       canSpawnSubagents: true,
       countsForIndependentVote: true,
+      ...baseMetadata,
     },
     subagents: {
       label: "Manage private subagents",
@@ -76,6 +89,43 @@ test("PEER_SETUP_CHOICES exposes full stable metadata for each setup option", ()
       canSpawnSubagents: true,
       countsForIndependentVote: true,
       forceSubagents: true,
+      factoryArtifactsRelevant: false,
+      toolRegistryRelevant: true,
+      automationsRelevant: false,
+      automationsEnabled: false,
+    },
+    factory: {
+      label: "Run factory verification",
+      role: "verifier",
+      domain: "verification",
+      canSpawnSubagents: false,
+      countsForIndependentVote: true,
+      factoryArtifactsRelevant: true,
+      toolRegistryRelevant: true,
+      automationsRelevant: false,
+      automationsEnabled: false,
+    },
+    context: {
+      label: "Improve context",
+      role: "context-curator",
+      domain: "context",
+      canSpawnSubagents: false,
+      countsForIndependentVote: true,
+      factoryArtifactsRelevant: true,
+      toolRegistryRelevant: false,
+      automationsRelevant: false,
+      automationsEnabled: false,
+    },
+    pr: {
+      label: "Shepherd PRs",
+      role: "pr-shepherd",
+      domain: "delivery",
+      canSpawnSubagents: false,
+      countsForIndependentVote: true,
+      factoryArtifactsRelevant: true,
+      toolRegistryRelevant: true,
+      automationsRelevant: true,
+      automationsEnabled: false,
     },
     status: {
       label: "Inspect status only",
@@ -84,6 +134,7 @@ test("PEER_SETUP_CHOICES exposes full stable metadata for each setup option", ()
       canSpawnSubagents: false,
       countsForIndependentVote: undefined,
       inspectOnly: true,
+      ...baseMetadata,
     },
   });
 });
@@ -169,6 +220,53 @@ test("subagents choice enables optional orchestration metadata", async (t) => {
 
     const { org } = await loadPeerOrg(root);
     assert.equal(org.peers["planner-a"].canSpawnSubagents, true);
+  });
+});
+
+test("factory choice aliases configure verifier role and command center next step", async (t) => {
+  await withRoot(t, async (root) => {
+    const result = await applyPeerSetupChoice(root, {
+      choice: "verify",
+      peerId: "verifier-a",
+      runtime: { summary: { localPeerIdSource: "PI_PEER_ID" } },
+    });
+
+    assert.equal(result.choice, "factory");
+    assert.equal(result.role, "verifier");
+    assert.equal(result.domain, "verification");
+    assert.equal(result.factoryArtifactsRelevant, true);
+    assert.equal(result.toolRegistryRelevant, true);
+    assert.equal(result.automationsEnabled, false);
+    assert.equal(result.nextCommands.includes("/peer center"), true);
+
+    const { org } = await loadPeerOrg(root);
+    assert.equal(org.peers["verifier-a"].role, "verifier");
+    assert.equal(org.peers["verifier-a"].domain, "verification");
+  });
+});
+
+test("context and PR aliases configure focused role and domain without enabling automation", async (t) => {
+  await withRoot(t, async (root) => {
+    const contextResult = await applyPeerSetupChoice(root, {
+      choice: "context",
+      peerId: "context-a",
+      runtime: { summary: { localPeerIdSource: "PI_PEER_ID" } },
+    });
+    const prResult = await applyPeerSetupChoice(root, {
+      choice: "ship",
+      peerId: "shepherd-a",
+      runtime: { summary: { localPeerIdSource: "PI_PEER_ID" } },
+    });
+
+    assert.equal(contextResult.choice, "context");
+    assert.equal(contextResult.role, "context-curator");
+    assert.equal(contextResult.domain, "context");
+    assert.equal(contextResult.automationsEnabled, false);
+    assert.equal(prResult.choice, "pr");
+    assert.equal(prResult.role, "pr-shepherd");
+    assert.equal(prResult.domain, "delivery");
+    assert.equal(prResult.automationsRelevant, true);
+    assert.equal(prResult.automationsEnabled, false);
   });
 });
 

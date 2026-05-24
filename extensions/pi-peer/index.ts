@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { watch } from "node:fs";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -8,6 +9,7 @@ import { installPeerRuntimeLifecycle } from "../../src/peers/extension-lifecycle
 import { initPeerConfig } from "../../src/peers/config.mjs";
 import { formatPeerCommandError, formatPeerHelp, formatPeerInitResult, parsePeerCommand } from "../../src/peers/command.mjs";
 import { capturePeerContextBudget, derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement } from "../../src/peers/context-budget.mjs";
+import { appendContextPatch, appendContextRetro, deriveContextLifecycleState, formatContextLifecycleStatus, loadContextLifecycle, recordContextEvalResult } from "../../src/peers/context-lifecycle.mjs";
 import { createPeerRuntime, getPeerRuntimeValue } from "../../src/peers/runtime.mjs";
 import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../../src/peers/goal-board.mjs";
 import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerFooterStatusLine, formatPeerGoalDashboard, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
@@ -25,11 +27,28 @@ import { PEER_TOOL_NAMES, PEER_TOOL_PROMPT_GUIDELINES } from "../../src/peers/gu
 import { buildPeerIdleActivationPrompt, createPeerIdleWatcher, derivePeerIdleActivationOfferPlan, markPeerIdleActivation } from "../../src/peers/idle-watcher.mjs";
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcileDisconnectedPeerGoalTasks, reconcilePeerControlLedger } from "../../src/peers/control-ledger.mjs";
 import { formatHiveRunPeerHealthPauseSummary, summarizeHiveRunPeerHealth } from "../../src/peers/hive-supervisor.mjs";
-import { formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
+import { formatSelfImproveFactoryWarning, formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, linkSelfImproveFactoryRun, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
+import {
+  appendFactoryRunRecord,
+  formatFactoryRun,
+  formatFactoryStatus,
+  FACTORY_RUNS_FILE,
+  initFactory,
+  loadFactoryReworkPolicy,
+  loadFactoryRuns,
+  startLinkedFactoryRun,
+  startFactoryRun,
+  deriveFactoryState,
+} from "../../src/peers/factory.mjs";
+import { appendAutomationRun, deriveAutomationStatus, formatAutomationStatus, initAutomationCatalog, loadAutomationCatalog } from "../../src/peers/automations.mjs";
+import { appendPrRecord, derivePrShepherdCommands, derivePrShepherdState, formatPrShepherdStatus, loadPrRecords } from "../../src/peers/pr-shepherd.mjs";
+import { derivePlanAdversaryReview, formatPlanAdversaryReview, hasMatchingPlanAdversaryObjection, normalizePlanContract, planAdversaryObjectionFingerprint, planAdversaryRunStatus } from "../../src/peers/plan-adversary.mjs";
+import { buildReworkDecisionRun, deriveReworkDecision, formatReworkDecision, reworkRecordTypeForAction } from "../../src/peers/rework.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
 import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
 import { buildPeerCommandCenterState, formatPeerCommandCenter, routePeerIntent } from "../../src/peers/command-center.mjs";
 import { cancelPeerSubagentRun, completePeerSubagentRun, formatPeerSubagentRunResult, formatPeerSubagentStatus, recordPeerSubagentRunProgress, startPeerSubagentRun } from "../../src/peers/subagents.mjs";
+import { derivePeerFactoryMetrics, formatPeerFactoryMetrics } from "../../src/peers/metrics.mjs";
 
 const MESSAGE_TYPE = "pi-peer";
 const DEFAULT_PEER_IDLE_OFFER_TIMEOUT_MS = 2 * 60 * 1000;
@@ -85,8 +104,8 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("peer", {
-    description: "Pi-to-Pi peers: setup, center, do, subrun, org, doctor, status, list, send, get, await, progress, goal, hive, self-improve",
-    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "init", "setup", "do", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
+    description: "Pi-to-Pi peers: setup, center, do, subrun, org, doctor, status, list, send, get, await, progress, goal, hive, self-improve, factory, metrics",
+    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "init", "setup", "do", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (rawArgs, ctx) => {
@@ -394,7 +413,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       const root = ctx.cwd || process.cwd();
       if (runtime.enabled) await runtime.refreshLocalPeers();
       const input = await collectPeerCommandCenterInput(ctx, runtime);
-      const result = await routePeerIntent(root, parsed, { ...input, peerId: runtime.localPeerId || runtime.summary?.localPeerId || "unknown" });
+      const result = await routePeerIntent(root, parsed, { ...input, peerId: runtime.localPeerId || runtime.summary?.localPeerId || "unknown", startFactoryRun: startLinkedFactoryRun });
       await refresh();
       return sendPeerMessage(pi, result.text);
     }
@@ -421,6 +440,16 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       return sendPeerMessage(pi, formatPeerSubagentRunResult(result));
     }
     if (parsed.subcommand === "context") {
+      if (parsed.contextAction) {
+        const root = ctx.cwd || process.cwd();
+        if (parsed.contextAction === "patch") await appendContextPatch(root, parsed);
+        else if (parsed.contextAction === "eval") await recordContextEvalResult(root, parsed);
+        else if (parsed.contextAction === "retro") await appendContextRetro(root, parsed);
+        else if (parsed.contextAction !== "status") throw new Error(`Unknown peer context action '${parsed.contextAction}'`);
+        const lifecycle = deriveContextLifecycleState(await loadContextLifecycle(root));
+        await refresh();
+        return sendPeerMessage(pi, formatContextLifecycleStatus(lifecycle));
+      }
       const budget = updatePeerContextBudget(runtime, ctx);
       const judgement = derivePeerContextJudgement(budget);
       await refresh();
@@ -455,6 +484,11 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
     }
     if (parsed.subcommand === "self-improve" || parsed.subcommand === "improve") {
       const text = await handlePeerSelfImproveCommand(parsed, ctx, runtime);
+      await refresh();
+      return sendPeerMessage(pi, text);
+    }
+    if (parsed.subcommand === "factory" || parsed.subcommand === "metrics") {
+      const text = await handlePeerFactoryCommand(parsed, ctx, runtime);
       await refresh();
       return sendPeerMessage(pi, text);
     }
@@ -585,7 +619,38 @@ async function collectPeerCommandCenterInput(ctx: any, runtime: any) {
   const goals = Object.values(board.goals || {}).map((goal: any) => deriveGoalState(goal));
   const loadedControl = await loadPeerControlLedger(root);
   const controlState = derivePeerControlState(loadedControl.records);
-  return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState };
+  const factoryInitialized = await fileExists(join(root, FACTORY_RUNS_FILE));
+  let factoryRecords: any[] = [];
+  let factoryError: string | undefined;
+  let factoryWarnings: any[] = [];
+  try {
+    const factoryRuns = await loadFactoryRuns(root);
+    factoryRecords = factoryRuns.records || [];
+    factoryWarnings = factoryRuns.warnings || [];
+  } catch (error: any) {
+    factoryError = error?.message || String(error);
+  }
+  const factoryState = { ...deriveFactoryState(factoryRecords), initialized: factoryInitialized, error: factoryError, warnings: factoryWarnings };
+  let contextState: any = { patches: [], retros: [], evalResults: [], warnings: [] };
+  let contextError: string | undefined;
+  try {
+    contextState = deriveContextLifecycleState(await loadContextLifecycle(root));
+  } catch (error: any) {
+    contextError = error?.message || String(error);
+    contextState = { patches: [], retros: [], evalResults: [], warnings: [], error: contextError };
+  }
+  const metrics = derivePeerFactoryMetrics({ factoryState, contextState, goals, controlState });
+  return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState, factoryRecords, factoryState, factoryInitialized, factoryError, contextState, contextError, metrics };
+}
+
+async function fileExists(path: string) {
+  try {
+    await stat(path);
+    return true;
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 async function handlePeerOrgCommand(parsed: any, ctx: any, runtime: any) {
@@ -641,7 +706,23 @@ async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any)
     durationMs: parsed.durationMs,
     autoCommit: parsed.autoCommit,
     peerId,
+    factory: true,
   });
+  let factoryWarning: string | undefined;
+  try {
+    const factoryRun = await startLinkedFactoryRun(root, {
+      objective: parsed.objective,
+      goalId: result.goalId,
+      peerId,
+      paths: result.paths,
+      gates: result.evals,
+      source: "self-improve",
+      metadata: { selfImprove: { runId: result.runId } },
+    });
+    await linkSelfImproveFactoryRun(root, result, factoryRun);
+  } catch (error) {
+    factoryWarning = formatSelfImproveFactoryWarning(result, error);
+  }
   result.dispatchRequested = parsed.dispatch === true;
 
   if (parsed.dispatch && result.peers?.length && result.durationMs) {
@@ -685,10 +766,276 @@ async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any)
       peerId,
       coordinatorClaimId: coordinatorClaim.event.id,
     });
-    return `${formatSelfImproveRunResult(result)}\n\n${formatHiveDispatchLines(dispatches).join("\n")}`;
+    return [formatSelfImproveRunResult(result), factoryWarning, formatHiveDispatchLines(dispatches).join("\n")].filter(Boolean).join("\n\n");
   }
 
-  return formatSelfImproveRunResult(result);
+  return [formatSelfImproveRunResult(result), factoryWarning].filter(Boolean).join("\n\n");
+}
+
+async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
+  const root = ctx?.cwd || process.cwd();
+  const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown";
+  const action = parsed.subcommand === "metrics" ? "metrics" : parsed.factoryAction || "status";
+
+  if (action === "pr") {
+    return handlePeerFactoryPrCommand(parsed, root, peerId);
+  }
+
+  if (action === "automate") {
+    return handlePeerFactoryAutomateCommand(parsed, root, peerId);
+  }
+
+  if (action === "init") {
+    const result = await initFactory(root);
+    return [
+      "# Factory initialized",
+      result.created.length ? `created: ${result.created.join(", ")}` : "created: none",
+      result.skipped.length ? `existing: ${result.skipped.join(", ")}` : "existing: none",
+    ].join("\n");
+  }
+
+  if (action === "run") {
+    const run = parsed.source && parsed.goalId
+      ? await startLinkedFactoryRun(root, { ...parsed, peerId })
+      : await startFactoryRun(root, { ...parsed, peerId });
+    return formatFactoryRun(run);
+  }
+
+  if (action === "gate") {
+    await appendFactoryRunRecord(root, {
+      type: "gate-result",
+      runId: parsed.runId,
+      gateId: parsed.gateId,
+      status: parsed.status,
+      evidence: parsed.evidence,
+      peerId,
+      metadata: {
+        failureType: parsed.failureType,
+      },
+    });
+    return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
+  }
+
+  if (action === "attempt") {
+    await appendFactoryRunRecord(root, {
+      type: parsed.attemptAction === "finish" ? "attempt-completed" : "attempt-started",
+      runId: parsed.runId,
+      attempt: parsed.attempt,
+      peerId: parsed.peerId || peerId,
+      summary: parsed.summary,
+      status: parsed.status,
+      evidence: parsed.evidence,
+    });
+    return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
+  }
+
+  if (action === "rework") {
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+    const run = state.runs.find((item: any) => item.runId === parsed.runId);
+    if (!run) return `No factory run found for ${parsed.runId}.`;
+    const failure = {
+      runId: parsed.runId,
+      failureType: parsed.failureType,
+      summary: parsed.reason,
+      evidence: parsed.evidence,
+      owner: parsed.owner,
+    };
+    const policy = await loadFactoryReworkPolicy(root);
+    const decision = deriveReworkDecision({
+      policy,
+      run: buildReworkDecisionRun({ run, failure }),
+      failure,
+    });
+    const recordType = reworkRecordTypeForAction(decision.action);
+    await appendFactoryRunRecord(root, {
+      type: recordType,
+      runId: parsed.runId,
+      peerId,
+      summary: parsed.reason,
+      evidence: parsed.evidence,
+      metadata: {
+        action: decision.action,
+        failureType: parsed.failureType || decision.failureType,
+        owner: parsed.owner || decision.owner,
+        reason: parsed.reason || decision.reason,
+        evidence: parsed.evidence,
+        nextAttempt: decision.nextAttempt,
+      },
+    });
+    const updatedState = deriveFactoryState((await loadFactoryRuns(root)).records);
+    const updatedRun = updatedState.runs.find((item: any) => item.runId === parsed.runId);
+    return [formatReworkDecision(decision), updatedRun ? formatFactoryRun(updatedRun) : formatFactoryStatus(updatedState)].join("\n");
+  }
+
+  if (action === "plan-review") {
+    const board = await loadPeerGoalBoard(root);
+    const goal = board.goals?.[parsed.goalId];
+    if (!goal) return `No peer goal found for ${parsed.goalId}.`;
+    const goalState = deriveGoalState(goal);
+    const plan = normalizePlanContract({
+      goalId: parsed.goalId,
+      objective: goal.objective,
+      lanes: parsed.lanes?.length ? parsed.lanes : inferPlanLanes(goalState),
+      paths: parsed.paths?.length ? parsed.paths : inferPlanPaths(goalState),
+      gates: parsed.gates,
+      workItems: inferPlanWorkItems(goalState),
+    });
+    const review = derivePlanAdversaryReview({ plan });
+    const text = formatPlanAdversaryReview(review);
+    await appendFactoryRunRecord(root, {
+      type: "plan-review",
+      runId: `plan:${parsed.goalId}`,
+      goalId: parsed.goalId,
+      peerId,
+      status: planAdversaryRunStatus(review.verdict),
+      summary: `Plan adversary review: ${review.verdict}`,
+      metadata: {
+        verdict: review.verdict,
+        requiresHuman: review.requiresHuman,
+        planAdversaryFingerprint: planAdversaryObjectionFingerprint(review),
+        findings: review.findings,
+        plan,
+      },
+    });
+    if (review.verdict === "block" && !hasMatchingPlanAdversaryObjection(goalState.events, review)) {
+      await appendPeerGoalEvent(root, parsed.goalId, {
+        type: "objection",
+        peerId,
+        lane: "review",
+        severity: "blocking",
+        summary: text,
+        metadata: {
+          source: "factory-plan-review",
+          verdict: review.verdict,
+          planAdversaryFingerprint: planAdversaryObjectionFingerprint(review),
+          findings: review.findings,
+        },
+      });
+    }
+    return text;
+  }
+
+  if (action === "status") {
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+    if (parsed.runId) {
+      const run = state.runs.find((item: any) => item.runId === parsed.runId);
+      return run ? formatFactoryRun(run) : `No factory run found for ${parsed.runId}.`;
+    }
+    return formatFactoryStatus(state);
+  }
+
+  if (action === "metrics") {
+    const factoryState = deriveFactoryState((await loadFactoryRuns(root)).records);
+    let contextState: any = { patches: [], retros: [], evalResults: [], warnings: [] };
+    let contextError: string | undefined;
+    try {
+      contextState = deriveContextLifecycleState(await loadContextLifecycle(root));
+    } catch (error: any) {
+      contextError = error?.message || String(error);
+      contextState = { patches: [], retros: [], evalResults: [], warnings: [], error: contextError };
+    }
+    const text = formatPeerFactoryMetrics(derivePeerFactoryMetrics({ factoryState, contextState }));
+    return contextError ? `${text}\nContext warning: ${contextError}` : text;
+  }
+
+  return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
+}
+
+async function handlePeerFactoryPrCommand(parsed: any, root: string, peerId: string) {
+  if (parsed.prAction === "commands") {
+    const commands = derivePrShepherdCommands(parsed);
+    return ["Suggested PR commands (not executed):", ...commands.map((command: string) => `- ${command}`)].join("\n");
+  }
+
+  if (parsed.prAction === "record") {
+    await appendPrRecord(root, {
+      action: parsed.action,
+      runId: parsed.runId,
+      goalId: parsed.goalId,
+      prUrl: parsed.prUrl,
+      evidence: parsed.evidence,
+      metadata: { peerId },
+    });
+  } else if (parsed.prAction && parsed.prAction !== "status") {
+    throw new Error(`Unknown peer factory pr action '${parsed.prAction}'`);
+  }
+
+  const loaded = await loadPrRecords(root);
+  const text = formatPrShepherdStatus(derivePrShepherdState(loaded.records));
+  if (!loaded.warnings?.length) return text;
+  return `${text}\nWarnings: ${loaded.warnings.map((warning: any) => warning.message).join("; ")}`;
+}
+
+async function handlePeerFactoryAutomateCommand(parsed: any, root: string, peerId: string) {
+  // Automation catalog is record/recommendation-only; it never executes external commands.
+  if (parsed.automateAction === "init") {
+    const result = await initAutomationCatalog(root);
+    return [
+      "# Automation catalog initialized",
+      result.created.length ? `created: ${result.created.join(", ")}` : "created: none",
+      result.skipped.length ? `existing: ${result.skipped.join(", ")}` : "existing: none",
+    ].join("\n");
+  }
+
+  if (parsed.automateAction === "run") {
+    const record = await appendAutomationRun(root, {
+      automationId: parsed.automationId,
+      status: parsed.dryRun ? "queued" : "running",
+      goalId: parsed.goalId,
+      dryRun: parsed.dryRun,
+      peerId,
+      evidence: parsed.dryRun ? "dry-run recommendation queued; no external commands executed" : "automation recommendation recorded; no external commands executed",
+      metadata: { recommendationOnly: true },
+    });
+    return `Automation recommendation recorded: ${record.id} · ${record.automationId} · ${record.status}${record.goalId ? ` · goal ${record.goalId}` : ""}${record.dryRun ? " · dry-run" : ""}`;
+  }
+
+  if (parsed.automateAction === "record") {
+    const record = await appendAutomationRun(root, {
+      automationId: parsed.automationId,
+      status: parsed.status,
+      goalId: parsed.goalId,
+      evidence: parsed.evidence,
+      peerId,
+      metadata: { recommendationOnly: true },
+    });
+    return `Automation record appended: ${record.id} · ${record.automationId} · ${record.status}`;
+  }
+
+  return formatAutomationStatus(deriveAutomationStatus(await loadAutomationCatalog(root)));
+}
+
+function inferPlanLanes(goalState: any) {
+  const lanes = [
+    ...array(goalState.workItems).map((item: any) => item.lane),
+    ...array(goalState.openProposals).map((item: any) => item.lane),
+    ...array(goalState.proposals).map((item: any) => item.lane),
+  ].filter(Boolean);
+  return lanes.length ? [...new Set(lanes)] : ["research", "implementation", "review"];
+}
+
+function inferPlanPaths(goalState: any) {
+  return [
+    ...array(goalState.workItems).flatMap((item: any) => array(item.paths)),
+    ...array(goalState.activeWriteClaims).flatMap((item: any) => array(item.paths)),
+    ...array(goalState.openProposals).flatMap((item: any) => array(item.paths)),
+  ];
+}
+
+function inferPlanWorkItems(goalState: any) {
+  return array(goalState.workItems).map((item: any) => ({
+    id: item.itemId || item.id,
+    itemId: item.itemId || item.id,
+    lane: item.lane,
+    summary: item.summary,
+    workKey: item.workKey,
+    paths: item.paths,
+    dependsOn: item.dependsOn,
+  }));
+}
+
+function array(value: any) {
+  return Array.isArray(value) ? value : [];
 }
 
 async function handlePeerHiveCommand(parsed: any, ctx: any, runtime: any) {

@@ -1,0 +1,112 @@
+const VERIFIED_STATUSES = new Set(["verified", "verified-with-risks"]);
+const FAILED_RUN_STATUSES = new Set(["failed", "fail", "error", "blocked", "cancelled"]);
+const TERMINAL_RUN_STATUSES = new Set(["verified", "verified-with-risks", "completed", "failed", "fail", "error", "blocked", "cancelled", "human-escalation"]);
+const PASS_STATUSES = new Set(["pass", "passed", "verified", "ok"]);
+const FAIL_STATUSES = new Set(["fail", "failed", "error", "blocked"]);
+const ESCALATION_STATUSES = new Set(["human-escalation", "escalated"]);
+
+export function derivePeerFactoryMetrics(input = {}) {
+  const factoryState = plainObject(input.factoryState) ? input.factoryState : {};
+  const contextState = plainObject(input.contextState) ? input.contextState : {};
+  const runs = array(factoryState.runs);
+  const totalRuns = runs.length;
+  const verifiedRuns = runs.filter(isVerifiedRun).length;
+  const failedRuns = runs.filter(isFailedRun).length;
+  const activeRuns = Object.hasOwn(factoryState, "activeRuns") ? array(factoryState.activeRuns).length : runs.filter(isActiveRun).length;
+  const gateResults = runs.flatMap((run) => Object.values(plainObject(run.gateResults) ? run.gateResults : {}));
+  const passingGates = gateResults.filter((result) => PASS_STATUSES.has(cleanText(result?.status))).length;
+  const reworkCounts = runs.map((run) => number(run.reworkCount)).filter((value) => value !== undefined);
+  const escalatedRuns = runs.filter(isEscalatedRun).length;
+  const evalResults = array(contextState.evalResults);
+  const passingContextEvals = evalResults.filter((result) => cleanText(result?.status) === "pass").length;
+  const goals = array(input.goals);
+  const controlState = plainObject(input.controlState) ? input.controlState : {};
+  const goalActiveTaskCount = goals.reduce((sum, goal) => sum + array(goal?.activeTasks).length, 0);
+
+  return {
+    totalRuns,
+    verifiedRuns,
+    failedRuns,
+    activeRuns,
+    autonomyRate: ratio(verifiedRuns, totalRuns),
+    gatePassRate: ratio(passingGates, gateResults.length),
+    averageReworkHops: average(reworkCounts),
+    escalationRate: ratio(escalatedRuns, totalRuns),
+    contextPatchCount: array(contextState.patches).length,
+    contextEvalPassRate: ratio(passingContextEvals, evalResults.length),
+    openGoalCount: goals.filter((goal) => goal?.status !== "closed").length,
+    activeTaskCount: array(controlState.activeTasks).length || goalActiveTaskCount,
+    activeSubrunCount: array(controlState.activeSubruns).length,
+    escalatedRuns,
+  };
+}
+
+export function formatPeerFactoryMetrics(metrics = {}) {
+  const totalRuns = integer(metrics.totalRuns);
+  const verifiedRuns = integer(metrics.verifiedRuns);
+  const failedRuns = integer(metrics.failedRuns);
+  const activeRuns = integer(metrics.activeRuns);
+  const escalations = integer(metrics.escalatedRuns ?? Math.round(number(metrics.escalationRate, 0) * totalRuns));
+  return [
+    "# Factory metrics",
+    `runs: ${totalRuns} | verified: ${verifiedRuns} | failed: ${failedRuns} | active: ${activeRuns}`,
+    `autonomy rate: ${percent(metrics.autonomyRate)} | gate pass rate: ${percent(metrics.gatePassRate)} | rework avg: ${formatNumber(metrics.averageReworkHops)} | escalations: ${escalations} (${percent(metrics.escalationRate)})`,
+    `context patches: ${integer(metrics.contextPatchCount)} | context eval pass rate: ${percent(metrics.contextEvalPassRate)}`,
+    `goals open: ${integer(metrics.openGoalCount)} | active tasks: ${integer(metrics.activeTaskCount)} | active subruns: ${integer(metrics.activeSubrunCount)}`,
+  ].join("\n");
+}
+
+function isVerifiedRun(run) {
+  return VERIFIED_STATUSES.has(cleanText(run?.status));
+}
+
+function isFailedRun(run) {
+  if (FAILED_RUN_STATUSES.has(cleanText(run?.status))) return true;
+  return Object.values(plainObject(run?.gateResults) ? run.gateResults : {}).some((result) => FAIL_STATUSES.has(cleanText(result?.status)));
+}
+
+function isActiveRun(run) {
+  return !TERMINAL_RUN_STATUSES.has(cleanText(run?.status));
+}
+
+function isEscalatedRun(run) {
+  return run?.escalationRequired === true || ESCALATION_STATUSES.has(cleanText(run?.status));
+}
+
+function array(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function plainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
+}
+
+function cleanText(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : value == null ? "" : String(value).trim().toLowerCase();
+}
+
+function number(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function integer(value) {
+  return Math.max(0, Math.trunc(number(value, 0)));
+}
+
+function ratio(numerator, denominator) {
+  return denominator > 0 ? numerator / denominator : 0;
+}
+
+function average(values) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+function percent(value) {
+  return `${Math.round(number(value, 0) * 100)}%`;
+}
+
+function formatNumber(value) {
+  const numeric = number(value, 0);
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1).replace(/\.0$/, "");
+}

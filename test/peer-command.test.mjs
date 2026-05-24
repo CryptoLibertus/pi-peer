@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import { formatPeerHelp, parsePeerCommand } from "../src/peers/command.mjs";
+
+const extensionSource = await readFile(new URL("../extensions/pi-peer/index.ts", import.meta.url), "utf8");
 
 test("parses top-level scout alias as read-only goal scout", () => {
   const parsed = parsePeerCommand("scout goal_123 --limit 3 --include-closed");
@@ -30,6 +33,35 @@ test("parses dashboard alias as read-only goal dashboard", () => {
 test("parses peer context command", () => {
   const parsed = parsePeerCommand("context");
   assert.equal(parsed.subcommand, "context");
+  assert.equal(parsed.contextAction, undefined);
+});
+
+test("parses peer context lifecycle commands", () => {
+  const status = parsePeerCommand("context status");
+  assert.equal(status.subcommand, "context");
+  assert.equal(status.contextAction, "status");
+
+  const patch = parsePeerCommand("context patch --trigger 'handoff failures' --change 'Require verification' --metric missing-count --eval handoff-quality --owner planner-a --review-date 2026-06-24");
+  assert.equal(patch.contextAction, "patch");
+  assert.equal(patch.trigger, "handoff failures");
+  assert.equal(patch.change, "Require verification");
+  assert.equal(patch.metric, "missing-count");
+  assert.equal(patch.evalName, "handoff-quality");
+  assert.equal(patch.owner, "planner-a");
+  assert.equal(patch.reviewDate, "2026-06-24");
+
+  const evalResult = parsePeerCommand("context eval ctx_123 pass --eval handoff-quality --evidence 'scenario passed'");
+  assert.equal(evalResult.contextAction, "eval");
+  assert.equal(evalResult.patchId, "ctx_123");
+  assert.equal(evalResult.status, "pass");
+  assert.equal(evalResult.evalName, "handoff-quality");
+  assert.equal(evalResult.evidence, "scenario passed");
+
+  const retro = parsePeerCommand("context retro --summary 'review missed failures' --failure review --run fac_123");
+  assert.equal(retro.contextAction, "retro");
+  assert.equal(retro.summary, "review missed failures");
+  assert.equal(retro.failureType, "review");
+  assert.equal(retro.runId, "fac_123");
 });
 
 test("parses peer command center facade", () => {
@@ -93,6 +125,30 @@ test("parses peer do facade intents", () => {
   assert.deepEqual(review.intentArgs, ["goal_123"]);
 });
 
+test("parses peer do factory facade intents", () => {
+  const verify = parsePeerCommand("do verify goal_123 --gate test --gate pack");
+  assert.equal(verify.subcommand, "do");
+  assert.equal(verify.intent, "verify");
+  assert.deepEqual(verify.intentArgs, ["goal_123"]);
+  assert.deepEqual(verify.gates, ["test", "pack"]);
+
+  const rework = parsePeerCommand("do rework fac_123");
+  assert.equal(rework.intent, "rework");
+  assert.deepEqual(rework.intentArgs, ["fac_123"]);
+
+  const metrics = parsePeerCommand("do metrics");
+  assert.equal(metrics.intent, "metrics");
+  assert.deepEqual(metrics.intentArgs, []);
+
+  const ship = parsePeerCommand("do ship fac_123");
+  assert.equal(ship.intent, "ship");
+  assert.deepEqual(ship.intentArgs, ["fac_123"]);
+
+  const automate = parsePeerCommand("do automate");
+  assert.equal(automate.intent, "automate");
+  assert.deepEqual(automate.intentArgs, []);
+});
+
 test("parses peer subrun facade actions", () => {
   const status = parsePeerCommand("subrun status --goal goal_123");
   assert.equal(status.subcommand, "subrun");
@@ -124,6 +180,184 @@ test("parses peer subrun facade actions", () => {
   const doneWithNoBlocked = parsePeerCommand("subrun complete sub_123 Done --done 2 --blocked 0");
   assert.equal(doneWithNoBlocked.doneCount, 2);
   assert.equal(doneWithNoBlocked.blockedCount, 0);
+});
+
+test("parses peer factory commands", () => {
+  const init = parsePeerCommand("factory init");
+  assert.equal(init.subcommand, "factory");
+  assert.equal(init.factoryAction, "init");
+
+  const run = parsePeerCommand("factory run Improve protocol --goal goal_123 --path src/peers --gate test --gate pack --source peer-do");
+  assert.equal(run.factoryAction, "run");
+  assert.equal(run.objective, "Improve protocol");
+  assert.equal(run.goalId, "goal_123");
+  assert.deepEqual(run.paths, ["src/peers"]);
+  assert.deepEqual(run.gates, ["test", "pack"]);
+  assert.equal(run.source, "peer-do");
+
+  const gate = parsePeerCommand("factory gate fac_123 test fail --evidence 'unit failure' --failure test");
+  assert.equal(gate.factoryAction, "gate");
+  assert.equal(gate.runId, "fac_123");
+  assert.equal(gate.gateId, "test");
+  assert.equal(gate.status, "fail");
+  assert.equal(gate.evidence, "unit failure");
+  assert.equal(gate.failureType, "test");
+
+  const rework = parsePeerCommand("factory rework fac_123 --reason 'test failed' --evidence 'AssertionError' --owner reviewer-a");
+  assert.equal(rework.factoryAction, "rework");
+  assert.equal(rework.runId, "fac_123");
+  assert.equal(rework.reason, "test failed");
+  assert.equal(rework.evidence, "AssertionError");
+  assert.equal(rework.owner, "reviewer-a");
+
+  const metrics = parsePeerCommand("factory metrics");
+  assert.equal(metrics.factoryAction, "metrics");
+});
+
+test("parses peer factory automation commands", () => {
+  const status = parsePeerCommand("factory automate status");
+  assert.equal(status.subcommand, "factory");
+  assert.equal(status.factoryAction, "automate");
+  assert.equal(status.automateAction, "status");
+
+  const init = parsePeerCommand("factory automate init");
+  assert.equal(init.factoryAction, "automate");
+  assert.equal(init.automateAction, "init");
+
+  const run = parsePeerCommand("factory automate run bug-fixer --goal goal_123 --dry-run");
+  assert.equal(run.factoryAction, "automate");
+  assert.equal(run.automateAction, "run");
+  assert.equal(run.automationId, "bug-fixer");
+  assert.equal(run.goalId, "goal_123");
+  assert.equal(run.dryRun, true);
+
+  const record = parsePeerCommand("factory automate record pr-reviewer done --evidence 'review passed'");
+  assert.equal(record.factoryAction, "automate");
+  assert.equal(record.automateAction, "record");
+  assert.equal(record.automationId, "pr-reviewer");
+  assert.equal(record.status, "done");
+  assert.equal(record.evidence, "review passed");
+
+  assert.match(parsePeerCommand("factory automate").error, /automate requires <status\|init\|run\|record>/);
+  assert.match(parsePeerCommand("factory automate forever").error, /Unknown \/peer factory automate action 'forever'/);
+  assert.match(parsePeerCommand("factory automate run").error, /run requires <automation-id> --goal <goal-id>/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer").error, /run requires <automation-id> --goal <goal-id>/);
+  assert.match(parsePeerCommand("factory automate status extra").error, /status accepts no positional arguments/);
+  assert.match(parsePeerCommand("factory automate status --execute").error, /Unknown \/peer factory automate status flag '--execute'/);
+  assert.match(parsePeerCommand("factory automate init extra").error, /init accepts no positional arguments/);
+  assert.match(parsePeerCommand("factory automate init --force").error, /Unknown \/peer factory automate init flag '--force'/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer extra --goal goal_123").error, /run requires exactly <automation-id> --goal <goal-id>/);
+  assert.match(parsePeerCommand("factory automate record pr-reviewer done extra --evidence nope").error, /record requires exactly <automation-id> <done\|blocked\|error> --evidence <text>/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer --goal goal_123 --dry").error, /Unknown \/peer factory automate flag '--dry'/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer --goal goal_123 --dryRun").error, /Unknown \/peer factory automate flag '--dryRun'/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer --goal goal_123 --execute").error, /Unknown \/peer factory automate flag '--execute'/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer --goalId goal_123").error, /Unknown \/peer factory automate flag '--goalId'/);
+  assert.match(parsePeerCommand("factory automate record bug-fixer done --evidence ok --goal goal_123").error, /Unknown \/peer factory automate record flag '--goal'/);
+  assert.match(parsePeerCommand("factory automate record bug-fixer done --evidence ok --execute").error, /Unknown \/peer factory automate record flag '--execute'/);
+  assert.match(parsePeerCommand("factory automate record bug-fixer queued --evidence nope").error, /record requires <automation-id> <done\|blocked\|error> --evidence <text>/);
+  assert.match(parsePeerCommand("factory automate record bug-fixer done").error, /record requires <automation-id> <done\|blocked\|error> --evidence <text>/);
+});
+
+test("parses peer factory pr commands", () => {
+  const status = parsePeerCommand("factory pr status");
+  assert.equal(status.subcommand, "factory");
+  assert.equal(status.factoryAction, "pr");
+  assert.equal(status.prAction, "status");
+
+  const record = parsePeerCommand("factory pr record merged --run fac_123 --goal goal_123 --url https://github.com/example/repo/pull/1 --evidence 'merged by reviewer'");
+  assert.equal(record.factoryAction, "pr");
+  assert.equal(record.prAction, "record");
+  assert.equal(record.action, "merged");
+  assert.equal(record.runId, "fac_123");
+  assert.equal(record.goalId, "goal_123");
+  assert.equal(record.prUrl, "https://github.com/example/repo/pull/1");
+  assert.equal(record.evidence, "merged by reviewer");
+
+  const commands = parsePeerCommand("factory pr commands --title 'Add factory control plane' --body 'Verification-first control plane.' --branch feature/factory --remote origin");
+  assert.equal(commands.factoryAction, "pr");
+  assert.equal(commands.prAction, "commands");
+  assert.equal(commands.title, "Add factory control plane");
+  assert.equal(commands.body, "Verification-first control plane.");
+  assert.equal(commands.branch, "feature/factory");
+  assert.equal(commands.remote, "origin");
+
+  const rawWhitespace = parsePeerCommand("factory pr commands --title title --body body --branch ' feature/factory' --remote ' origin'");
+  assert.equal(rawWhitespace.branch, " feature/factory");
+  assert.equal(rawWhitespace.remote, " origin");
+});
+
+test("parses peer factory optional actions and validation", () => {
+  const status = parsePeerCommand("factory status fac_123");
+  assert.equal(status.factoryAction, "status");
+  assert.equal(status.runId, "fac_123");
+  assert.equal(parsePeerCommand("factory status").runId, undefined);
+
+  const attempt = parsePeerCommand("factory attempt fac_123 finish --attempt 2 --peer worker-a --summary 'fixed tests' --status failed --evidence 'unit failure'");
+  assert.equal(attempt.factoryAction, "attempt");
+  assert.equal(attempt.runId, "fac_123");
+  assert.equal(attempt.attemptAction, "finish");
+  assert.equal(attempt.attempt, 2);
+  assert.equal(attempt.peerId, "worker-a");
+  assert.equal(attempt.summary, "fixed tests");
+  assert.equal(attempt.status, "failed");
+  assert.equal(attempt.evidence, "unit failure");
+
+  const review = parsePeerCommand("factory plan-review goal_123 --path src/peers --gate test --lane implementation --lane review");
+  assert.equal(review.factoryAction, "plan-review");
+  assert.equal(review.goalId, "goal_123");
+  assert.deepEqual(review.paths, ["src/peers"]);
+  assert.deepEqual(review.gates, ["test"]);
+  assert.deepEqual(review.lanes, ["implementation", "review"]);
+
+  const metrics = parsePeerCommand("metrics");
+  assert.equal(metrics.subcommand, "factory");
+  assert.equal(metrics.factoryAction, "metrics");
+
+  assert.match(parsePeerCommand("factory run").error, /run requires <objective>/);
+  assert.match(parsePeerCommand("factory gate").error, /gate requires <run-id> <gate-id> <pass\|fail\|skip>/);
+  assert.match(parsePeerCommand("factory gate fac_123 test unknown").error, /gate requires <run-id> <gate-id> <pass\|fail\|skip>/);
+  assert.match(parsePeerCommand("factory attempt fac_123").error, /attempt requires <run-id> <start\|finish>/);
+  assert.match(parsePeerCommand("factory rework").error, /rework requires <run-id>/);
+  assert.match(parsePeerCommand("factory plan-review").error, /plan-review requires <goal-id>/);
+  assert.match(parsePeerCommand("factory pr record unknown --run fac_123").error, /record requires <created\|ci-failed\|ci-passed\|merged\|post-merge-verified\|stale\|closed>/);
+  assert.match(parsePeerCommand("factory pr record merged").error, /record requires --run <run-id>/);
+  assert.match(parsePeerCommand("factory pr commands --title title").error, /commands requires --title <title> --body <body>/);
+});
+
+test("parses peer do plan intent", () => {
+  const parsed = parsePeerCommand("do plan goal_123 --path src/peers --gate test --lane review");
+
+  assert.equal(parsed.subcommand, "do");
+  assert.equal(parsed.intent, "plan");
+  assert.deepEqual(parsed.intentArgs, ["goal_123"]);
+  assert.deepEqual(parsed.paths, ["src/peers"]);
+  assert.deepEqual(parsed.gates, ["test"]);
+  assert.deepEqual(parsed.lanes, ["review"]);
+});
+
+test("extension wires factory commands without requiring peer runtime transport", () => {
+  assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/factory\.mjs"/);
+  assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/automations\.mjs"/);
+  assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/pr-shepherd\.mjs"/);
+  assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/plan-adversary\.mjs"/);
+  assert.match(extensionSource, /loadFactoryReworkPolicy/);
+  assert.match(extensionSource, /reworkRecordTypeForAction/);
+  assert.match(extensionSource, /handlePeerFactoryCommand\(parsed, ctx, runtime\)/);
+  assert.match(extensionSource, /parsed\.subcommand === "factory" \|\| parsed\.subcommand === "metrics"/);
+  assert.match(extensionSource, /metadata:\s*\{[^}]*failureType[^}]*owner[^}]*reason/s);
+  assert.match(extensionSource, /No factory run found for \$\{parsed\.runId\}\./);
+  assert.match(extensionSource, /type:\s*"plan-review"/);
+  assert.match(extensionSource, /severity:\s*"blocking"/);
+  assert.match(extensionSource, /formatPeerFactoryMetrics\(derivePeerFactoryMetrics/);
+  assert.match(extensionSource, /handlePeerFactoryPrCommand\(parsed, root, peerId\)/);
+  assert.match(extensionSource, /Suggested PR commands \(not executed\)/);
+  assert.match(extensionSource, /handlePeerFactoryAutomateCommand\(parsed, root, peerId\)/);
+  assert.match(extensionSource, /never executes external commands/);
+
+  const factoryBranch = extensionSource.indexOf("handlePeerFactoryCommand(parsed, ctx, runtime)");
+  const firstEnsureEnabled = extensionSource.indexOf("ensureEnabled(runtime);", factoryBranch);
+  assert.ok(factoryBranch >= 0);
+  assert.ok(firstEnsureEnabled > factoryBranch);
 });
 
 test("parses hive and swarm start as safe self-selection goal starters", () => {
@@ -350,6 +584,8 @@ test("peer help documents claim lane, write shorthand, and stale flags", () => {
   assert.match(help, /\/peer center/);
   assert.match(help, /\/peer do <intent>/);
   assert.match(help, /\/peer subrun/);
+  assert.match(help, /\/peer factory init\|status\|run\|gate\|attempt\|rework\|plan-review\|metrics/);
+  assert.match(help, /\/peer metrics/);
 });
 
 test("parses goal closure policy flags", () => {
