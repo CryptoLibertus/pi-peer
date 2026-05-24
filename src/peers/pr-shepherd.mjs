@@ -30,11 +30,13 @@ export function normalizePrRecord(input = {}) {
 export async function appendPrRecord(root, input = {}) {
   if (!root) throw new Error("pr shepherd ledger requires root");
   await mkdir(join(root, dirname(PR_SHEPHERD_FILE)), { recursive: true });
+  const ledgerPath = join(root, PR_SHEPHERD_FILE);
   const loaded = await loadPrRecords(root);
   const trailingWarning = loaded.warnings.find((warning) => warning.type === "trailing-corrupt-record");
   if (trailingWarning) throw new Error(`cannot append pr shepherd record after trailing corrupt ledger record at line ${trailingWarning.line}: ${trailingWarning.message}`);
+  const separator = await appendSeparator(root);
   const record = normalizePrRecord(input);
-  await appendFile(join(root, PR_SHEPHERD_FILE), `${JSON.stringify(record)}\n`, "utf8");
+  await appendFile(ledgerPath, `${separator}${JSON.stringify(record)}\n`, "utf8");
   return record;
 }
 
@@ -67,6 +69,16 @@ export async function loadPrRecords(root) {
     }
   }
   return { records, warnings };
+}
+
+async function appendSeparator(root) {
+  try {
+    const text = await readFile(join(root, PR_SHEPHERD_FILE), "utf8");
+    return text && !text.endsWith("\n") ? "\n" : "";
+  } catch (error) {
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  }
 }
 
 export function derivePrShepherdState(records = []) {

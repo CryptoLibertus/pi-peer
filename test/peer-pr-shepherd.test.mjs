@@ -214,3 +214,18 @@ test("pr shepherd append refuses to append after trailing partial ledger record"
   assert.equal(loaded.records.length, 1);
   assert.equal(loaded.warnings.length, 1);
 });
+
+test("pr shepherd append separates valid final record with no trailing newline", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-pr-shepherd-"));
+  const ledgerPath = join(root, PR_SHEPHERD_FILE);
+  await mkdir(join(root, ".pi/factory"), { recursive: true });
+  await writeFile(ledgerPath, JSON.stringify(normalizePrRecord({ runId: "fac_1", action: "created" })), "utf8");
+
+  await appendPrRecord(root, { runId: "fac_2", action: "created" });
+
+  const loaded = await loadPrRecords(root);
+  assert.equal(loaded.records.length, 2);
+  assert.equal(loaded.records[0].runId, "fac_1");
+  assert.equal(loaded.records[1].runId, "fac_2");
+  assert.equal(loaded.warnings.length, 0);
+});
