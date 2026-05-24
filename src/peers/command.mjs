@@ -149,6 +149,7 @@ export function formatPeerHelp() {
     "- `/peer do <intent> [args...] [--constraint <a,b>] [--path <a,b>] [--lane <a,b>]` — run a high-level peer workflow intent",
     "- `/peer subrun status|start|progress|complete|cancel ...` — coordinate subagent run status and evidence",
     "- `/peer factory init|status|run|gate|attempt|rework|plan-review|metrics ...` — coordinate factory control-plane runs, gates, attempts, and metrics",
+    "- `/peer factory automate status|init|run|record ...` — inspect and record optional automation recommendations without executing them",
     "- `/peer factory pr status|record|commands ...` — record PR lifecycle events and print suggested PR commands without executing them",
     "- `/peer metrics` — alias for `/peer factory metrics`",
     "- `/peer status` — show local peer runtime, endpoint/auth, discovered peers, pending messages, context pressure, and warnings",
@@ -434,9 +435,10 @@ function parsePeerFactoryCommand(parsed, flags, positionals) {
   const action = positionals[0] || "status";
   const rest = positionals.slice(1);
   const withAction = { ...parsed, factoryAction: action };
-  const validActions = ["init", "status", "run", "gate", "attempt", "rework", "plan-review", "metrics", "pr"];
+  const validActions = ["init", "status", "run", "gate", "attempt", "rework", "plan-review", "metrics", "pr", "automate"];
   if (!validActions.includes(action)) return { ...withAction, error: `Unknown /peer factory action '${action}'` };
   if (action === "pr") return parsePeerFactoryPrCommand(withAction, flags, rest);
+  if (action === "automate") return parsePeerFactoryAutomateCommand(withAction, flags, rest);
   if (action === "init" || action === "metrics") return withAction;
   if (action === "status") return stripUndefined({ ...withAction, runId: rest[0] });
   if (action === "run") {
@@ -500,6 +502,36 @@ function parsePeerFactoryCommand(parsed, flags, positionals) {
     paths: listFlag(flags.path || flags.paths),
     gates: listFlag(flags.gate || flags.gates),
     lanes: listFlag(flags.lane || flags.lanes),
+  });
+}
+
+function parsePeerFactoryAutomateCommand(parsed, flags, positionals) {
+  const action = positionals[0] || "status";
+  const rest = positionals.slice(1);
+  const withAction = { ...parsed, automateAction: action };
+  if (!["status", "init", "run", "record"].includes(action)) return { ...withAction, error: `Unknown /peer factory automate action '${action}'` };
+  if (action === "status" || action === "init") return withAction;
+  if (action === "run") {
+    const automationId = rest[0];
+    const goalId = stringFlag(flags.goal || flags.goalId, undefined);
+    if (!automationId || !goalId) return { ...withAction, automationId, goalId, error: "/peer factory automate run requires <automation-id> --goal <goal-id>" };
+    return stripUndefined({
+      ...withAction,
+      automationId,
+      goalId,
+      dryRun: flagEnabled(flags.dryRun || flags.dry),
+    });
+  }
+  const automationId = rest[0];
+  const status = rest[1];
+  const evidence = stringFlag(flags.evidence, undefined);
+  if (!automationId || !["done", "blocked", "error"].includes(status) || !evidence) return { ...withAction, automationId, status, evidence, error: "/peer factory automate record requires <automation-id> <done|blocked|error> --evidence <text>" };
+  return stripUndefined({
+    ...withAction,
+    automationId,
+    status,
+    evidence,
+    goalId: stringFlag(flags.goal || flags.goalId, undefined),
   });
 }
 

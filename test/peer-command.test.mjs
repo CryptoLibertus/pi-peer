@@ -190,6 +190,37 @@ test("parses peer factory commands", () => {
   assert.equal(metrics.factoryAction, "metrics");
 });
 
+test("parses peer factory automation commands", () => {
+  const status = parsePeerCommand("factory automate status");
+  assert.equal(status.subcommand, "factory");
+  assert.equal(status.factoryAction, "automate");
+  assert.equal(status.automateAction, "status");
+
+  const init = parsePeerCommand("factory automate init");
+  assert.equal(init.factoryAction, "automate");
+  assert.equal(init.automateAction, "init");
+
+  const run = parsePeerCommand("factory automate run bug-fixer --goal goal_123 --dry-run");
+  assert.equal(run.factoryAction, "automate");
+  assert.equal(run.automateAction, "run");
+  assert.equal(run.automationId, "bug-fixer");
+  assert.equal(run.goalId, "goal_123");
+  assert.equal(run.dryRun, true);
+
+  const record = parsePeerCommand("factory automate record pr-reviewer done --evidence 'review passed'");
+  assert.equal(record.factoryAction, "automate");
+  assert.equal(record.automateAction, "record");
+  assert.equal(record.automationId, "pr-reviewer");
+  assert.equal(record.status, "done");
+  assert.equal(record.evidence, "review passed");
+
+  assert.match(parsePeerCommand("factory automate forever").error, /Unknown \/peer factory automate action 'forever'/);
+  assert.match(parsePeerCommand("factory automate run").error, /run requires <automation-id> --goal <goal-id>/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer").error, /run requires <automation-id> --goal <goal-id>/);
+  assert.match(parsePeerCommand("factory automate record bug-fixer queued --evidence nope").error, /record requires <automation-id> <done\|blocked\|error> --evidence <text>/);
+  assert.match(parsePeerCommand("factory automate record bug-fixer done").error, /record requires <automation-id> <done\|blocked\|error> --evidence <text>/);
+});
+
 test("parses peer factory pr commands", () => {
   const status = parsePeerCommand("factory pr status");
   assert.equal(status.subcommand, "factory");
@@ -265,6 +296,7 @@ test("parses peer do plan intent", () => {
 
 test("extension wires factory commands without requiring peer runtime transport", () => {
   assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/factory\.mjs"/);
+  assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/automations\.mjs"/);
   assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/pr-shepherd\.mjs"/);
   assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/plan-adversary\.mjs"/);
   assert.match(extensionSource, /loadFactoryReworkPolicy/);
@@ -278,6 +310,8 @@ test("extension wires factory commands without requiring peer runtime transport"
   assert.match(extensionSource, /formatPeerFactoryMetrics\(derivePeerFactoryMetrics/);
   assert.match(extensionSource, /handlePeerFactoryPrCommand\(parsed, root, peerId\)/);
   assert.match(extensionSource, /Suggested PR commands \(not executed\)/);
+  assert.match(extensionSource, /handlePeerFactoryAutomateCommand\(parsed, root, peerId\)/);
+  assert.match(extensionSource, /never executes external commands/);
 
   const factoryBranch = extensionSource.indexOf("handlePeerFactoryCommand(parsed, ctx, runtime)");
   const firstEnsureEnabled = extensionSource.indexOf("ensureEnabled(runtime);", factoryBranch);

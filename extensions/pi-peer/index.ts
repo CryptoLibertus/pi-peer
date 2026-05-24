@@ -40,6 +40,7 @@ import {
   startFactoryRun,
   deriveFactoryState,
 } from "../../src/peers/factory.mjs";
+import { appendAutomationRun, deriveAutomationStatus, formatAutomationStatus, initAutomationCatalog, loadAutomationCatalog } from "../../src/peers/automations.mjs";
 import { appendPrRecord, derivePrShepherdCommands, derivePrShepherdState, formatPrShepherdStatus, loadPrRecords } from "../../src/peers/pr-shepherd.mjs";
 import { derivePlanAdversaryReview, formatPlanAdversaryReview, hasMatchingPlanAdversaryObjection, normalizePlanContract, planAdversaryObjectionFingerprint, planAdversaryRunStatus } from "../../src/peers/plan-adversary.mjs";
 import { buildReworkDecisionRun, deriveReworkDecision, formatReworkDecision, reworkRecordTypeForAction } from "../../src/peers/rework.mjs";
@@ -780,6 +781,10 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
     return handlePeerFactoryPrCommand(parsed, root, peerId);
   }
 
+  if (action === "automate") {
+    return handlePeerFactoryAutomateCommand(parsed, root, peerId);
+  }
+
   if (action === "init") {
     const result = await initFactory(root);
     return [
@@ -959,6 +964,45 @@ async function handlePeerFactoryPrCommand(parsed: any, root: string, peerId: str
   const text = formatPrShepherdStatus(derivePrShepherdState(loaded.records));
   if (!loaded.warnings?.length) return text;
   return `${text}\nWarnings: ${loaded.warnings.map((warning: any) => warning.message).join("; ")}`;
+}
+
+async function handlePeerFactoryAutomateCommand(parsed: any, root: string, peerId: string) {
+  // Automation catalog is record/recommendation-only; it never executes external commands.
+  if (parsed.automateAction === "init") {
+    const result = await initAutomationCatalog(root);
+    return [
+      "# Automation catalog initialized",
+      result.created.length ? `created: ${result.created.join(", ")}` : "created: none",
+      result.skipped.length ? `existing: ${result.skipped.join(", ")}` : "existing: none",
+    ].join("\n");
+  }
+
+  if (parsed.automateAction === "run") {
+    const record = await appendAutomationRun(root, {
+      automationId: parsed.automationId,
+      status: parsed.dryRun ? "queued" : "running",
+      goalId: parsed.goalId,
+      dryRun: parsed.dryRun,
+      peerId,
+      evidence: parsed.dryRun ? "dry-run recommendation queued; no external commands executed" : "automation recommendation recorded; no external commands executed",
+      metadata: { recommendationOnly: true },
+    });
+    return `Automation recommendation recorded: ${record.id} · ${record.automationId} · ${record.status}${record.goalId ? ` · goal ${record.goalId}` : ""}${record.dryRun ? " · dry-run" : ""}`;
+  }
+
+  if (parsed.automateAction === "record") {
+    const record = await appendAutomationRun(root, {
+      automationId: parsed.automationId,
+      status: parsed.status,
+      goalId: parsed.goalId,
+      evidence: parsed.evidence,
+      peerId,
+      metadata: { recommendationOnly: true },
+    });
+    return `Automation record appended: ${record.id} · ${record.automationId} · ${record.status}`;
+  }
+
+  return formatAutomationStatus(deriveAutomationStatus(await loadAutomationCatalog(root)));
 }
 
 function inferPlanLanes(goalState: any) {
