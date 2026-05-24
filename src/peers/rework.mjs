@@ -113,6 +113,13 @@ export function formatReworkDecision(decision = {}) {
   return parts.join(" · ");
 }
 
+export function reworkRecordTypeForAction(action) {
+  const normalized = cleanText(action);
+  if (normalized === "context-patch" || normalized === "context-or-tool-patch") return "context-patch-requested";
+  if (normalized === "escalate-human") return "human-escalation";
+  return "rework-requested";
+}
+
 function hasFailureReportDetails(input = {}) {
   return Boolean(cleanText(input.failureType || input.metadata?.failureType));
 }

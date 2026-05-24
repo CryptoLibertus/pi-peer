@@ -113,6 +113,22 @@ export async function loadFactoryRuns(root) {
   return { records, warnings };
 }
 
+export async function loadFactoryReworkPolicy(root) {
+  if (!root) throw new Error("factory rework policy requires root");
+  let text;
+  try {
+    text = await readFile(join(root, FACTORY_REWORK_POLICY_FILE), "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return DEFAULT_REWORK_POLICY;
+    throw error;
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`corrupt factory rework policy: ${error.message}`);
+  }
+}
+
 export function deriveFactoryState(records = []) {
   const runsById = new Map();
   for (const item of Array.isArray(records) ? records : []) {
@@ -306,6 +322,7 @@ function failureFromRecord(record) {
     attempt: record.attempt,
     status: record.status,
     evidence: record.evidence,
+    reason: record.reason || record.metadata?.reason,
     summary: record.summary,
     at: record.at,
     recordId: record.id,

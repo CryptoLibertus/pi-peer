@@ -6,6 +6,7 @@ import {
   buildReworkDecisionRun,
   deriveReworkDecision,
   normalizeFailureReport,
+  reworkRecordTypeForAction,
 } from "../src/peers/rework.mjs";
 
 test("failure reports normalize taxonomy and evidence", () => {
@@ -65,6 +66,11 @@ test("rework decision asks for context patch on repeated same failure", () => {
   });
 
   assert.equal(decision.action, "context-patch");
+});
+
+test("context-or-tool-patch maps to context patch rework record", () => {
+  assert.equal(reworkRecordTypeForAction("context-patch"), "context-patch-requested");
+  assert.equal(reworkRecordTypeForAction("context-or-tool-patch"), "context-patch-requested");
 });
 
 test("blank rework details do not append unknown failure context", () => {

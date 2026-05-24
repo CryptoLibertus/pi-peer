@@ -195,6 +195,8 @@ test("parses peer factory optional actions and validation", () => {
 
 test("extension wires factory commands without requiring peer runtime transport", () => {
   assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/factory\.mjs"/);
+  assert.match(extensionSource, /loadFactoryReworkPolicy/);
+  assert.match(extensionSource, /reworkRecordTypeForAction/);
   assert.match(extensionSource, /handlePeerFactoryCommand\(parsed, ctx, runtime\)/);
   assert.match(extensionSource, /parsed\.subcommand === "factory" \|\| parsed\.subcommand === "metrics"/);
   assert.match(extensionSource, /metadata:\s*\{[^}]*failureType[^}]*owner[^}]*reason/s);

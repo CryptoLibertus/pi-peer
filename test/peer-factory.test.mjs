@@ -12,6 +12,7 @@ import {
   deriveFactoryState,
   formatFactoryStatus,
   initFactory,
+  loadFactoryReworkPolicy,
   loadFactoryRuns,
   startFactoryRun,
 } from "../src/peers/factory.mjs";
@@ -105,6 +106,37 @@ test("factory run loader throws on corrupt middle record", async (t) => {
     ].join("\n"), "utf8");
 
     await assert.rejects(loadFactoryRuns(root), /corrupt factory run ledger record at line 2/);
+  });
+});
+
+test("factory rework policy loader falls back and reads custom policy", async (t) => {
+  await withRoot(t, async (root) => {
+    const missing = await loadFactoryReworkPolicy(root);
+    assert.equal(missing.maxAttempts, 5);
+
+    await initFactory(root);
+    await writeFile(join(root, FACTORY_REWORK_POLICY_FILE), `${JSON.stringify({
+      version: 1,
+      maxAttempts: 2,
+      repeatedFailureThreshold: 2,
+      steps: [
+        { attempt: 1, action: "fix-directly" },
+        { attempt: 2, action: "escalate-human" },
+      ],
+    })}\n`, "utf8");
+
+    const custom = await loadFactoryReworkPolicy(root);
+    assert.equal(custom.maxAttempts, 2);
+    assert.equal(custom.repeatedFailureThreshold, 2);
+  });
+});
+
+test("factory rework policy loader throws clear error on corrupt json", async (t) => {
+  await withRoot(t, async (root) => {
+    await initFactory(root);
+    await writeFile(join(root, FACTORY_REWORK_POLICY_FILE), "{bad json", "utf8");
+
+    await assert.rejects(loadFactoryReworkPolicy(root), /corrupt factory rework policy:/);
   });
 });
 
@@ -211,10 +243,27 @@ test("factory state derives structured rework records and escalation", async (t)
 
     assert.equal(derived.failures[0].failureType, "test");
     assert.equal(derived.failures[0].owner, "worker-a");
+    assert.equal(derived.failures[0].summary, "tests failed");
     assert.equal(derived.reworkCount, 1);
     assert.equal(derived.escalationRequired, true);
     assert.equal(derived.latestReworkDecision.action, "escalate-human");
     assert.equal(derived.latestReworkDecision.failureType, "test");
+  });
+});
+
+test("factory failure derivation preserves reason metadata as summary", async (t) => {
+  await withRoot(t, async (root) => {
+    const run = await startFactoryRun(root, { objective: "Preserve failure reason" });
+    await appendFactoryRunRecord(root, {
+      type: "failure-reported",
+      runId: run.runId,
+      metadata: { failureType: "test", reason: "unit test assertion failed" },
+    });
+
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+
+    assert.equal(state.runs[0].failures[0].failureType, "test");
+    assert.equal(state.runs[0].failures[0].summary, "unit test assertion failed");
   });
 });
 

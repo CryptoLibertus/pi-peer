@@ -31,11 +31,12 @@ import {
   formatFactoryRun,
   formatFactoryStatus,
   initFactory,
+  loadFactoryReworkPolicy,
   loadFactoryRuns,
   startFactoryRun,
   deriveFactoryState,
 } from "../../src/peers/factory.mjs";
-import { buildReworkDecisionRun, deriveReworkDecision, formatReworkDecision } from "../../src/peers/rework.mjs";
+import { buildReworkDecisionRun, deriveReworkDecision, formatReworkDecision, reworkRecordTypeForAction } from "../../src/peers/rework.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
 import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
 import { buildPeerCommandCenterState, formatPeerCommandCenter, routePeerIntent } from "../../src/peers/command-center.mjs";
@@ -764,15 +765,13 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
       evidence: parsed.evidence,
       owner: parsed.owner,
     };
+    const policy = await loadFactoryReworkPolicy(root);
     const decision = deriveReworkDecision({
+      policy,
       run: buildReworkDecisionRun({ run, failure }),
       failure,
     });
-    const recordType = decision.action === "context-patch"
-      ? "context-patch-requested"
-      : decision.action === "escalate-human"
-        ? "human-escalation"
-        : "rework-requested";
+    const recordType = reworkRecordTypeForAction(decision.action);
     await appendFactoryRunRecord(root, {
       type: recordType,
       runId: parsed.runId,
