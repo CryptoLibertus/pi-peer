@@ -125,6 +125,30 @@ test("parses peer do facade intents", () => {
   assert.deepEqual(review.intentArgs, ["goal_123"]);
 });
 
+test("parses peer do factory facade intents", () => {
+  const verify = parsePeerCommand("do verify goal_123 --gate test --gate pack");
+  assert.equal(verify.subcommand, "do");
+  assert.equal(verify.intent, "verify");
+  assert.deepEqual(verify.intentArgs, ["goal_123"]);
+  assert.deepEqual(verify.gates, ["test", "pack"]);
+
+  const rework = parsePeerCommand("do rework fac_123");
+  assert.equal(rework.intent, "rework");
+  assert.deepEqual(rework.intentArgs, ["fac_123"]);
+
+  const metrics = parsePeerCommand("do metrics");
+  assert.equal(metrics.intent, "metrics");
+  assert.deepEqual(metrics.intentArgs, []);
+
+  const ship = parsePeerCommand("do ship fac_123");
+  assert.equal(ship.intent, "ship");
+  assert.deepEqual(ship.intentArgs, ["fac_123"]);
+
+  const automate = parsePeerCommand("do automate");
+  assert.equal(automate.intent, "automate");
+  assert.deepEqual(automate.intentArgs, []);
+});
+
 test("parses peer subrun facade actions", () => {
   const status = parsePeerCommand("subrun status --goal goal_123");
   assert.equal(status.subcommand, "subrun");

@@ -231,6 +231,35 @@ export async function routePeerIntent(root, parsed = {}, context = {}) {
     };
   }
 
+  if (intent === "verify") {
+    const goalId = args[0];
+    if (!goalId) return { mutated: false, text: "/peer do verify <goal-id> [--gate <gate>]" };
+    return {
+      mutated: false,
+      text: [`/peer factory run ${commandArg(`Verify ${goalId}`)} --goal ${commandArg(goalId)}`, factoryFacadeFlags({ gates: parsed.gates })].filter(Boolean).join(" "),
+    };
+  }
+
+  if (intent === "rework") {
+    const runId = args[0];
+    if (!runId) return { mutated: false, text: "/peer do rework <run-id>" };
+    return { mutated: false, text: `/peer factory rework ${commandArg(runId)}` };
+  }
+
+  if (intent === "metrics") {
+    return { mutated: false, text: "/peer factory metrics" };
+  }
+
+  if (intent === "ship") {
+    const runId = args[0];
+    const commands = ["/peer factory pr status", prCommandSuggestion(runId)];
+    return { mutated: false, text: commands.join("\n") };
+  }
+
+  if (intent === "automate") {
+    return { mutated: false, text: "/peer factory automate status" };
+  }
+
   if (intent === "resolve-handoffs") {
     const goal = resolveRouteGoal(args[0], context);
     const commands = handoffResolveCommands(goal);
@@ -330,6 +359,31 @@ function laneClaimCommand(goalId, lane, summary, workKey) {
 function writeClaimCommand(goalId, summary, paths, workKey) {
   const pathFlags = paths.map((item) => `--path=${commandArg(item)}`).join(" ");
   return `/peer goal claim ${commandArg(goalId)} ${commandArg(summary)} --mode write --lane ${commandArg("implementation")} ${pathFlags} --key ${commandArg(workKey)}`;
+}
+
+function factoryFacadeFlags(parsed = {}) {
+  const entries = [
+    ["--constraint", parsed.constraints],
+    ["--path", parsed.paths],
+    ["--lane", parsed.lanes],
+    ["--gate", parsed.gates],
+  ];
+  return entries.flatMap(([flag, values]) => array(values).map((value) => `${flag} ${commandArg(value)}`)).join(" ");
+}
+
+function prCommandSuggestion(runId) {
+  const suffix = runId ? ` ${runId}` : "";
+  return [
+    "/peer factory pr commands",
+    "--title",
+    commandArg(`Factory run${suffix}`),
+    "--body",
+    commandArg(`Summarize verification evidence for factory run${suffix || " <run-id>"} before creating this PR.`),
+    "--branch",
+    "HEAD",
+    "--remote",
+    "origin",
+  ].join(" ");
 }
 
 function resolveRouteGoal(goalId, context = {}) {

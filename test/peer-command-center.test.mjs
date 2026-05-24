@@ -528,3 +528,80 @@ test("routePeerIntent work path command round-trips flag-like paths through pars
   assert.equal(parsed.mode, "write");
   assert.deepEqual(parsed.paths, ["--fixtures", "src"]);
 });
+
+test("routePeerIntent plan returns factory plan-review command with facade flags", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "plan",
+    intentArgs: ["goal_123"],
+    lanes: ["research", "review"],
+    paths: ["src/peers"],
+  });
+
+  assert.equal(result.mutated, false);
+  assert.equal(result.text, "/peer factory plan-review goal_123 --path src/peers --lane research --lane review");
+});
+
+test("routePeerIntent verify returns factory run command with gates", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "verify",
+    intentArgs: ["goal_123"],
+    gates: ["test", "pack"],
+  });
+
+  assert.equal(result.mutated, false);
+  assert.equal(result.text, "/peer factory run \"Verify goal_123\" --goal goal_123 --gate test --gate pack");
+});
+
+test("routePeerIntent rework returns factory rework command", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "rework",
+    intentArgs: ["fac_123"],
+  });
+
+  assert.equal(result.mutated, false);
+  assert.equal(result.text, "/peer factory rework fac_123");
+});
+
+test("routePeerIntent metrics returns factory metrics command", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "metrics",
+    intentArgs: [],
+  });
+
+  assert.equal(result.mutated, false);
+  assert.equal(result.text, "/peer factory metrics");
+});
+
+test("routePeerIntent ship returns factory pr status and command suggestions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "ship",
+    intentArgs: ["fac_123"],
+  });
+
+  assert.equal(result.mutated, false);
+  assert.match(result.text, /\/peer factory pr status/);
+  assert.match(result.text, /\/peer factory pr commands --title "Factory run fac_123"/);
+  assert.match(result.text, /--body "Summarize verification evidence for factory run fac_123 before creating this PR\."/);
+});
+
+test("routePeerIntent automate returns factory automate status command", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "automate",
+    intentArgs: [],
+  });
+
+  assert.equal(result.mutated, false);
+  assert.equal(result.text, "/peer factory automate status");
+});

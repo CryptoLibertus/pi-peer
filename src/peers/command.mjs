@@ -385,7 +385,7 @@ function parsePeerSetupCommand(parsed, flags, positionals) {
 
 function parsePeerDoCommand(parsed, flags, positionals) {
   const intent = positionals[0] || "status";
-  const validIntents = ["setup", "status", "start", "coordinate", "review", "research", "work", "plan", "resolve-handoffs", "subagents"];
+  const validIntents = ["setup", "status", "start", "coordinate", "review", "research", "work", "plan", "verify", "rework", "metrics", "ship", "automate", "resolve-handoffs", "subagents"];
   const withIntent = { ...parsed, intent, intentArgs: positionals.slice(1) };
   if (!validIntents.includes(intent)) return { ...withIntent, error: `Unknown /peer do intent '${intent}'` };
   return {
