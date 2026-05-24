@@ -64,6 +64,71 @@ test("context eval results attach to patch ids", async (t) => {
   });
 });
 
+test("context eval results must match patch id and eval name to close patches", async (t) => {
+  await withRoot(t, async (root) => {
+    const patch = await appendContextPatch(root, {
+      trigger: "handoff failures",
+      change: "Add handoff checklist",
+      metric: "handoff miss rate",
+      evalName: "handoff-quality",
+      owner: "planner-a",
+      reviewDate: "2026-06-24",
+    });
+
+    await recordContextEvalResult(root, {
+      patchId: patch.patchId,
+      evalName: "wrong-eval",
+      status: "pass",
+      evidence: "wrong scenario passed",
+    });
+    await recordContextEvalResult(root, {
+      patchId: "ctx_unknown",
+      evalName: "handoff-quality",
+      status: "pass",
+      evidence: "unknown patch scenario passed",
+    });
+
+    const state = deriveContextLifecycleState(await loadContextLifecycle(root));
+    assert.equal(state.patchEvalStatus[patch.patchId], undefined);
+    assert.equal(state.openPatches.length, 1);
+    assert.equal(state.warnings.length, 2);
+    assert.match(state.warnings[0].message, /does not match patch evalName/);
+    assert.match(state.warnings[1].message, /references unknown patchId/);
+  });
+});
+
+test("context lifecycle uses latest matching eval result status", async (t) => {
+  await withRoot(t, async (root) => {
+    const failThenPass = await appendContextPatch(root, {
+      trigger: "review misses",
+      change: "Add review checklist",
+      metric: "review miss rate",
+      evalName: "review-checklist",
+      owner: "reviewer-a",
+      reviewDate: "2026-06-24",
+    });
+    const passThenFail = await appendContextPatch(root, {
+      trigger: "handoff misses",
+      change: "Add handoff checklist",
+      metric: "handoff miss rate",
+      evalName: "handoff-checklist",
+      owner: "planner-a",
+      reviewDate: "2026-06-24",
+    });
+
+    await recordContextEvalResult(root, { patchId: failThenPass.patchId, evalName: "review-checklist", status: "fail", evidence: "first run failed" });
+    await recordContextEvalResult(root, { patchId: failThenPass.patchId, evalName: "review-checklist", status: "pass", evidence: "second run passed" });
+    await recordContextEvalResult(root, { patchId: passThenFail.patchId, evalName: "handoff-checklist", status: "pass", evidence: "first run passed" });
+    await recordContextEvalResult(root, { patchId: passThenFail.patchId, evalName: "handoff-checklist", status: "fail", evidence: "second run failed" });
+
+    const state = deriveContextLifecycleState(await loadContextLifecycle(root));
+    assert.equal(state.patchEvalStatus[failThenPass.patchId], "pass");
+    assert.equal(state.patchEvalStatus[passThenFail.patchId], "fail");
+    assert.deepEqual(state.openPatches.map((patch) => patch.patchId), [passThenFail.patchId]);
+    assert.deepEqual(state.failingEvalResults.map((result) => result.patchId), [passThenFail.patchId]);
+  });
+});
+
 test("context lifecycle loader throws on corrupt middle records and ignores trailing partials", async (t) => {
   await withRoot(t, async (root) => {
     await mkdir(join(root, CONTEXT_DIR), { recursive: true });
@@ -86,5 +151,38 @@ test("context lifecycle loader throws on corrupt middle records and ignores trai
     const loaded = await loadContextLifecycle(root);
     assert.equal(loaded.patches.length, 1);
     assert.equal(loaded.warnings[0].type, "trailing-corrupt-record");
+  });
+});
+
+test("context lifecycle loader throws on trailing valid json with invalid schema", async (t) => {
+  await withRoot(t, async (root) => {
+    await mkdir(join(root, CONTEXT_DIR), { recursive: true });
+    const invalidPatch = JSON.stringify({
+      type: "context-patch",
+      patchId: "ctx_invalid",
+      trigger: "handoff failures",
+      change: "Add handoff template",
+      metric: "failure count",
+      evalName: "handoff-quality",
+      owner: "planner-a",
+    });
+
+    await writeFile(join(root, CONTEXT_PATCHES_FILE), invalidPatch, "utf8");
+    await assert.rejects(loadContextLifecycle(root), /context patch requires reviewDate/);
+  });
+});
+
+test("context patch review date requires strict valid yyyy-mm-dd", async (t) => {
+  await withRoot(t, async (root) => {
+    const basePatch = {
+      trigger: "handoff failures",
+      change: "Add handoff template",
+      metric: "failure count",
+      evalName: "handoff-quality",
+      owner: "planner-a",
+    };
+
+    await assert.rejects(appendContextPatch(root, { ...basePatch, reviewDate: "06/24/2026" }), /reviewDate must be YYYY-MM-DD/);
+    await assert.rejects(appendContextPatch(root, { ...basePatch, reviewDate: "2026-02-31" }), /reviewDate must be a valid calendar date/);
   });
 });

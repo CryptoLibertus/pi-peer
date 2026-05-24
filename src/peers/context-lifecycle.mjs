@@ -52,19 +52,43 @@ export function deriveContextLifecycleState(loaded = {}) {
   const patches = Array.isArray(loaded.patches) ? loaded.patches : [];
   const retros = Array.isArray(loaded.retros) ? loaded.retros : [];
   const evalResults = Array.isArray(loaded.evalResults) ? loaded.evalResults : [];
+  const warnings = Array.isArray(loaded.warnings) ? [...loaded.warnings] : [];
+  const patchesById = new Map(patches.map((patch) => [patch.patchId, patch]));
   const patchEvalStatus = {};
+  const latestMatchingEvalResults = {};
   for (const result of evalResults) {
-    if (result.patchId) patchEvalStatus[result.patchId] = result.status;
+    const patch = patchesById.get(result.patchId);
+    if (!patch) {
+      warnings.push({
+        type: "unknown-context-eval-patch",
+        patchId: result.patchId,
+        evalName: result.evalName,
+        message: `context eval result references unknown patchId '${result.patchId}'`,
+      });
+      continue;
+    }
+    if (patch.evalName !== result.evalName) {
+      warnings.push({
+        type: "mismatched-context-eval-name",
+        patchId: result.patchId,
+        evalName: result.evalName,
+        expectedEvalName: patch.evalName,
+        message: `context eval result '${result.evalName}' does not match patch evalName '${patch.evalName}' for ${result.patchId}`,
+      });
+      continue;
+    }
+    patchEvalStatus[result.patchId] = result.status;
+    latestMatchingEvalResults[result.patchId] = result;
   }
   const openPatches = patches.filter((patch) => patchEvalStatus[patch.patchId] !== "pass");
   return {
     patches,
     retros,
     evalResults,
-    warnings: Array.isArray(loaded.warnings) ? loaded.warnings : [],
+    warnings,
     patchEvalStatus,
     openPatches,
-    failingEvalResults: evalResults.filter((result) => result.status === "fail"),
+    failingEvalResults: Object.values(latestMatchingEvalResults).filter((result) => result.status === "fail"),
   };
 }
 
@@ -106,13 +130,19 @@ async function loadJsonl(root, relativePath, normalize, label) {
     const line = lines[index];
     if (!line.trim()) continue;
     try {
-      records.push(normalize(JSON.parse(line)));
-    } catch (error) {
-      const isTrailingPartial = index === lines.length - 1 && !hasTerminatingNewline;
-      if (isTrailingPartial) {
-        warnings.push({ type: "trailing-corrupt-record", file: relativePath, line: index + 1, message: error.message });
-        break;
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch (error) {
+        const isTrailingPartial = index === lines.length - 1 && !hasTerminatingNewline;
+        if (isTrailingPartial && error instanceof SyntaxError) {
+          warnings.push({ type: "trailing-corrupt-record", file: relativePath, line: index + 1, message: error.message });
+          break;
+        }
+        throw error;
       }
+      records.push(normalize(parsed));
+    } catch (error) {
       throw new Error(`corrupt ${label} record at line ${index + 1}: ${error.message}`);
     }
   }
@@ -176,8 +206,14 @@ function requiredText(value, message) {
 
 function requiredDate(value, message) {
   const text = requiredText(value, message);
-  const time = Date.parse(text);
-  if (!Number.isFinite(time)) throw new Error("context patch reviewDate must parse as a date");
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) throw new Error("context patch reviewDate must be YYYY-MM-DD");
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const roundTrip = `${date.getUTCFullYear().toString().padStart(4, "0")}-${(date.getUTCMonth() + 1).toString().padStart(2, "0")}-${date.getUTCDate().toString().padStart(2, "0")}`;
+  if (roundTrip !== text) throw new Error("context patch reviewDate must be a valid calendar date");
   return text;
 }
 
