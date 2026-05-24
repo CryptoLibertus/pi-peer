@@ -785,7 +785,9 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
   }
 
   if (action === "run") {
-    const run = await startFactoryRun(root, { ...parsed, peerId });
+    const run = parsed.source && parsed.goalId
+      ? await startLinkedFactoryRun(root, { ...parsed, peerId })
+      : await startFactoryRun(root, { ...parsed, peerId });
     return formatFactoryRun(run);
   }
 

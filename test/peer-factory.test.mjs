@@ -101,6 +101,27 @@ test("factory linked runs can be found and reused by source and goal", async (t)
   });
 });
 
+test("factory linked run only reuses when source and goal are present", async (t) => {
+  await withRoot(t, async (root) => {
+    const first = await startLinkedFactoryRun(root, {
+      objective: "Unlinked workflow",
+      goalId: "goal_unlinked",
+      peerId: "planner-a",
+    });
+    const second = await startLinkedFactoryRun(root, {
+      objective: "Unlinked workflow",
+      goalId: "goal_unlinked",
+      peerId: "planner-a",
+    });
+
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+
+    assert.notEqual(second.runId, first.runId);
+    assert.equal(second.reused, undefined);
+    assert.equal(state.runs.length, 2);
+  });
+});
+
 test("factory run loader treats missing ledger as empty", async (t) => {
   await withRoot(t, async (root) => {
     const loaded = await loadFactoryRuns(root);
