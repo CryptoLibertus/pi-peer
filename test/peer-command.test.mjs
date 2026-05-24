@@ -126,6 +126,67 @@ test("parses peer subrun facade actions", () => {
   assert.equal(doneWithNoBlocked.blockedCount, 0);
 });
 
+test("parses peer factory commands", () => {
+  const init = parsePeerCommand("factory init");
+  assert.equal(init.subcommand, "factory");
+  assert.equal(init.factoryAction, "init");
+
+  const run = parsePeerCommand("factory run Improve protocol --goal goal_123 --path src/peers --gate test --gate pack --source peer-do");
+  assert.equal(run.factoryAction, "run");
+  assert.equal(run.objective, "Improve protocol");
+  assert.equal(run.goalId, "goal_123");
+  assert.deepEqual(run.paths, ["src/peers"]);
+  assert.deepEqual(run.gates, ["test", "pack"]);
+  assert.equal(run.source, "peer-do");
+
+  const gate = parsePeerCommand("factory gate fac_123 test fail --evidence 'unit failure' --failure test");
+  assert.equal(gate.factoryAction, "gate");
+  assert.equal(gate.runId, "fac_123");
+  assert.equal(gate.gateId, "test");
+  assert.equal(gate.status, "fail");
+  assert.equal(gate.evidence, "unit failure");
+  assert.equal(gate.failureType, "test");
+
+  const rework = parsePeerCommand("factory rework fac_123 --reason 'test failed' --owner reviewer-a");
+  assert.equal(rework.factoryAction, "rework");
+  assert.equal(rework.runId, "fac_123");
+  assert.equal(rework.reason, "test failed");
+  assert.equal(rework.owner, "reviewer-a");
+
+  const metrics = parsePeerCommand("factory metrics");
+  assert.equal(metrics.factoryAction, "metrics");
+});
+
+test("parses peer factory optional actions and validation", () => {
+  const status = parsePeerCommand("factory status fac_123");
+  assert.equal(status.factoryAction, "status");
+  assert.equal(status.runId, "fac_123");
+  assert.equal(parsePeerCommand("factory status").runId, undefined);
+
+  const attempt = parsePeerCommand("factory attempt fac_123 finish --attempt 2 --peer worker-a --summary 'fixed tests'");
+  assert.equal(attempt.factoryAction, "attempt");
+  assert.equal(attempt.runId, "fac_123");
+  assert.equal(attempt.attemptAction, "finish");
+  assert.equal(attempt.attempt, 2);
+  assert.equal(attempt.peerId, "worker-a");
+  assert.equal(attempt.summary, "fixed tests");
+
+  const review = parsePeerCommand("factory plan-review goal_123");
+  assert.equal(review.factoryAction, "plan-review");
+  assert.equal(review.goalId, "goal_123");
+
+  const metrics = parsePeerCommand("metrics");
+  assert.equal(metrics.subcommand, "factory");
+  assert.equal(metrics.factoryAction, "metrics");
+
+  assert.match(parsePeerCommand("factory run").error, /run requires <objective>/);
+  assert.match(parsePeerCommand("factory gate").error, /gate requires <run-id> <gate-id> <pass\|fail\|skip>/);
+  assert.match(parsePeerCommand("factory gate fac_123 test unknown").error, /gate requires <run-id> <gate-id> <pass\|fail\|skip>/);
+  assert.match(parsePeerCommand("factory attempt fac_123").error, /attempt requires <run-id> <start\|finish>/);
+  assert.match(parsePeerCommand("factory rework").error, /rework requires <run-id>/);
+  assert.match(parsePeerCommand("factory plan-review").error, /plan-review requires <goal-id>/);
+});
+
 test("parses hive and swarm start as safe self-selection goal starters", () => {
   const hive = parsePeerCommand("hive start Ship autonomous workers --constraint no-overlap --path src --path test --lane research,review --proposal \"Validate handoff evidence\"");
   assert.equal(hive.subcommand, "hive");
@@ -350,6 +411,8 @@ test("peer help documents claim lane, write shorthand, and stale flags", () => {
   assert.match(help, /\/peer center/);
   assert.match(help, /\/peer do <intent>/);
   assert.match(help, /\/peer subrun/);
+  assert.match(help, /\/peer factory init\|status\|run\|gate\|attempt\|rework\|plan-review\|metrics/);
+  assert.match(help, /\/peer metrics/);
 });
 
 test("parses goal closure policy flags", () => {

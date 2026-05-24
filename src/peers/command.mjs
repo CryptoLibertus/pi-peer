@@ -1,6 +1,6 @@
 import { flagEnabled, parseFlags, splitCommandLine } from "../utils.mjs";
 
-export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "center", "init", "setup", "do", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve"]);
+export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "center", "init", "setup", "do", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics"]);
 
 const PEER_GOAL_ALIASES = Object.freeze({
   goals: ["list"],
@@ -90,6 +90,12 @@ export function parsePeerCommand(rawArgs = "") {
   if (subcommand === "subrun") {
     return parsePeerSubrunCommand(parsed, flags, positionals);
   }
+  if (subcommand === "factory") {
+    return parsePeerFactoryCommand(parsed, flags, positionals);
+  }
+  if (subcommand === "metrics") {
+    return parsePeerFactoryCommand({ ...parsed, subcommand: "factory", positionals: ["metrics", ...positionals] }, flags, ["metrics", ...positionals]);
+  }
   if (subcommand === "self-improve" || subcommand === "improve") {
     return parsePeerSelfImproveCommand(parsed, flags, positionals);
   }
@@ -139,6 +145,8 @@ export function formatPeerHelp() {
     "- `/peer center` — open the peer command center facade",
     "- `/peer do <intent> [args...] [--constraint <a,b>] [--path <a,b>] [--lane <a,b>]` — run a high-level peer workflow intent",
     "- `/peer subrun status|start|progress|complete|cancel ...` — coordinate subagent run status and evidence",
+    "- `/peer factory init|status|run|gate|attempt|rework|plan-review|metrics ...` — coordinate factory control-plane runs, gates, attempts, and metrics",
+    "- `/peer metrics` — alias for `/peer factory metrics`",
     "- `/peer status` — show local peer runtime, endpoint/auth, discovered peers, pending messages, context pressure, and warnings",
     "- `/peer context` — show local context usage/pressure when Pi exposes it to extensions",
     "- `/peer list` — list configured and discovered peers",
@@ -373,6 +381,69 @@ function parsePeerSubrunCommand(parsed, flags, positionals) {
     summary: summary || undefined,
     reason: action === "cancel" ? stringFlag(flags.reason, summary || undefined) : undefined,
   });
+}
+
+function parsePeerFactoryCommand(parsed, flags, positionals) {
+  const action = positionals[0] || "status";
+  const rest = positionals.slice(1);
+  const withAction = { ...parsed, factoryAction: action };
+  const validActions = ["init", "status", "run", "gate", "attempt", "rework", "plan-review", "metrics"];
+  if (!validActions.includes(action)) return { ...withAction, error: `Unknown /peer factory action '${action}'` };
+  if (action === "init" || action === "metrics") return withAction;
+  if (action === "status") return stripUndefined({ ...withAction, runId: rest[0] });
+  if (action === "run") {
+    const objective = rest.join(" ").trim();
+    if (!objective) return { ...withAction, error: "/peer factory run requires <objective>" };
+    return stripUndefined({
+      ...withAction,
+      objective,
+      goalId: stringFlag(flags.goal || flags.goalId, undefined),
+      paths: listFlag(flags.path || flags.paths),
+      gates: listFlag(flags.gate || flags.gates),
+      source: stringFlag(flags.source, undefined),
+    });
+  }
+  if (action === "gate") {
+    const runId = rest[0];
+    const gateId = rest[1];
+    const status = rest[2];
+    if (!runId || !gateId || !["pass", "fail", "skip"].includes(status)) return { ...withAction, runId, gateId, status, error: "/peer factory gate requires <run-id> <gate-id> <pass|fail|skip>" };
+    return stripUndefined({
+      ...withAction,
+      runId,
+      gateId,
+      status,
+      evidence: stringFlag(flags.evidence, undefined),
+      failureType: stringFlag(flags.failure || flags.failureType, undefined),
+    });
+  }
+  if (action === "attempt") {
+    const runId = rest[0];
+    const attemptAction = rest[1];
+    if (!runId || !["start", "finish"].includes(attemptAction)) return { ...withAction, runId, attemptAction, error: "/peer factory attempt requires <run-id> <start|finish>" };
+    return stripUndefined({
+      ...withAction,
+      runId,
+      attemptAction,
+      attempt: positiveIntegerFlag(flags.attempt),
+      peerId: stringFlag(flags.peer || flags.peerId, undefined),
+      summary: stringFlag(flags.summary, undefined),
+    });
+  }
+  if (action === "rework") {
+    const runId = rest[0];
+    if (!runId) return { ...withAction, error: "/peer factory rework requires <run-id>" };
+    return stripUndefined({
+      ...withAction,
+      runId,
+      reason: stringFlag(flags.reason, undefined),
+      failureType: stringFlag(flags.failure || flags.failureType, undefined),
+      owner: stringFlag(flags.owner, undefined),
+    });
+  }
+  const goalId = rest[0];
+  if (!goalId) return { ...withAction, error: "/peer factory plan-review requires <goal-id>" };
+  return { ...withAction, goalId };
 }
 
 function parsePeerGoalCommand(parsed, flags, positionals) {
