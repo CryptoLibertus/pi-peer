@@ -85,7 +85,7 @@ test("peer status includes idle watcher diagnostics", () => {
   assert.match(text, /idle watcher running/);
   assert.match(text, /activations 1\/20/);
   assert.match(text, /last no-op no idle activation \(goal-board-change\)/);
-  assert.match(text, /offers 2 sent, 1 duplicate, 0 errors/);
+  assert.match(text, /offers 2 sent · 1 duplicate/);
 });
 
 test("peer status summarizes the last idle activation", () => {
@@ -130,7 +130,7 @@ test("peer footer status prioritizes coordination activations and protocol offer
       },
     },
   }, { peers: [], messages: [] });
-  assert.equal(formatPeerFooterStatusLine(coordinationStatus).text, "🔗 peer coord task-handoff · goal_noise · goal_noise|coordination|resolve|read");
+  assert.equal(formatPeerFooterStatusLine(coordinationStatus).text, "🔗 needs handoff review · goal_noise");
 
   const offerStatus = derivePeerRuntimeStatus({
     enabled: true,
@@ -138,13 +138,13 @@ test("peer footer status prioritizes coordination activations and protocol offer
     source: "test",
     __peerIdleOfferLastSweep: { reason: "agent_end", sent: 1, duplicate: 0, errors: 0, skipped: 2 },
   }, { peers: [], messages: [] });
-  assert.match(formatPeerFooterStatusLine(offerStatus).text, /peer offers 1 sent/);
+  assert.match(formatPeerFooterStatusLine(offerStatus).text, /peer offers · 1 sent · 2 skipped/);
 
   const workStatus = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test" }, {
     peers: [],
     messages: [{ messageId: "msg_1", peerId: "worker2", status: "running", request: { body: { intent: "task", metadata: {} } } }],
   });
-  assert.equal(formatPeerFooterStatusLine(workStatus).text, "🔗 peer work 1 pending · worker2 · task");
+  assert.equal(formatPeerFooterStatusLine(workStatus).text, "🔗 peer busy · 1 task · worker2 · work");
 });
 
 test("peer status can show visible unknown context after compaction", () => {
