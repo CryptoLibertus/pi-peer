@@ -42,7 +42,7 @@ pi install ./packages/pi-peer
 
 ## What it adds
 
-- `/peer help|setup|doctor|status|list|init|reconnect|resume|cancel|send|get|await|goal|scout|hive|swarm|self-improve`
+- `/peer help|setup|doctor|status|list|init|reconnect|resume|cancel|send|get|await|spawn|goal|scout|hive|swarm|self-improve`
 - `peer_list`, `peer_send`, `peer_get`, `peer_await`, and `peer_progress` tools
 - Local peer discovery and transport using project `.pi/peers.json`
 - Repo-scoped discovery: only Pi sessions in the same git repo/project appear as local peers
@@ -56,20 +56,24 @@ pi install ./packages/pi-peer
 
 ## Quick start
 
-Open two or more Pi sessions in the same git repo. Give each process a stable peer id:
+Open one Pi TUI session in the git repo and run the setup wizard:
+
+```bash
+/peer setup
+/peer reconnect
+/peer list
+```
+
+The interactive `/peer setup` wizard asks for the local peer id/role and can spawn managed headless worker peers for you. Non-interactive sessions can still use `/peer setup --id planner --role planner --subagents` plus `/peer spawn worker2,worker3 --role worker --subagents`.
+
+`/peer spawn` keeps child peer processes attached to the current session process, advertises each child with `PI_PEER_ID`, and records lifecycle events in `.pi/peer-control-ledger.jsonl`. Use `/peer spawn status` to inspect them; Pi sends managed children `SIGTERM` on session shutdown, and you can stop them earlier with `/peer spawn stop [peer-id]`.
+
+You can still run peers manually in separate terminals when you want direct TUI observability:
 
 ```bash
 PI_PEER_ID=planner pi
 PI_PEER_ID=worker2 pi
 PI_PEER_ID=worker3 pi
-```
-
-In one session:
-
-```bash
-/peer setup --id planner --role planner
-/peer reconnect
-/peer list
 ```
 
 Then send direct work:
@@ -93,12 +97,11 @@ For the primary workflow, tell Pi what you want to accomplish:
 
 ```bash
 /peer setup
-/peer setup 6
 /peer do "Ship a verified improvement to peer coordination" --path src/peers --gate test --gate pack
 /peer center
 ```
 
-`/peer setup <choice>` configures the local peer for a common role:
+`/peer setup` opens an interactive CLI wizard in the TUI. It configures the local peer, optionally spawns worker peers, and then points you to `/peer center`. For non-interactive use, `/peer setup <choice>` still configures the local peer for a common role:
 
 1. Coordinate peers
 2. Implement code
@@ -116,7 +119,7 @@ For the primary workflow, tell Pi what you want to accomplish:
 
 `/peer accomplish "<objective>"` is an alias for the same mission flow. Explicit `/peer do <intent>` commands still exist for status, review, research, work, resolve-handoffs, subagents, metrics, and advanced factory flows.
 
-Private subagent teams are optional. `/peer subrun start <summary>` records compact local subagent work in `.pi/peer-control-ledger.jsonl`; when `pi-subagents` is missing, the command records a blocked/manual state instead of crashing.
+Private subagent teams are optional. `/peer spawn ... --subagents` advertises child peers as subagent-capable via environment-backed capability metadata. `/peer subrun start <summary>` records compact local subagent work in `.pi/peer-control-ledger.jsonl`; when `pi-subagents` is missing, the command records a blocked/manual state instead of crashing.
 
 ## Verification-first factory workflow
 
@@ -182,14 +185,14 @@ Advanced factory and context commands:
 ## Setup and health checks
 
 ```bash
-/peer setup --id planner --role planner
+/peer setup
 /peer doctor
 /peer reconnect
 /peer resume <message-id>
 /peer cancel <message-id> "superseded"
 ```
 
-`/peer setup` is a guided alias for `/peer init`: it creates `.pi/peers.json` only when the file is missing, seeds protocol/capability/trust manifest metadata, and never overwrites an existing config. `/peer doctor` is read-only and checks enablement, local identity, advertised endpoint, protocol compatibility, discovered peers, warnings, and resumable disconnected tasks. `/peer reconnect` refreshes local discovery after starting or restarting another Pi session. Discovery is repo/project scoped: sessions under the same `.git` root see each other, while sessions in other repos are ignored. Outside git, the resolved cwd is used as the scope. Discovery ignores stale descriptors whose process id is missing, non-positive, or no longer alive. `/peer resume` re-dispatches a disconnected message restored from `.pi/peer-messages.json`; `/peer cancel` records a local cancellation so stale work is no longer treated as active. If the target peer is already running the inbound task, cancellation also injects a `triggerTurn` follow-up telling it to stop safely and end with a cancelled/blocked handoff. List-style flags such as `--peer`, `--path`, and `--claim` accept comma-separated values or repeated flags. Await flags accept normal false aliases, so `--await false`, `--await 0`, `--await off`, and `--await no` all disable waiting just like `--no-await`.
+`/peer setup` is the guided interactive setup path. In TUI/RPC UI contexts it opens prompts for role, local peer id, and optional managed worker spawning. In non-interactive contexts, `/peer setup <choice>` and legacy flags remain available. Setup creates `.pi/peers.json` only when the file is missing, seeds protocol/capability/trust manifest metadata, and never overwrites an existing config. `/peer doctor` is read-only and checks enablement, local identity, advertised endpoint, protocol compatibility, discovered peers, warnings, and resumable disconnected tasks. `/peer reconnect` refreshes local discovery after starting or restarting another Pi session. Discovery is repo/project scoped: sessions under the same `.git` root see each other, while sessions in other repos are ignored. Outside git, the resolved cwd is used as the scope. Discovery ignores stale descriptors whose process id is missing, non-positive, or no longer alive. `/peer resume` re-dispatches a disconnected message restored from `.pi/peer-messages.json`; `/peer cancel` records a local cancellation so stale work is no longer treated as active. If the target peer is already running the inbound task, cancellation also injects a `triggerTurn` follow-up telling it to stop safely and end with a cancelled/blocked handoff. List-style flags such as `--peer`, `--path`, and `--claim` accept comma-separated values or repeated flags. Await flags accept normal false aliases, so `--await false`, `--await 0`, `--await off`, and `--await no` all disable waiting just like `--no-await`.
 
 ## Peer org and private subagent teams
 
@@ -200,7 +203,7 @@ Peers can be organized as domain managers with optional private subagent teams:
     /peer org role set worker-a --role implementer --domain runtime --subagents
     /peer setup --id worker-a --role implementer --domain runtime --subagents --subagent-provider pi-subagents
 
-`.pi/peer-org.json` is the org charter. It records peer manager roles, domains, spawn policy, and evidence expectations. It does not spawn processes by itself.
+`.pi/peer-org.json` is the org charter. It records peer manager roles, domains, spawn policy, and evidence expectations. It does not spawn processes by itself; use `/peer setup` or `/peer spawn <peer-id>` from the coordinator TUI session to launch managed headless peer processes.
 
 Subagent teams are optional. A peer advertises support with `capabilities.orchestration.subagents: true`; `pi-subagents` can be used by a future adapter, but this package does not require it. Private child-agent results should be summarized into the owning peer's handoff as `metadata.subagentEvidence`; child votes do not count as independent top-level peer review.
 

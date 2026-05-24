@@ -207,7 +207,8 @@ export function formatPeerSetupPrompt(input = {}) {
     "8. Shepherd PRs",
     "9. Inspect status only",
     "",
-    "Reply with /peer setup <number>.",
+    "In interactive Pi, run /peer setup with no arguments to open the wizard.",
+    "Without UI, reply with /peer setup <number>.",
     peer ? `Current peer: ${peer}` : undefined,
   ].filter((line) => line !== undefined).join("\n");
 }
@@ -302,7 +303,8 @@ export function formatPeerSetupResult(result = {}) {
     "",
     "Next:",
     "1. /peer center",
-    "2. /peer setup done",
+    "2. /peer spawn worker2,worker3 --role worker --subagents",
+    "3. /peer setup done",
   ].join("\n");
 }
 

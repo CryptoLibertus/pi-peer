@@ -21,7 +21,7 @@ async function withRoot(t, fn) {
   return fn(root);
 }
 
-test("formatPeerSetupPrompt lists nine uses and says /peer setup <number>", () => {
+test("formatPeerSetupPrompt lists nine uses and explains interactive setup", () => {
   const prompt = formatPeerSetupPrompt();
 
   assert.equal(prompt, [
@@ -37,9 +37,10 @@ test("formatPeerSetupPrompt lists nine uses and says /peer setup <number>", () =
     "8. Shepherd PRs",
     "9. Inspect status only",
     "",
-    "Reply with /peer setup <number>.",
+    "In interactive Pi, run /peer setup with no arguments to open the wizard.",
+    "Without UI, reply with /peer setup <number>.",
   ].join("\n"));
-  assert.match(prompt, /^Reply with \/peer setup <number>\.$/m);
+  assert.match(prompt, /^In interactive Pi, run \/peer setup with no arguments to open the wizard\.$/m);
 });
 
 test("PEER_SETUP_CHOICES exposes full stable metadata for each setup option", () => {
@@ -155,7 +156,8 @@ test("formatPeerSetupResult uses blank separators around sections", () => {
     "",
     "Next:",
     "1. /peer center",
-    "2. /peer setup done",
+    "2. /peer spawn worker2,worker3 --role worker --subagents",
+    "3. /peer setup done",
   ].join("\n"));
 });
 

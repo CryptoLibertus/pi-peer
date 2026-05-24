@@ -9,6 +9,11 @@ import { PEER_VERSION, peerProtocolMetadata, redactPeerAuditValue } from "./prot
 export const PEER_SETTINGS_RELATIVE_PATH = ".pi/settings.json";
 export const PEER_CONFIG_RELATIVE_PATH = ".pi/peers.json";
 export const PI_PEER_ID_ENV = "PI_PEER_ID";
+export const PI_PEER_ROLE_ENV = "PI_PEER_ROLE";
+export const PI_PEER_DOMAIN_ENV = "PI_PEER_DOMAIN";
+export const PI_PEER_PERSONA_ENV = "PI_PEER_PERSONA";
+export const PI_PEER_SUBAGENTS_ENV = "PI_PEER_SUBAGENTS";
+export const PI_PEER_SUBAGENT_PROVIDER_ENV = "PI_PEER_SUBAGENT_PROVIDER";
 export const SUPPORTED_PEER_TRANSPORTS = Object.freeze(["coms"]);
 export const DEFAULT_AGENT_MD_MAX_BYTES = 24 * 1024;
 
@@ -33,7 +38,7 @@ export function parsePeerRuntimeConfig({ settings, peerFile, env } = {}) {
   for (const peer of configuredPeers(settings?.peers, "settings", warnings)) peersById.set(peer.peerId, peer);
   for (const peer of configuredPeers(peerFile?.peers, "peers", warnings)) peersById.set(peer.peerId, { ...(peersById.get(peer.peerId) || {}), ...peer });
 
-  const manifest = normalizePeerManifest(peerFile?.manifest || settings?.peerMessaging?.manifest || settings?.manifest);
+  const manifest = applyEnvPeerManifest(normalizePeerManifest(peerFile?.manifest || settings?.peerMessaging?.manifest || settings?.manifest), env);
   const idleWatcher = normalizePeerIdleWatcherConfig(peerFile?.idleWatcher || settings?.peerMessaging?.idleWatcher || settings?.idleWatcher, { env });
   const peers = [...peersById.values()].map((peer) => markUnsupportedTransport(normalizePeerDescriptor({ ...manifestDefaults(manifest), ...peer }), warnings));
   const peerFileLocalPeerId = normalizePeerId(peerFile?.localPeerId);
@@ -221,7 +226,7 @@ function positiveInteger(value) {
 
 export async function loadLocalPeerProfile(cwd, config = {}, options = {}) {
   const readFile = options.readFile || defaultReadFile;
-  const profile = deriveLocalPeerProfile(config, options);
+  const profile = deriveLocalPeerProfile(config, { env: process.env, ...options });
   const warnings = [];
   if (!profile.agentMd) return { profile, warnings };
 
@@ -303,9 +308,15 @@ function findConfiguredLocalPeer(peers, localPeerId) {
 }
 
 function explicitPeerProfileOptions(options = {}) {
+  const env = options.env || {};
   const profile = {};
+  const envProfile = {
+    role: env[PI_PEER_ROLE_ENV],
+    domain: env[PI_PEER_DOMAIN_ENV],
+    persona: env[PI_PEER_PERSONA_ENV],
+  };
   for (const field of ["role", "domain", "persona", "agentMd", "agentInstructions"]) {
-    const value = normalizedString(options[field]);
+    const value = normalizedString(options[field] ?? envProfile[field]);
     if (value) profile[field] = value;
   }
   return profile;
@@ -378,6 +389,18 @@ function normalizePeerManifest(manifest = {}) {
     ...(Number.isInteger(source.minProtocolVersion) ? { minProtocolVersion: source.minProtocolVersion } : {}),
     ...(Number.isInteger(source.maxProtocolVersion) ? { maxProtocolVersion: source.maxProtocolVersion } : {}),
   };
+}
+
+function applyEnvPeerManifest(manifest = {}, env = {}) {
+  const subagents = booleanOption(env[PI_PEER_SUBAGENTS_ENV]);
+  const provider = normalizedString(env[PI_PEER_SUBAGENT_PROVIDER_ENV]);
+  if (subagents === undefined && !provider) return manifest;
+  const capabilities = clonePlain(manifest.capabilities || {});
+  const orchestration = isPlainObject(capabilities.orchestration) ? clonePlain(capabilities.orchestration) : {};
+  if (subagents !== undefined) orchestration.subagents = subagents;
+  if (provider) orchestration.provider = provider;
+  capabilities.orchestration = orchestration;
+  return { ...manifest, capabilities };
 }
 
 function manifestDefaults(manifest = {}) {
