@@ -6,6 +6,7 @@ const HIGH_RISK_PATH_PATTERNS = Object.freeze([
   /(^|\/)security(\/|$)/i,
   /(^|\/)secrets?(\/|$)/i,
 ]);
+const HIGH_RISK_PATH_STEMS = new Set(["auth", "billing", "payment", "payments", "migration", "migrations", "security", "secret", "secrets"]);
 
 const WRITE_LANES = new Set(["implementation", "work", "write"]);
 const REVIEW_LANES = new Set(["review", "qa"]);
@@ -58,7 +59,7 @@ export function derivePlanAdversaryReview(input = {}) {
 
   if (hasDependencyCycle(plan.workItems)) findings.push(finding("dependency-cycle", "blocking", "Work item dependencies contain a cycle."));
 
-  const highRiskPaths = writePaths.filter((path) => HIGH_RISK_PATH_PATTERNS.some((pattern) => pattern.test(path)));
+  const highRiskPaths = writePaths.filter(isHighRiskPath);
   if (highRiskPaths.length) {
     findings.push(finding("high-risk-path", "risk", `High-risk path requires explicit review: ${highRiskPaths.join(", ")}.`));
     findings.push(finding("needs-human-approval", "risk", "High-risk plan changes require human approval before write work."));
@@ -95,20 +96,17 @@ export function formatPlanAdversaryReview(review = {}) {
 }
 
 function normalizeWorkItems(input, context) {
-  if (Array.isArray(input) && input.length) {
-    return input.map((item, index) => normalizeWorkItem(item, index, context));
-  }
-  return context.lanes.map((lane, index) => {
-    const id = `plan:${context.goalId || "goal"}:${lane}`;
-    return stripEmpty({
-      id,
-      itemId: id,
-      lane,
-      summary: `${lane} for ${context.objective || context.goalId || "plan"}`,
-      workKey: `plan:${lane}`,
-      paths: WRITE_LANES.has(lane) ? context.paths : [],
-      dependsOn: defaultDependsOn(lane, context.lanes, context.goalId),
-    });
+  const supplied = Array.isArray(input) ? input.map((item, index) => normalizeWorkItem(item, index, context)) : [];
+  const byLane = new Map(supplied.filter((item) => item.lane).map((item) => [item.lane, item]));
+  const generated = context.lanes
+    .filter((lane) => !byLane.has(lane))
+    .map((lane) => generatedLaneWorkItem(lane, context));
+  const workItems = [...supplied, ...generated];
+  const idByLane = new Map(workItems.filter((item) => item.lane).map((item) => [item.lane, item.id]));
+  return workItems.map((item) => {
+    if (uniqueList(item.dependsOn).length) return item;
+    const dependsOn = defaultDependsOn(item.lane, context.lanes, idByLane);
+    return dependsOn.length ? { ...item, dependsOn } : item;
   });
 }
 
@@ -127,10 +125,22 @@ function normalizeWorkItem(item, index, context) {
   });
 }
 
-function defaultDependsOn(lane, lanes, goalId) {
-  if (lane === "implementation" && lanes.includes("research")) return [`plan:${goalId || "goal"}:research`];
-  if (REVIEW_LANES.has(lane) && lanes.includes("implementation")) return [`plan:${goalId || "goal"}:implementation`];
-  if (lane === "coordination" && lanes.includes("review")) return [`plan:${goalId || "goal"}:review`];
+function generatedLaneWorkItem(lane, context) {
+  const id = `plan:${context.goalId || "goal"}:${lane}`;
+  return stripEmpty({
+    id,
+    itemId: id,
+    lane,
+    summary: `${lane} for ${context.objective || context.goalId || "plan"}`,
+    workKey: `plan:${lane}`,
+    paths: WRITE_LANES.has(lane) ? context.paths : [],
+  });
+}
+
+function defaultDependsOn(lane, lanes, idByLane) {
+  if (lane === "implementation" && lanes.includes("research") && idByLane.has("research")) return [idByLane.get("research")];
+  if (REVIEW_LANES.has(lane) && lanes.includes("implementation") && idByLane.has("implementation")) return [idByLane.get("implementation")];
+  if (lane === "coordination" && lanes.includes("review") && idByLane.has("review")) return [idByLane.get("review")];
   return [];
 }
 
@@ -186,6 +196,14 @@ function firstDuplicate(items) {
 
 function finding(code, severity, summary) {
   return { code, severity, summary };
+}
+
+function isHighRiskPath(path) {
+  const normalized = normalizePath(path);
+  if (HIGH_RISK_PATH_PATTERNS.some((pattern) => pattern.test(normalized))) return true;
+  const basename = normalized.split("/").at(-1) || "";
+  const stem = basename.replace(/\.[^.]+$/, "").toLowerCase();
+  return HIGH_RISK_PATH_STEMS.has(stem);
 }
 
 function normalizePath(path) {
