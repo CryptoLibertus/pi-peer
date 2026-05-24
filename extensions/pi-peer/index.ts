@@ -163,7 +163,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
       attachPeerUi(runtime, () => activeContext, (current: any) => refreshPeerUi(current, runtime));
       ensureEnabled(runtime);
       await runtime.refreshLocalPeers();
-      const metadata = mergePeerMetadata(params.metadata, params.claimedPaths, params.goalId, { workKey: params.workKey, workLane: params.workLane, duplicatePolicy: params.duplicatePolicy, isolationMode: params.isolationMode });
+      const metadata = mergePeerMetadata(params.metadata, params.claimedPaths, params.goalId, { workKey: params.workKey, workLane: params.workLane, duplicatePolicy: params.duplicatePolicy, isolationMode: params.isolationMode, goalClaimMode: params.goalClaimMode });
       const goalLink = await beginPeerSendGoalLink(ctx?.cwd, runtime, {
         goalId: params.goalId,
         targetPeerId: params.peer,
@@ -180,6 +180,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
         return duplicatePeerSendToolResult(goalLink);
       }
       if (goalLink?.claimEvent?.id) metadata.goalClaimId = goalLink.claimEvent.id;
+      if (goalLink?.claimEvent?.mode) metadata.goalClaimMode = goalLink.claimEvent.mode;
       if (goalLink?.workKey) metadata.workKey = goalLink.workKey;
       let handle: any;
       try {
@@ -646,7 +647,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
     }
     if (parsed.subcommand === "send") {
       await runtime.refreshLocalPeers();
-      const metadata = mergePeerMetadata(parsed.metadata, parsed.claimedPaths, parsed.goalId, { workKey: parsed.workKey, workLane: parsed.workLane, duplicatePolicy: parsed.duplicatePolicy, isolationMode: parsed.isolationMode });
+      const metadata = mergePeerMetadata(parsed.metadata, parsed.claimedPaths, parsed.goalId, { workKey: parsed.workKey, workLane: parsed.workLane, duplicatePolicy: parsed.duplicatePolicy, isolationMode: parsed.isolationMode, goalClaimMode: parsed.goalClaimMode });
       const goalLink = await beginPeerSendGoalLink(ctx?.cwd, runtime, {
         goalId: parsed.goalId,
         targetPeerId: parsed.peerId,
@@ -663,6 +664,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
         return sendPeerMessage(pi, formatDuplicatePeerSend(goalLink));
       }
       if (goalLink?.claimEvent?.id) metadata.goalClaimId = goalLink.claimEvent.id;
+      if (goalLink?.claimEvent?.mode) metadata.goalClaimMode = goalLink.claimEvent.mode;
       if (goalLink?.workKey) metadata.workKey = goalLink.workKey;
       let handle: any;
       try {
@@ -954,6 +956,15 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
       status: parsed.status,
       evidence: parsed.evidence,
       peerId,
+      command: parsed.command,
+      cwd: parsed.cwd,
+      gitSha: parsed.gitSha,
+      dirty: parsed.dirty,
+      durationMs: parsed.durationMs,
+      exitCode: parsed.exitCode,
+      stdoutHash: parsed.stdoutHash,
+      stderrHash: parsed.stderrHash,
+      artifact: parsed.artifact,
       metadata: {
         failureType: parsed.failureType,
       },

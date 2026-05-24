@@ -13,6 +13,7 @@ import {
 export const HOP_LIMIT_ERROR_CODE = "PI_PEER_HOP_LIMIT_EXCEEDED";
 export const SELF_SEND_ERROR_CODE = "PI_PEER_SELF_TARGET";
 export const UNSUPPORTED_TRANSPORT_ERROR_CODE = "PI_PEER_UNSUPPORTED_TRANSPORT";
+export const PEER_CAPABILITY_DENIED_ERROR_CODE = "PI_PEER_CAPABILITY_DENIED";
 
 const ACTIVE_MESSAGE_STATUSES = new Set(["queued", "running", "cancelling"]);
 const TERMINAL_MESSAGE_STATUSES = new Set(["responded", "cancelled", "error"]);
@@ -180,6 +181,12 @@ class PeerComms {
       ...message,
       ...(options.priority !== undefined && message.priority === undefined ? { priority: options.priority } : {}),
     });
+    const capabilityDenial = validatePeerMessageCapabilities(peer, body, options);
+    if (capabilityDenial) {
+      const error = new PeerCommsError(capabilityDenial.message, PEER_CAPABILITY_DENIED_ERROR_CODE, capabilityDenial.details);
+      this.#recordAudit({ kind: "message.error", peerId: peer.peerId, transport: peer.transport, status: "error", error: error.message, code: PEER_CAPABILITY_DENIED_ERROR_CODE, body });
+      throw error;
+    }
     const target = normalizePeerAddress({ peerId: peer.peerId, transport: peer.transport, cwd: peer.cwd, role: peer.role });
     const request = createPeerEnvelope({
       type: "message.send",
@@ -687,6 +694,31 @@ function inferWriteAccess(peer = {}) {
   if (peer.role === "reviewer") return false;
   if (peer.role === "worker") return true;
   return peer.trust !== "read-only" && peer.trust !== "disabled";
+}
+
+function validatePeerMessageCapabilities(peer = {}, body = {}, options = {}) {
+  if (options.allowCapabilityOverride === true || options.overrideCapabilities === true) return undefined;
+  const capabilities = peer.capabilities && typeof peer.capabilities === "object" ? peer.capabilities : {};
+  const allowedIntents = Array.isArray(capabilities.intents) ? capabilities.intents.map((item) => String(item).trim()).filter(Boolean) : [];
+  const intent = nonEmptyString(body.intent) ? body.intent.trim() : "ask";
+  if (allowedIntents.length && !allowedIntents.includes(intent)) {
+    return {
+      message: `Peer '${peer.peerId}' does not advertise support for intent '${intent}'`,
+      details: { peerId: peer.peerId, intent, allowedIntents },
+    };
+  }
+
+  const metadata = body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata) ? body.metadata : {};
+  const claimedPaths = Array.isArray(metadata.claimedPaths) ? metadata.claimedPaths.filter(nonEmptyString) : [];
+  const claimMode = nonEmptyString(metadata.goalClaimMode) ? metadata.goalClaimMode.trim().toLowerCase() : nonEmptyString(metadata.claimMode) ? metadata.claimMode.trim().toLowerCase() : "";
+  const requestsWrite = claimedPaths.length > 0 && claimMode !== "read";
+  if (requestsWrite && !inferWriteAccess(peer)) {
+    return {
+      message: `Peer '${peer.peerId}' is read-only and cannot receive write-claimed peer work`,
+      details: { peerId: peer.peerId, intent, claimedPaths, claimMode: claimMode || "write", writeAccess: false },
+    };
+  }
+  return undefined;
 }
 
 function defaultPromptResponder(envelope, peer) {

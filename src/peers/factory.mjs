@@ -248,7 +248,7 @@ function applyFactoryRecord(run, record) {
     }
   } else if (record.type === "gate-result") {
     const gateId = cleanText(record.gateId);
-    if (gateId) run.gateResults[gateId] = stripEmpty({ gateId, status: normalizeGateStatus(record.status), evidence: record.evidence, at: record.at, recordId: record.id });
+    if (gateId) run.gateResults[gateId] = normalizeFactoryGateResult(record);
     run.status = statusFromGateState(run) || run.baseStatus || run.status;
     if (FAILED_STATUSES.has(normalizeGateStatus(record.status))) {
       run.failures.push(failureFromRecord(record));
@@ -294,6 +294,26 @@ function upsertAttempt(run, patch) {
   run.attempts.sort((a, b) => a.attempt - b.attempt);
 }
 
+function normalizeFactoryGateResult(record = {}) {
+  return stripEmpty({
+    gateId: cleanText(record.gateId),
+    status: normalizeGateStatus(record.status),
+    evidence: record.evidence,
+    at: record.at,
+    recordId: record.id,
+    command: record.command,
+    cwd: record.cwd,
+    gitSha: record.gitSha,
+    dirty: record.dirty,
+    durationMs: record.durationMs,
+    exitCode: record.exitCode,
+    stdoutHash: record.stdoutHash,
+    stderrHash: record.stderrHash,
+    artifact: record.artifact,
+    attestation: record.command || record.exitCode !== undefined || record.durationMs !== undefined ? "command" : record.evidence ? "manual" : undefined,
+  });
+}
+
 function normalizeFactoryRunRecord(record = {}) {
   if (!plainObject(record)) throw new Error("factory run record must be an object");
   const type = cleanText(record.type).toLowerCase();
@@ -317,6 +337,15 @@ function normalizeFactoryRunRecord(record = {}) {
     evidence: cleanText(record.evidence),
     source: cleanText(record.source),
     summary: cleanText(record.summary),
+    command: cleanText(record.command),
+    cwd: cleanText(record.cwd),
+    gitSha: cleanText(record.gitSha || record.gitSHA || record.sha),
+    dirty: typeof record.dirty === "boolean" ? record.dirty : undefined,
+    durationMs: nonNegativeInteger(record.durationMs),
+    exitCode: integerValue(record.exitCode),
+    stdoutHash: cleanText(record.stdoutHash),
+    stderrHash: cleanText(record.stderrHash),
+    artifact: cleanText(record.artifact || record.artifactPath),
     failureType: cleanText(record.failureType || record.metadata?.failureType),
     owner: cleanText(record.owner || record.metadata?.owner),
     reason: cleanText(record.reason || record.metadata?.reason),
@@ -460,6 +489,16 @@ function normalizeGateStatus(status) {
 function positiveInteger(value) {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : undefined;
+}
+
+function nonNegativeInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : undefined;
+}
+
+function integerValue(value) {
+  const number = Number(value);
+  return Number.isInteger(number) ? number : undefined;
 }
 
 function cleanText(value) {

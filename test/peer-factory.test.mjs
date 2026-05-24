@@ -75,6 +75,46 @@ test("factory run records start, attempts, gates, and terminal status", async (t
   });
 });
 
+test("factory gate results preserve command attestation fields", async (t) => {
+  await withRoot(t, async (root) => {
+    const run = await startFactoryRun(root, {
+      objective: "Attest deterministic gate",
+      gates: ["test"],
+    });
+
+    await appendFactoryRunRecord(root, {
+      type: "gate-result",
+      runId: run.runId,
+      gateId: "test",
+      status: "pass",
+      evidence: "captured by evaluator",
+      command: "npm test",
+      cwd: root,
+      gitSha: "abc123",
+      dirty: false,
+      durationMs: 42,
+      exitCode: 0,
+      stdoutHash: "sha256:out",
+      stderrHash: "sha256:err",
+      artifact: ".pi/factory/artifacts/test.log",
+    });
+
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+    const gate = state.runs[0].gateResults.test;
+    assert.equal(gate.status, "pass");
+    assert.equal(gate.attestation, "command");
+    assert.equal(gate.command, "npm test");
+    assert.equal(gate.cwd, root);
+    assert.equal(gate.gitSha, "abc123");
+    assert.equal(gate.dirty, false);
+    assert.equal(gate.durationMs, 42);
+    assert.equal(gate.exitCode, 0);
+    assert.equal(gate.stdoutHash, "sha256:out");
+    assert.equal(gate.stderrHash, "sha256:err");
+    assert.equal(gate.artifact, ".pi/factory/artifacts/test.log");
+  });
+});
+
 test("factory linked runs can be found and reused by source and goal", async (t) => {
   await withRoot(t, async (root) => {
     const first = await startLinkedFactoryRun(root, {
