@@ -131,6 +131,16 @@ The factory workflow turns peer collaboration into structured, reviewable runs. 
 
 Factory state is stored locally under `.pi/factory/`. It records run starts, attempts, gate results, rework decisions, plan reviews, and PR lifecycle records; metrics are derived from those local ledgers when requested. The default behavior is record-and-recommend; automatic shell execution and PR operations require explicit future opt-in.
 
+High-level factory command map:
+
+- `/peer do "Objective" --gate test --gate pack` — create or reuse the goal, link a factory run, and print the next evidence commands.
+- `/peer do plan <goal-id> [--path <path>] [--lane <lane>] [--gate <gate>]` — print the factory plan-review command for an existing goal.
+- `/peer do verify <goal-id> [--gate <gate>]` — print the factory run command that tracks verification gates for the goal.
+- `/peer do rework <run-id>` — print the factory rework command when a gate fails or another attempt is needed.
+- `/peer do metrics` — print the factory metrics command for run, gate, rework, escalation, and context-patch health.
+- `/peer do ship <run-id>` — print PR lifecycle status and PR command suggestions for a verified run.
+- `/peer do automate` — print the current factory automation status.
+
 Factory verification smoke test:
 
 ```bash
