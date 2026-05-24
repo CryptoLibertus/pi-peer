@@ -161,6 +161,55 @@ test("context patch pass check requires existing patch and latest matching eval 
   });
 });
 
+test("context patch pass check works on raw lifecycle state", async () => {
+  const patch = {
+    patchId: "ctx_raw",
+    evalName: "raw-eval",
+  };
+  const state = {
+    patches: [patch],
+    evalResults: [
+      { patchId: patch.patchId, evalName: "raw-eval", status: "pass" },
+    ],
+  };
+
+  assert.equal(contextPatchHasPassingEval(state, patch.patchId), true);
+});
+
+test("context patch pass check ignores stale derived status", async () => {
+  const patch = {
+    patchId: "ctx_stale",
+    evalName: "stale-eval",
+  };
+  const state = {
+    patches: [patch],
+    evalResults: [
+      { patchId: patch.patchId, evalName: "stale-eval", status: "pass" },
+      { patchId: patch.patchId, evalName: "stale-eval", status: "fail" },
+    ],
+    patchEvalStatus: {
+      [patch.patchId]: "pass",
+    },
+  };
+
+  assert.equal(contextPatchHasPassingEval(state, patch.patchId), false);
+});
+
+test("context patch pass check ignores mismatched eval names", async () => {
+  const patch = {
+    patchId: "ctx_mismatch",
+    evalName: "expected-eval",
+  };
+  const state = {
+    patches: [patch],
+    evalResults: [
+      { patchId: patch.patchId, evalName: "wrong-eval", status: "pass" },
+    ],
+  };
+
+  assert.equal(contextPatchHasPassingEval(state, patch.patchId), false);
+});
+
 test("context lifecycle loader throws on corrupt middle records and ignores trailing partials", async (t) => {
   await withRoot(t, async (root) => {
     await mkdir(join(root, CONTEXT_DIR), { recursive: true });

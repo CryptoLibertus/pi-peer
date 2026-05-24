@@ -98,7 +98,11 @@ export function contextPatchHasPassingEval(state, patchId) {
   const patches = Array.isArray(state?.patches) ? state.patches : [];
   const patch = patches.find((item) => item.patchId === id);
   if (!patch) return false;
-  return state?.patchEvalStatus?.[id] === "pass";
+  const evalResults = Array.isArray(state?.evalResults) ? state.evalResults : [];
+  const latestMatchingResult = evalResults
+    .filter((result) => result.patchId === id && result.evalName === patch.evalName)
+    .at(-1);
+  return latestMatchingResult?.status === "pass";
 }
 
 export function formatContextLifecycleStatus(state = {}) {
