@@ -35,6 +35,7 @@ import {
   startFactoryRun,
   deriveFactoryState,
 } from "../../src/peers/factory.mjs";
+import { deriveReworkDecision, formatReworkDecision } from "../../src/peers/rework.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
 import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
 import { buildPeerCommandCenterState, formatPeerCommandCenter, routePeerIntent } from "../../src/peers/command-center.mjs";
@@ -753,18 +754,50 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
   }
 
   if (action === "rework") {
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+    const run = state.runs.find((item: any) => item.runId === parsed.runId);
+    if (!run) return `No factory run found for ${parsed.runId}.`;
+    const decision = deriveReworkDecision({
+      run: {
+        ...run,
+        failures: [
+          ...(Array.isArray(run.failures) ? run.failures : []),
+          {
+            runId: parsed.runId,
+            failureType: parsed.failureType,
+            summary: parsed.reason,
+            owner: parsed.owner,
+          },
+        ],
+      },
+      failure: {
+        runId: parsed.runId,
+        failureType: parsed.failureType,
+        summary: parsed.reason,
+        owner: parsed.owner,
+      },
+    });
+    const recordType = decision.action === "context-patch"
+      ? "context-patch-requested"
+      : decision.action === "escalate-human"
+        ? "human-escalation"
+        : "rework-requested";
     await appendFactoryRunRecord(root, {
-      type: "rework-requested",
+      type: recordType,
       runId: parsed.runId,
       peerId,
       summary: parsed.reason,
       metadata: {
+        action: decision.action,
         failureType: parsed.failureType,
         owner: parsed.owner,
         reason: parsed.reason,
+        nextAttempt: decision.nextAttempt,
       },
     });
-    return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
+    const updatedState = deriveFactoryState((await loadFactoryRuns(root)).records);
+    const updatedRun = updatedState.runs.find((item: any) => item.runId === parsed.runId);
+    return [formatReworkDecision(decision), updatedRun ? formatFactoryRun(updatedRun) : formatFactoryStatus(updatedState)].join("\n");
   }
 
   if (action === "plan-review") {

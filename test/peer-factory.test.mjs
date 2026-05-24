@@ -35,6 +35,9 @@ test("factory init creates gate policy, rework policy, and append-only run ledge
     const gates = JSON.parse(await readFile(join(root, FACTORY_GATES_FILE), "utf8"));
     assert.equal(gates.version, 1);
     assert.equal(gates.gates.some((gate) => gate.id === "test"), true);
+    const reworkPolicy = JSON.parse(await readFile(join(root, FACTORY_REWORK_POLICY_FILE), "utf8"));
+    assert.equal(reworkPolicy.maxAttempts, 5);
+    assert.equal(reworkPolicy.steps.some((step) => step.action === "context-or-tool-patch"), true);
 
     const second = await initFactory(root);
     assert.deepEqual(second.created, []);
@@ -177,6 +180,41 @@ test("one rework cycle is counted once when requested and started are both logge
 
     assert.equal(state.runs[0].reworkCount, 1);
     assert.equal(state.runs[0].status, "rework");
+  });
+});
+
+test("factory state derives structured rework records and escalation", async (t) => {
+  await withRoot(t, async (root) => {
+    const run = await startFactoryRun(root, { objective: "Classify rework" });
+    await appendFactoryRunRecord(root, {
+      type: "failure-reported",
+      runId: run.runId,
+      summary: "tests failed",
+      evidence: "AssertionError",
+      metadata: { failureType: "test", owner: "worker-a" },
+    });
+    await appendFactoryRunRecord(root, {
+      type: "context-patch-requested",
+      runId: run.runId,
+      summary: "same failure repeated",
+      metadata: { action: "context-patch", failureType: "test", owner: "worker-a", reason: "Repeated test failure" },
+    });
+    await appendFactoryRunRecord(root, {
+      type: "human-escalation",
+      runId: run.runId,
+      summary: "attempt limit reached",
+      metadata: { action: "escalate-human", failureType: "test", owner: "worker-a", reason: "Maximum rework attempts reached" },
+    });
+
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+    const derived = state.runs[0];
+
+    assert.equal(derived.failures[0].failureType, "test");
+    assert.equal(derived.failures[0].owner, "worker-a");
+    assert.equal(derived.reworkCount, 1);
+    assert.equal(derived.escalationRequired, true);
+    assert.equal(derived.latestReworkDecision.action, "escalate-human");
+    assert.equal(derived.latestReworkDecision.failureType, "test");
   });
 });
 

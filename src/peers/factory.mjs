@@ -3,18 +3,14 @@ import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { initGatePolicy } from "./gates.mjs";
+import { DEFAULT_REWORK_POLICY, normalizeFailureReport } from "./rework.mjs";
 
 export const FACTORY_DIR = ".pi/factory";
 export const FACTORY_RUNS_FILE = `${FACTORY_DIR}/runs.jsonl`;
 export const FACTORY_GATES_FILE = `${FACTORY_DIR}/gates.json`;
 export const FACTORY_REWORK_POLICY_FILE = `${FACTORY_DIR}/rework-policy.json`;
 
-const DEFAULT_FACTORY_REWORK_POLICY = Object.freeze({
-  version: 1,
-  maxRework: 3,
-  reworkOn: ["gate-failed", "review-requested-changes", "run-failed"],
-  promotionRequires: ["required gates pass", "terminal verified status", "ledger evidence"],
-});
+const DEFAULT_FACTORY_REWORK_POLICY = DEFAULT_REWORK_POLICY;
 
 const TERMINAL_RUN_STATUSES = new Set(["verified", "completed", "failed", "error", "blocked", "cancelled"]);
 const FAILED_STATUSES = new Set(["fail", "failed", "error", "blocked"]);
@@ -129,6 +125,8 @@ export function deriveFactoryState(records = []) {
       failures: [],
       reworkIds: new Set(),
       reworkCount: 0,
+      escalationRequired: false,
+      latestReworkDecision: undefined,
       status: "unknown",
       baseStatus: "unknown",
       createdAt: record.at,
@@ -214,10 +212,20 @@ function applyFactoryRecord(run, record) {
     if (FAILED_STATUSES.has(normalizeGateStatus(record.status))) {
       run.failures.push(failureFromRecord(record));
     }
-  } else if (record.type === "rework-requested" || record.type === "rework-started") {
+  } else if (record.type === "failure-reported") {
+    run.failures.push(failureFromRecord(record));
+    run.status = "blocked";
+    run.baseStatus = "blocked";
+  } else if (record.type === "rework-requested" || record.type === "rework-started" || record.type === "context-patch-requested") {
     if (shouldCountReworkCycle(run, record)) run.reworkCount = (run.reworkCount || 0) + 1;
+    if (record.type !== "rework-started") run.latestReworkDecision = decisionFromRecord(record);
     run.status = "rework";
     run.baseStatus = "rework";
+  } else if (record.type === "human-escalation") {
+    run.escalationRequired = true;
+    run.latestReworkDecision = decisionFromRecord(record);
+    run.status = "blocked";
+    run.baseStatus = "blocked";
   } else if (record.type === "run-completed") {
     const status = normalizeRunStatus(record.status) || "completed";
     run.status = status;
@@ -260,6 +268,9 @@ function normalizeFactoryRunRecord(record = {}) {
     evidence: cleanText(record.evidence),
     source: cleanText(record.source),
     summary: cleanText(record.summary),
+    failureType: cleanText(record.failureType || record.metadata?.failureType),
+    owner: cleanText(record.owner || record.metadata?.owner),
+    reason: cleanText(record.reason || record.metadata?.reason),
     metadata: plainObject(record.metadata) ? record.metadata : undefined,
   });
 }
@@ -271,7 +282,7 @@ function shouldCountReworkCycle(run, record) {
     run.reworkIds.add(reworkId);
     return true;
   }
-  return record.type === "rework-requested";
+  return record.type === "rework-requested" || record.type === "context-patch-requested";
 }
 
 function finalizeFactoryRun(run) {
@@ -286,7 +297,10 @@ function statusFromLatestGateResults(run) {
 }
 
 function failureFromRecord(record) {
-  return stripEmpty({
+  return normalizeFailureReport({
+    runId: record.runId,
+    failureType: record.failureType || record.metadata?.failureType,
+    owner: record.owner || record.metadata?.owner,
     type: record.type,
     gateId: record.gateId,
     attempt: record.attempt,
@@ -296,6 +310,25 @@ function failureFromRecord(record) {
     at: record.at,
     recordId: record.id,
   });
+}
+
+function decisionFromRecord(record) {
+  return stripEmpty({
+    runId: record.runId,
+    action: record.metadata?.action || actionFromRecordType(record.type),
+    failureType: record.failureType || record.metadata?.failureType,
+    owner: record.owner || record.metadata?.owner,
+    reason: record.reason || record.metadata?.reason || record.summary,
+    nextAttempt: positiveInteger(record.metadata?.nextAttempt),
+    at: record.at,
+    recordId: record.id,
+  });
+}
+
+function actionFromRecordType(type) {
+  if (type === "context-patch-requested") return "context-patch";
+  if (type === "human-escalation") return "escalate-human";
+  return "rework-requested";
 }
 
 async function shouldWrite(path, overwrite = false) {
