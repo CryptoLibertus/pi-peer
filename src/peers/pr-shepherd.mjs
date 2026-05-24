@@ -69,9 +69,10 @@ export function derivePrShepherdState(records = []) {
   for (const item of Array.isArray(records) ? records : []) {
     const record = normalizePrRecord(item);
     const keys = prGroupKeys(record);
+    const existingGroups = [...new Set(keys.map((candidate) => groupsByKey.get(candidate)).filter(Boolean))];
     const key = keys.find((candidate) => groupsByKey.has(candidate)) || keys[0];
     if (!key) continue;
-    const group = groupsByKey.get(key) || {
+    const group = existingGroups[0] || {
       key,
       runId: record.runId,
       goalId: record.goalId,
@@ -80,7 +81,9 @@ export function derivePrShepherdState(records = []) {
       createdAt: record.at,
       updatedAt: record.at,
       status: "unknown",
+      aliasKeys: new Set(),
     };
+    for (const otherGroup of existingGroups.slice(1)) mergePrGroup(group, otherGroup, groupsByKey);
     group.records.push(record);
     group.runId = record.runId || group.runId;
     group.goalId = record.goalId || group.goalId;
@@ -89,7 +92,10 @@ export function derivePrShepherdState(records = []) {
     group.status = record.status || group.status;
     group.latestAction = record.action;
     group.latestEvidence = record.evidence || group.latestEvidence;
-    for (const candidate of keys) groupsByKey.set(candidate, group);
+    for (const candidate of keys) {
+      group.aliasKeys.add(candidate);
+      groupsByKey.set(candidate, group);
+    }
   }
   const prs = [...new Set(groupsByKey.values())].map(finalizePrGroup).sort(sortByUpdatedAt);
   const needsPostMergeVerification = prs.filter((pr) => pr.merged && !pr.postMergeVerified);
@@ -134,12 +140,31 @@ export function formatPrShepherdStatus(state = {}) {
 
 function finalizePrGroup(group) {
   const actions = new Set(group.records.map((record) => record.action));
+  const { aliasKeys, ...publicGroup } = group;
   return {
-    ...group,
+    ...publicGroup,
     merged: actions.has("merged"),
     postMergeVerified: hasPostMergeVerificationAfterMerge(group.records),
     records: group.records.length,
   };
+}
+
+function mergePrGroup(target, source, groupsByKey) {
+  target.records.push(...source.records);
+  target.runId = target.runId || source.runId;
+  target.goalId = target.goalId || source.goalId;
+  target.prUrl = target.prUrl || source.prUrl;
+  if (!target.createdAt || String(source.createdAt || "") < String(target.createdAt || "")) target.createdAt = source.createdAt;
+  if (!target.updatedAt || String(source.updatedAt || "") > String(target.updatedAt || "")) {
+    target.updatedAt = source.updatedAt;
+    target.status = source.status || target.status;
+    target.latestAction = source.latestAction || target.latestAction;
+    target.latestEvidence = source.latestEvidence || target.latestEvidence;
+  }
+  for (const key of source.aliasKeys || []) {
+    target.aliasKeys.add(key);
+    groupsByKey.set(key, target);
+  }
 }
 
 function hasPostMergeVerificationAfterMerge(records) {

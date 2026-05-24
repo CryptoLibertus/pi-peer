@@ -59,6 +59,18 @@ test("pr shepherd state groups records by pr url or run id aliases", () => {
   assert.equal(state.needsPostMergeVerification.length, 1);
 });
 
+test("pr shepherd state merges separate run and url groups when bridged", () => {
+  const state = derivePrShepherdState([
+    normalizePrRecord({ action: "created", runId: "fac_1" }),
+    normalizePrRecord({ action: "created", prUrl: "https://github.com/example/repo/pull/1" }),
+    normalizePrRecord({ action: "merged", runId: "fac_1", prUrl: "https://github.com/example/repo/pull/1" }),
+  ]);
+
+  assert.equal(state.prs.length, 1);
+  assert.equal(state.prs[0].records, 3);
+  assert.equal(state.needsPostMergeVerification.length, 1);
+});
+
 test("pr shepherd ledger loads missing files as empty and appends records", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-pr-shepherd-"));
 
