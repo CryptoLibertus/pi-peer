@@ -746,6 +746,8 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
       attempt: parsed.attempt,
       peerId: parsed.peerId || peerId,
       summary: parsed.summary,
+      status: parsed.status,
+      evidence: parsed.evidence,
     });
     return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
   }
@@ -769,8 +771,27 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
     return "Factory plan-review handler will be available after the plan-adversary module lands.";
   }
 
-  if (action === "status" || action === "metrics") {
-    return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
+  if (action === "status") {
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+    if (parsed.runId) {
+      const run = state.runs.find((item: any) => item.runId === parsed.runId);
+      return run ? formatFactoryRun(run) : `No factory run found for ${parsed.runId}.`;
+    }
+    return formatFactoryStatus(state);
+  }
+
+  if (action === "metrics") {
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+    const statusText = formatFactoryStatus(state);
+    return [
+      "# Factory metrics",
+      `records: ${state.records || 0}`,
+      `runs: ${state.runs?.length || 0}`,
+      `active: ${state.activeRuns?.length || 0}`,
+      `completed: ${state.completedRuns?.length || 0}`,
+      "",
+      statusText,
+    ].join("\n");
   }
 
   return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));

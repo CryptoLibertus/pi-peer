@@ -115,6 +115,7 @@ test("failed attempt completion marks run terminal and inactive", async (t) => {
 
     assert.equal(state.runs[0].status, "failed");
     assert.equal(state.runs[0].attempts[0].status, "failed");
+    assert.equal(state.runs[0].failures[0].evidence, "tests failed");
     assert.equal(state.activeRuns.length, 0);
     assert.equal(state.completedRuns.length, 1);
   });

@@ -428,6 +428,8 @@ function parsePeerFactoryCommand(parsed, flags, positionals) {
       attempt: positiveIntegerFlag(flags.attempt),
       peerId: stringFlag(flags.peer || flags.peerId, undefined),
       summary: stringFlag(flags.summary, undefined),
+      status: stringFlag(flags.status, undefined),
+      evidence: stringFlag(flags.evidence, undefined),
     });
   }
   if (action === "rework") {
