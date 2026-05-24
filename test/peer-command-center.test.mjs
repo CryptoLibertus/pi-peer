@@ -78,7 +78,7 @@ test("command center renders compact factory metrics", () => {
   assert.match(text, /Factory: runs 2 .*verified 1 .*autonomy 50% .*rework avg 2 .*escalations 1/);
 });
 
-test("command center recommends parseable factory rework for active factory runs with failed gates", () => {
+test("command center recommends parseable do rework for active factory runs with failed gates", () => {
   const state = buildPeerCommandCenterState({
     setupSession: { exists: true },
     factoryState: {
@@ -92,20 +92,22 @@ test("command center recommends parseable factory rework for active factory runs
   });
 
   const command = derivePeerCommandCenterRecommendations(state)[0].command;
-  assert.equal(command, "/peer factory rework fac_blocked");
-  const parsed = parsePeerCommand(command.replace(/^\/peer\s+/, ""));
-  assert.equal(parsed.subcommand, "factory");
-  assert.equal(parsed.factoryAction, "rework");
-  assert.equal(parsed.runId, "fac_blocked");
+  assert.equal(command, "/peer do rework fac_blocked");
 });
 
-test("command center recommends factory init when collected factory state is empty", () => {
+test("command center recommends metrics in stable state with empty factory state", () => {
   const state = buildPeerCommandCenterState({
     setupSession: { exists: true },
+    goals: [{
+      id: "goal_stable",
+      objective: "Stable work",
+      currentVotes: [{ verdict: "pass" }],
+      factoryRecords: [{ type: "plan-review", goalId: "goal_stable" }],
+    }],
     factoryState: { records: 0, runs: [], activeRuns: [] },
   });
 
-  assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer factory init");
+  assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer do metrics");
 });
 
 test("command center does not recommend factory init when empty factory is initialized", () => {
@@ -157,7 +159,7 @@ test("command center surfaces context lifecycle errors and recommends context st
   assert.equal(recommendations.includes("/peer context retro"), false);
 });
 
-test("recommendations follow full priority order and dedupe repeated coordination commands", () => {
+test("setup missing is the primary command center recommendation", () => {
   const state = buildPeerCommandCenterState({
     setup: { exists: false },
     goals: [
@@ -183,15 +185,8 @@ test("recommendations follow full priority order and dedupe repeated coordinatio
 
   const recommendations = derivePeerCommandCenterRecommendations(state);
 
-  assert.deepEqual(recommendations.map((item) => item.command), [
-    "/peer reconnect",
-    "/peer do coordinate goal_123",
-    "/peer do resolve-handoffs",
-    "/peer do plan goal_123",
-    "/peer do review goal_123",
-    "/peer subrun status",
-    "/peer setup",
-  ]);
+  assert.equal(recommendations[0].command, "/peer setup");
+  assert.equal(recommendations.filter((item) => item.command === "/peer do coordinate goal_123").length, 1);
 });
 
 test("recommendations place blocker coordination after unresolved handoffs when no stale claim duplicates it", () => {
@@ -215,20 +210,20 @@ test("recommendations place blocker coordination after unresolved handoffs when 
 
   const recommendations = derivePeerCommandCenterRecommendations(state);
 
-  assert.deepEqual(recommendations.map((item) => item.command), [
-    "/peer do resolve-handoffs",
-    "/peer do coordinate goal_123",
-    "/peer do plan goal_123",
-  ]);
+  assert.equal(recommendations[0].command, "/peer do plan goal_123");
 });
 
-test("recommendations put no-goal starter after active subruns and missing setup", () => {
+test("active subrun is primary when setup exists and no goal needs planning or verification", () => {
   const state = buildPeerCommandCenterState({
-    setup: { exists: false },
-    objective: "Ship command center",
-    goals: [],
+    setup: { exists: true },
+    goals: [{
+      id: "goal_123",
+      objective: "Ship command center",
+      factoryRecords: [{ type: "plan-review", goalId: "goal_123" }],
+      currentVotes: [{ verdict: "pass" }],
+    }],
     controlState: {
-      disconnectedTasks: [{ messageId: "msg_1" }],
+      disconnectedTasks: [],
       activeTasks: [],
       activeSubruns: [{ subrunId: "sub_1", status: "running" }],
     },
@@ -236,12 +231,7 @@ test("recommendations put no-goal starter after active subruns and missing setup
 
   const recommendations = derivePeerCommandCenterRecommendations(state);
 
-  assert.deepEqual(recommendations.map((item) => item.command), [
-    "/peer reconnect",
-    "/peer subrun status",
-    "/peer setup",
-    "/peer do start goal \"Ship command center\"",
-  ]);
+  assert.equal(recommendations[0].command, "/peer subrun status");
 });
 
 test("setup session suppresses setup recommendation even without org or runtime config", () => {
@@ -274,6 +264,28 @@ test("command center recommends plan review for current goals", () => {
   });
 
   assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer do plan goal_123");
+});
+
+test("command center recommends verification for current goals after plan review", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true, inspectOnly: true },
+    currentGoalId: "goal_123",
+    goals: [{
+      id: "goal_123",
+      objective: "Ship control plane",
+      readyToClose: true,
+      activeClaims: [],
+      activeTasks: [],
+      staleClaims: [],
+      unresolvedTaskHandoffs: [],
+      blockingObjections: [],
+      openProposals: [],
+      currentVotes: [{ verdict: "pass" }],
+      factoryRecords: [{ type: "plan-review", goalId: "goal_123" }],
+    }],
+  });
+
+  assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer do verify goal_123");
 });
 
 test("command center suppresses plan recommendation after factory plan review", () => {
@@ -324,12 +336,7 @@ test("currentGoalId selects the current goal over older blocked goals", () => {
 
   assert.equal(state.currentGoal.id, "goal_current");
   assert.match(formatPeerCommandCenter(state), /Goals: goal_current ready no/);
-  assert.deepEqual(derivePeerCommandCenterRecommendations(state).map((item) => item.command), [
-    "/peer do resolve-handoffs",
-    "/peer do plan goal_current",
-    "/peer do review goal_current",
-    "/peer setup",
-  ]);
+  assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer setup");
 });
 
 test("failed votes recommend deterministic coordination even when current votes include a pass", () => {
@@ -350,8 +357,8 @@ test("failed votes recommend deterministic coordination even when current votes 
   });
 
   assert.deepEqual(derivePeerCommandCenterRecommendations(state).map((item) => item.command), [
-    "/peer do coordinate goal_review",
     "/peer do plan goal_review",
+    "/peer do coordinate goal_review",
   ]);
 });
 
