@@ -9,7 +9,7 @@ import { initPeerConfig } from "../../src/peers/config.mjs";
 import { formatPeerCommandError, formatPeerHelp, formatPeerInitResult, parsePeerCommand } from "../../src/peers/command.mjs";
 import { capturePeerContextBudget, derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement } from "../../src/peers/context-budget.mjs";
 import { createPeerRuntime, getPeerRuntimeValue } from "../../src/peers/runtime.mjs";
-import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, derivePeerGoalScoutSuggestions, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../../src/peers/goal-board.mjs";
+import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../../src/peers/goal-board.mjs";
 import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerFooterStatusLine, formatPeerGoalDashboard, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
 import {
   peerAwaitToolResult,
@@ -27,6 +27,9 @@ import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger,
 import { formatHiveRunPeerHealthPauseSummary, summarizeHiveRunPeerHealth } from "../../src/peers/hive-supervisor.mjs";
 import { formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
+import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, resetPeerSetupSession } from "../../src/peers/setup-wizard.mjs";
+import { buildPeerCommandCenterState, formatPeerCommandCenter, routePeerIntent } from "../../src/peers/command-center.mjs";
+import { cancelPeerSubagentRun, completePeerSubagentRun, formatPeerSubagentRunResult, formatPeerSubagentStatus, recordPeerSubagentRunProgress, startPeerSubagentRun } from "../../src/peers/subagents.mjs";
 
 const MESSAGE_TYPE = "pi-peer";
 const DEFAULT_PEER_IDLE_OFFER_TIMEOUT_MS = 2 * 60 * 1000;
@@ -330,23 +333,22 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
 
   try {
     if (parsed.subcommand === "setup" && parsed.setupWizard === true) {
+      const root = ctx.cwd || process.cwd();
+      const runtime = await runtimeFor(pi, ctx.cwd);
       if (parsed.setupAction === "show") {
-        return sendPeerMessage(pi, [
-          "Peer setup",
-          "",
-          "What do you want this session to do?",
-          "1. Coordinate or plan peer work",
-          "2. Implement code",
-          "3. Review work",
-          "4. Research",
-          "5. Use subagents",
-          "6. Inspect status",
-          "",
-          "Reply with /peer setup <number>.",
-          "Legacy setup is still available with /peer setup --id <peer-id>.",
-        ].join("\n"));
+        return sendPeerMessage(pi, formatPeerSetupPrompt());
       }
-      return sendPeerMessage(pi, "Peer setup wizard commands are parsed and full setup wiring is being installed. Run /peer help, or use /peer setup --id <peer-id> for legacy setup.");
+      if (parsed.setupAction === "reset" || parsed.setupAction === "done") {
+        await resetPeerSetupSession(root);
+        await refresh();
+        return sendPeerMessage(pi, "Peer setup wizard state reset.\n\nNext: /peer setup");
+      }
+      const result = await applyPeerSetupChoice(root, { choice: parsed.setupChoice, peerId: parsed.localPeerId, runtime });
+      await resetRuntimeFor(ctx.cwd);
+      const restartedRuntime = await runtimeFor(pi, ctx.cwd);
+      if (restartedRuntime.enabled) await restartedRuntime.start(ctx);
+      await refresh();
+      return sendPeerMessage(pi, formatPeerSetupResult(result));
     }
 
     if (parsed.subcommand === "init" || parsed.subcommand === "setup") {
@@ -365,19 +367,47 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       await refresh();
       return sendPeerMessage(pi, text);
     }
-    if (parsed.subcommand === "status" || parsed.subcommand === "center" || (parsed.subcommand === "do" && parsed.intent === "status")) {
+    if (parsed.subcommand === "status") {
       updatePeerContextBudget(runtime, ctx);
       if (runtime.enabled) await runtime.refreshLocalPeers();
       await refresh();
       return sendPeerMessage(pi, formatPeerStatusText(await collectPeerRuntimeStatus(runtime)));
     }
-    if (parsed.subcommand === "do") {
+    if (parsed.subcommand === "center") {
+      if (runtime.enabled) await runtime.refreshLocalPeers();
+      const input = await collectPeerCommandCenterInput(ctx, runtime);
       await refresh();
-      return sendPeerMessage(pi, "Peer intent router is parsed; run /peer help until command center wiring is installed.");
+      return sendPeerMessage(pi, formatPeerCommandCenter(buildPeerCommandCenterState(input)));
+    }
+    if (parsed.subcommand === "do") {
+      const root = ctx.cwd || process.cwd();
+      if (runtime.enabled) await runtime.refreshLocalPeers();
+      const input = await collectPeerCommandCenterInput(ctx, runtime);
+      const result = await routePeerIntent(root, parsed, { ...input, peerId: runtime.localPeerId || runtime.summary?.localPeerId || "unknown" });
+      await refresh();
+      return sendPeerMessage(pi, result.text);
     }
     if (parsed.subcommand === "subrun") {
+      const root = ctx.cwd || process.cwd();
+      const parentPeerId = runtime.localPeerId || runtime.summary?.localPeerId || "unknown";
+      if (parsed.subrunAction === "status") {
+        const loadedControl = await loadPeerControlLedger(root);
+        const controlState = derivePeerControlState(loadedControl.records);
+        await refresh();
+        return sendPeerMessage(pi, formatPeerSubagentStatus({ controlState, goalId: parsed.goalId }));
+      }
+      const result = parsed.subrunAction === "start"
+        ? await startPeerSubagentRun(root, { ...parsed, parentPeerId })
+        : parsed.subrunAction === "progress"
+          ? await recordPeerSubagentRunProgress(root, parsed)
+          : parsed.subrunAction === "complete"
+            ? await completePeerSubagentRun(root, { ...parsed, parentPeerId, attachHandoff: Boolean(parsed.goalId) })
+            : parsed.subrunAction === "cancel"
+              ? await cancelPeerSubagentRun(root, parsed)
+              : undefined;
+      if (!result) throw new Error(`Unknown peer subrun action '${parsed.subrunAction}'`);
       await refresh();
-      return sendPeerMessage(pi, "Peer subrun commands are parsed; run /peer help until subagent adapter wiring is installed.");
+      return sendPeerMessage(pi, formatPeerSubagentRunResult(result));
     }
     if (parsed.subcommand === "context") {
       const budget = updatePeerContextBudget(runtime, ctx);
@@ -533,6 +563,17 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
     await refresh().catch(() => {});
     return sendPeerMessage(pi, formatPeerCommandError(error?.message || String(error)));
   }
+}
+
+async function collectPeerCommandCenterInput(ctx: any, runtime: any) {
+  const root = ctx?.cwd || process.cwd();
+  const runtimeStatus = await collectPeerRuntimeStatus(runtime);
+  const orgState = await loadPeerOrg(root, { allowMissing: true });
+  const board = await loadPeerGoalBoard(root).catch(() => ({ goals: {}, currentGoalId: undefined }));
+  const goals = Object.values(board.goals || {}).map((goal: any) => deriveGoalState(goal));
+  const loadedControl = await loadPeerControlLedger(root);
+  const controlState = derivePeerControlState(loadedControl.records);
+  return { runtimeStatus, orgState, goals, currentGoalId: board.currentGoalId, controlState };
 }
 
 async function handlePeerOrgCommand(parsed: any, ctx: any, runtime: any) {
