@@ -4,6 +4,25 @@
 
 Use `/peer factory status` and `/peer do metrics` before closing substantial peer work. Failed gates should become `/peer factory rework <run-id>` records, not blind retries. Repeated failures should become `/peer context patch --trigger <trigger> --change <change> --metric <metric> --eval <eval-name> --owner <peer-id> --review-date YYYY-MM-DD` proposals followed by `/peer context eval <patch-id> <pass|fail> --eval <eval-name> --evidence <text>`.
 
+Factory workflow quickstart:
+
+```bash
+/peer setup id smoke-verifier
+/peer setup 6
+/peer center
+/peer do start goal "Smoke test factory verification"
+/peer do plan <goal-id>
+# run the printed /peer factory plan-review ... command
+/peer do verify <goal-id>
+# run the printed /peer factory run ... command and copy the run-id
+/peer factory gate <run-id> test pass --evidence "npm test passed"
+/peer factory gate <run-id> pack pass --evidence "npm pack --dry-run passed"
+/peer factory metrics
+/peer center
+```
+
+Expected result: the run is `verified`, metrics show one verified run, and `/peer center` stops recommending rework for that run. `/peer do` commands recommend or create peer/factory records; they do not automatically run shell verification or publish artifacts.
+
 ## Bounded recursive self-improvement
 
 Use `/peer self-improve` when a user wants this repo to improve the peer system through bounded, reviewable experiments.

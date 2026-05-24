@@ -129,6 +129,36 @@ The factory workflow turns peer collaboration into structured, reviewable runs:
 
 Factory state is stored locally under `.pi/factory/`. It records run starts, attempts, gate results, rework decisions, plan reviews, and PR lifecycle records; metrics are derived from those local ledgers when requested. The default behavior is record-and-recommend; automatic shell execution and PR operations require explicit future opt-in.
 
+Factory verification smoke test:
+
+```bash
+/peer setup id smoke-verifier
+/peer setup 6
+/peer center
+/peer do start goal "Smoke test factory verification"
+```
+
+Copy the created `goal-id`, then ask the command center for the plan and verification commands:
+
+```bash
+/peer do plan <goal-id>
+# Run the printed /peer factory plan-review ... command.
+
+/peer do verify <goal-id>
+# Run the printed /peer factory run ... command and copy the run-id.
+```
+
+Mark the required gates and inspect metrics:
+
+```bash
+/peer factory gate <run-id> test pass --evidence "npm test passed"
+/peer factory gate <run-id> pack pass --evidence "npm pack --dry-run passed"
+/peer factory metrics
+/peer center
+```
+
+Expected result: the run is `verified`, metrics show one verified run, and `/peer center` no longer recommends rework for that run. To test private peer-owned subagent teams instead, start with `/peer setup 5` and use `/peer subrun start <summary>` after `/peer center`.
+
 Advanced factory and context commands:
 
 ```bash
