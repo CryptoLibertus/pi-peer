@@ -13,7 +13,7 @@ export async function appendContextPatch(root, input = {}) {
   if (!root) throw new Error("context lifecycle requires root");
   await mkdir(join(root, CONTEXT_DIR), { recursive: true });
   const record = normalizeContextPatch(input);
-  await appendFile(join(root, CONTEXT_PATCHES_FILE), `${JSON.stringify(record)}\n`, "utf8");
+  await appendJsonlRecord(root, CONTEXT_PATCHES_FILE, record, normalizeContextPatch, "context patch ledger");
   return record;
 }
 
@@ -21,7 +21,7 @@ export async function recordContextEvalResult(root, input = {}) {
   if (!root) throw new Error("context lifecycle requires root");
   await mkdir(join(root, CONTEXT_DIR), { recursive: true });
   const record = normalizeContextEvalResult(input);
-  await appendFile(join(root, CONTEXT_EVAL_RESULTS_FILE), `${JSON.stringify(record)}\n`, "utf8");
+  await appendJsonlRecord(root, CONTEXT_EVAL_RESULTS_FILE, record, normalizeContextEvalResult, "context eval result ledger");
   return record;
 }
 
@@ -29,7 +29,7 @@ export async function appendContextRetro(root, input = {}) {
   if (!root) throw new Error("context lifecycle requires root");
   await mkdir(join(root, CONTEXT_DIR), { recursive: true });
   const record = normalizeContextRetro(input);
-  await appendFile(join(root, CONTEXT_RETROS_FILE), `${JSON.stringify(record)}\n`, "utf8");
+  await appendJsonlRecord(root, CONTEXT_RETROS_FILE, record, normalizeContextRetro, "context retro ledger");
   return record;
 }
 
@@ -160,6 +160,25 @@ async function loadJsonl(root, relativePath, normalize, label) {
     }
   }
   return { records, warnings };
+}
+
+async function appendJsonlRecord(root, relativePath, record, normalize, label) {
+  const loaded = await loadJsonl(root, relativePath, normalize, label);
+  const trailingWarning = loaded.warnings.find((warning) => warning.type === "trailing-corrupt-record");
+  if (trailingWarning) throw new Error(`cannot append ${label} record after trailing corrupt ledger record at line ${trailingWarning.line}: ${trailingWarning.message}`);
+  const ledgerPath = join(root, relativePath);
+  const separator = await appendSeparator(ledgerPath);
+  await appendFile(ledgerPath, `${separator}${JSON.stringify(record)}\n`, "utf8");
+}
+
+async function appendSeparator(path) {
+  try {
+    const text = await readFile(path, "utf8");
+    return text && !text.endsWith("\n") ? "\n" : "";
+  } catch (error) {
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  }
 }
 
 function normalizeContextPatch(input = {}) {

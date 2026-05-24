@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { initGatePolicy } from "./gates.mjs";
+import { DEFAULT_GATE_POLICY, deriveGateSummary, initGatePolicy } from "./gates.mjs";
 import { DEFAULT_REWORK_POLICY, normalizeFailureReport } from "./rework.mjs";
 
 export const FACTORY_DIR = ".pi/factory";
@@ -14,6 +14,7 @@ const DEFAULT_FACTORY_REWORK_POLICY = DEFAULT_REWORK_POLICY;
 
 const TERMINAL_RUN_STATUSES = new Set(["verified", "verified-with-risks", "completed", "failed", "error", "blocked", "cancelled"]);
 const FAILED_STATUSES = new Set(["fail", "failed", "error", "blocked"]);
+const PRESERVED_TERMINAL_BASE_STATUSES = new Set(["failed", "error", "blocked", "cancelled"]);
 
 export async function initFactory(root, options = {}) {
   if (!root) throw new Error("factory init requires root");
@@ -97,7 +98,12 @@ export async function appendFactoryRunRecord(root, record = {}) {
   if (!root) throw new Error("factory ledger requires root");
   await mkdir(join(root, FACTORY_DIR), { recursive: true });
   const normalized = normalizeFactoryRunRecord(record);
-  await appendFile(join(root, FACTORY_RUNS_FILE), `${JSON.stringify(normalized)}\n`, "utf8");
+  const ledgerPath = join(root, FACTORY_RUNS_FILE);
+  const loaded = await loadFactoryRuns(root);
+  const trailingWarning = loaded.warnings.find((warning) => warning.type === "trailing-corrupt-record");
+  if (trailingWarning) throw new Error(`cannot append factory run record after trailing corrupt ledger record at line ${trailingWarning.line}: ${trailingWarning.message}`);
+  const separator = await appendSeparator(ledgerPath);
+  await appendFile(ledgerPath, `${separator}${JSON.stringify(normalized)}\n`, "utf8");
   return normalized;
 }
 
@@ -243,7 +249,7 @@ function applyFactoryRecord(run, record) {
   } else if (record.type === "gate-result") {
     const gateId = cleanText(record.gateId);
     if (gateId) run.gateResults[gateId] = stripEmpty({ gateId, status: normalizeGateStatus(record.status), evidence: record.evidence, at: record.at, recordId: record.id });
-    run.status = statusFromLatestGateResults(run) || run.baseStatus || run.status;
+    run.status = statusFromGateState(run) || run.baseStatus || run.status;
     if (FAILED_STATUSES.has(normalizeGateStatus(record.status))) {
       run.failures.push(failureFromRecord(record));
     }
@@ -329,14 +335,30 @@ function shouldCountReworkCycle(run, record) {
 }
 
 function finalizeFactoryRun(run) {
-  const status = statusFromLatestGateResults(run) || run.baseStatus || run.status;
-  const { reworkIds, baseStatus, ...publicRun } = { ...run, status };
+  const gateSummary = deriveRunGateSummary(run);
+  const status = statusFromGateState(run, gateSummary) || run.baseStatus || run.status;
+  const completedAt = TERMINAL_RUN_STATUSES.has(status) ? run.completedAt || run.updatedAt : run.completedAt;
+  const { reworkIds, baseStatus, ...publicRun } = { ...run, status, gateSummary, completedAt };
   return publicRun;
 }
 
-function statusFromLatestGateResults(run) {
+function statusFromGateState(run, gateSummary = deriveRunGateSummary(run)) {
   const results = Object.values(plainObject(run.gateResults) ? run.gateResults : {});
-  return results.some((result) => FAILED_STATUSES.has(cleanText(result?.status).toLowerCase())) ? "blocked" : "";
+  if (results.some((result) => FAILED_STATUSES.has(cleanText(result?.status).toLowerCase()))) return "blocked";
+  if (PRESERVED_TERMINAL_BASE_STATUSES.has(cleanText(run.baseStatus).toLowerCase())) return "";
+  if (Array.isArray(gateSummary?.skippedRequiredGateIds) && gateSummary.skippedRequiredGateIds.length) return "blocked";
+  if (gateSummary?.requiredPassed === true) {
+    return Array.isArray(gateSummary.skippedGateIds) && gateSummary.skippedGateIds.length ? "verified-with-risks" : "verified";
+  }
+  return "";
+}
+
+function deriveRunGateSummary(run) {
+  const requestedGates = normalizeList(run.gates);
+  const policy = requestedGates.length
+    ? { version: 1, gates: requestedGates.map((id) => ({ id, required: true })) }
+    : DEFAULT_GATE_POLICY;
+  return deriveGateSummary({ policy, results: run.gateResults });
 }
 
 function failureFromRecord(record) {
@@ -382,6 +404,16 @@ async function shouldWrite(path, overwrite = false) {
     return false;
   } catch (error) {
     if (error?.code === "ENOENT") return true;
+    throw error;
+  }
+}
+
+async function appendSeparator(path) {
+  try {
+    const text = await readFile(path, "utf8");
+    return text && !text.endsWith("\n") ? "\n" : "";
+  } catch (error) {
+    if (error?.code === "ENOENT") return "";
     throw error;
   }
 }

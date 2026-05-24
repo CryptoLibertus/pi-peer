@@ -491,7 +491,9 @@ function shouldRecommendVerification(goal = {}, state = {}) {
 
 function firstFactoryRunNeedingRework(state = {}) {
   const factoryState = state.factoryState || {};
-  const runs = Object.hasOwn(factoryState, "activeRuns") ? array(factoryState.activeRuns) : array(factoryState.runs);
+  const runs = Object.hasOwn(factoryState, "activeRuns")
+    ? [...array(factoryState.activeRuns), ...array(factoryState.runs)]
+    : array(factoryState.runs);
   return runs.find((run) => run?.runId && hasFailedGate(run));
 }
 

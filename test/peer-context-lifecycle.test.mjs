@@ -6,8 +6,11 @@ import { join } from "node:path";
 
 import {
   appendContextPatch,
+  appendContextRetro,
   CONTEXT_DIR,
+  CONTEXT_EVAL_RESULTS_FILE,
   CONTEXT_PATCHES_FILE,
+  CONTEXT_RETROS_FILE,
   contextPatchHasPassingEval,
   deriveContextLifecycleState,
   formatContextLifecycleStatus,
@@ -232,6 +235,66 @@ test("context lifecycle loader throws on corrupt middle records and ignores trai
     const loaded = await loadContextLifecycle(root);
     assert.equal(loaded.patches.length, 1);
     assert.equal(loaded.warnings[0].type, "trailing-corrupt-record");
+  });
+});
+
+test("context lifecycle appenders refuse trailing corrupt partial records", async (t) => {
+  await withRoot(t, async (root) => {
+    await mkdir(join(root, CONTEXT_DIR), { recursive: true });
+    const validPatch = JSON.stringify({
+      type: "context-patch",
+      patchId: "ctx_valid",
+      trigger: "handoff failures",
+      change: "Add handoff template",
+      metric: "failure count",
+      evalName: "handoff-quality",
+      owner: "planner-a",
+      reviewDate: "2026-06-24",
+      at: "2026-05-24T00:00:00.000Z",
+    });
+    const validEval = JSON.stringify({
+      type: "context-eval-result",
+      patchId: "ctx_valid",
+      evalName: "handoff-quality",
+      status: "pass",
+      evidence: "scenario passed",
+      at: "2026-05-24T00:00:00.000Z",
+    });
+    const validRetro = JSON.stringify({
+      type: "context-retro",
+      summary: "handoff misses repeated",
+      at: "2026-05-24T00:00:00.000Z",
+    });
+
+    await writeFile(join(root, CONTEXT_PATCHES_FILE), `${validPatch}\n{bad json`, "utf8");
+    await assert.rejects(
+      appendContextPatch(root, {
+        trigger: "review misses",
+        change: "Add review checklist",
+        metric: "miss rate",
+        evalName: "review-quality",
+        owner: "reviewer-a",
+        reviewDate: "2026-06-24",
+      }),
+      /cannot append context patch ledger record after trailing corrupt ledger record at line 2/,
+    );
+
+    await writeFile(join(root, CONTEXT_EVAL_RESULTS_FILE), `${validEval}\n{bad json`, "utf8");
+    await assert.rejects(
+      recordContextEvalResult(root, {
+        patchId: "ctx_valid",
+        evalName: "handoff-quality",
+        status: "pass",
+        evidence: "scenario passed again",
+      }),
+      /cannot append context eval result ledger record after trailing corrupt ledger record at line 2/,
+    );
+
+    await writeFile(join(root, CONTEXT_RETROS_FILE), `${validRetro}\n{bad json`, "utf8");
+    await assert.rejects(
+      appendContextRetro(root, { summary: "review misses repeated" }),
+      /cannot append context retro ledger record after trailing corrupt ledger record at line 2/,
+    );
   });
 });
 

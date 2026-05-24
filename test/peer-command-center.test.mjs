@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import { parsePeerCommand } from "../src/peers/command.mjs";
 import { buildPeerCommandCenterState, derivePeerCommandCenterRecommendations, formatPeerCommandCenter, routePeerIntent } from "../src/peers/command-center.mjs";
+import { deriveFactoryState } from "../src/peers/factory.mjs";
 import { loadPeerGoalBoard } from "../src/peers/goal-board.mjs";
 
 function parsePeerLine(command) {
@@ -101,6 +102,20 @@ test("command center recommends parseable do rework for active factory runs with
   assert.equal(parsed.subcommand, "do");
   assert.equal(parsed.intent, "rework");
   assert.deepEqual(parsed.intentArgs, ["fac_blocked"]);
+});
+
+test("command center recommends rework for derived blocked factory gate runs", () => {
+  const factoryState = deriveFactoryState([
+    { type: "run-started", runId: "fac_blocked", objective: "Fix gate failure", gates: ["test"] },
+    { type: "gate-result", runId: "fac_blocked", gateId: "test", status: "fail", evidence: "unit failure" },
+  ]);
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    factoryState,
+  });
+
+  assert.equal(factoryState.activeRuns.length, 0);
+  assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer do rework fac_blocked");
 });
 
 test("command center avoids unparseable facade recommendations for flag-like ids", () => {

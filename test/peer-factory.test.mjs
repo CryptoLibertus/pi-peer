@@ -144,6 +144,27 @@ test("factory run loader warns and ignores corrupt trailing partial record", asy
   });
 });
 
+test("factory run appender refuses trailing corrupt partials and preserves valid final records", async (t) => {
+  await withRoot(t, async (root) => {
+    await initFactory(root);
+    const validRecord = JSON.stringify({ type: "run-started", runId: "fac_append", objective: "Append safely" });
+    await writeFile(join(root, FACTORY_RUNS_FILE), `${validRecord}\n{"type":`, "utf8");
+
+    await assert.rejects(
+      appendFactoryRunRecord(root, { type: "run-completed", runId: "fac_append", status: "verified" }),
+      /cannot append factory run record after trailing corrupt ledger record at line 2/,
+    );
+
+    await writeFile(join(root, FACTORY_RUNS_FILE), validRecord, "utf8");
+    await appendFactoryRunRecord(root, { type: "run-completed", runId: "fac_append", status: "verified" });
+    const loaded = await loadFactoryRuns(root);
+
+    assert.equal(loaded.records.length, 2);
+    assert.equal(loaded.warnings.length, 0);
+    assert.equal(deriveFactoryState(loaded.records).runs[0].status, "verified");
+  });
+});
+
 test("factory run loader throws on corrupt middle record", async (t) => {
   await withRoot(t, async (root) => {
     await initFactory(root);
@@ -218,6 +239,34 @@ test("repeated gate results keep the latest result per gate and format gates det
     assert.equal(state.runs[0].gateResults["z-pack"].status, "pass");
     assert.equal(state.runs[0].gateResults["z-pack"].evidence, "pack passed");
     assert.match(text, /gates a-test:pass, z-pack:pass/);
+  });
+});
+
+test("passing every requested gate marks a running factory run verified", async (t) => {
+  await withRoot(t, async (root) => {
+    const run = await startFactoryRun(root, { objective: "Verify through gates", gates: ["test", "pack"] });
+    await appendFactoryRunRecord(root, { type: "gate-result", runId: run.runId, gateId: "test", status: "pass", evidence: "npm test passed" });
+    await appendFactoryRunRecord(root, { type: "gate-result", runId: run.runId, gateId: "pack", status: "pass", evidence: "npm pack passed" });
+
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+
+    assert.equal(state.runs[0].status, "verified");
+    assert.equal(state.runs[0].gateSummary.requiredPassed, true);
+    assert.equal(state.activeRuns.length, 0);
+    assert.equal(state.completedRuns.length, 1);
+  });
+});
+
+test("passing gates do not clear explicit terminal failure state", async (t) => {
+  await withRoot(t, async (root) => {
+    const run = await startFactoryRun(root, { objective: "Do not mask failed attempt", gates: ["test"] });
+    await appendFactoryRunRecord(root, { type: "attempt-completed", runId: run.runId, status: "failed", evidence: "implementation failed" });
+    await appendFactoryRunRecord(root, { type: "gate-result", runId: run.runId, gateId: "test", status: "pass", evidence: "stale test pass" });
+
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+
+    assert.equal(state.runs[0].status, "failed");
+    assert.equal(state.activeRuns.length, 0);
   });
 });
 

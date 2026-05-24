@@ -68,7 +68,12 @@ export async function appendAutomationRun(root, input = {}) {
   if (!root) throw new Error("automation run ledger requires root");
   await mkdir(join(root, AUTOMATIONS_DIR), { recursive: true });
   const normalized = normalizeAutomationRun(input);
-  await appendFile(join(root, AUTOMATION_RUNS_FILE), `${JSON.stringify(normalized)}\n`, "utf8");
+  const ledgerPath = join(root, AUTOMATION_RUNS_FILE);
+  const loaded = await loadAutomationRuns(root);
+  const trailingWarning = loaded.warnings.find((warning) => warning.type === "trailing-corrupt-record");
+  if (trailingWarning) throw new Error(`cannot append automation run after trailing corrupt ledger record at line ${trailingWarning.line}: ${trailingWarning.message}`);
+  const separator = await appendSeparator(ledgerPath);
+  await appendFile(ledgerPath, `${separator}${JSON.stringify(normalized)}\n`, "utf8");
   return normalized;
 }
 
@@ -177,6 +182,16 @@ async function loadAutomationRuns(root) {
     }
   }
   return { runs, warnings };
+}
+
+async function appendSeparator(path) {
+  try {
+    const text = await readFile(path, "utf8");
+    return text && !text.endsWith("\n") ? "\n" : "";
+  } catch (error) {
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  }
 }
 
 function normalizeCatalog(input = {}) {

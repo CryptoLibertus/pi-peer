@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  AUTOMATION_RUNS_FILE,
   DEFAULT_AUTOMATION_CATALOG,
   appendAutomationRun,
   deriveAutomationStatus,
@@ -168,6 +169,26 @@ test("automation ledger warns and ignores corrupt trailing partial line", async 
     assert.equal(loaded.runs.length, 1);
     assert.equal(loaded.warnings.length, 1);
     assert.equal(loaded.warnings[0].type, "trailing-corrupt-record");
+  });
+});
+
+test("automation appender refuses trailing corrupt partials and preserves valid final records", async (t) => {
+  await withRoot(t, async (root) => {
+    await initAutomationCatalog(root);
+    const validRun = JSON.stringify({ automationId: "feature-planner", status: "queued" });
+    await writeFile(join(root, AUTOMATION_RUNS_FILE), `${validRun}\n{"automationId":`, "utf8");
+
+    await assert.rejects(
+      appendAutomationRun(root, { automationId: "bug-fixer", status: "done" }),
+      /cannot append automation run after trailing corrupt ledger record at line 2/,
+    );
+
+    await writeFile(join(root, AUTOMATION_RUNS_FILE), validRun, "utf8");
+    await appendAutomationRun(root, { automationId: "bug-fixer", status: "done" });
+    const loaded = await loadAutomationCatalog(root);
+
+    assert.equal(loaded.runs.length, 2);
+    assert.equal(loaded.warnings.length, 0);
   });
 });
 
