@@ -628,10 +628,16 @@ async function collectPeerCommandCenterInput(ctx: any, runtime: any) {
     factoryError = error?.message || String(error);
   }
   const factoryState = { ...deriveFactoryState(factoryRecords), initialized: factoryInitialized, error: factoryError, warnings: factoryWarnings };
-  const contextLifecycle = await loadContextLifecycle(root).catch(() => ({ patches: [], retros: [], evalResults: [], warnings: [] }));
-  const contextState = deriveContextLifecycleState(contextLifecycle);
+  let contextState: any = { patches: [], retros: [], evalResults: [], warnings: [] };
+  let contextError: string | undefined;
+  try {
+    contextState = deriveContextLifecycleState(await loadContextLifecycle(root));
+  } catch (error: any) {
+    contextError = error?.message || String(error);
+    contextState = { patches: [], retros: [], evalResults: [], warnings: [], error: contextError };
+  }
   const metrics = derivePeerFactoryMetrics({ factoryState, contextState, goals, controlState });
-  return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState, factoryRecords, factoryState, factoryInitialized, factoryError, contextState, metrics };
+  return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState, factoryRecords, factoryState, factoryInitialized, factoryError, contextState, contextError, metrics };
 }
 
 async function fileExists(path: string) {

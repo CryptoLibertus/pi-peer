@@ -144,6 +144,19 @@ test("command center treats empty failingEvalResults as authoritative for contex
   assert.equal(derivePeerCommandCenterRecommendations(state).some((item) => item.command === "/peer context retro"), false);
 });
 
+test("command center surfaces context lifecycle errors and recommends context status", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    contextError: "corrupt context eval result ledger record at line 2",
+    contextState: { patches: [], evalResults: [], failingEvalResults: [] },
+  });
+  const recommendations = derivePeerCommandCenterRecommendations(state).map((item) => item.command);
+
+  assert.match(formatPeerCommandCenter(state), /Context warning: corrupt context eval result ledger record at line 2/);
+  assert.equal(recommendations.includes("/peer context status"), true);
+  assert.equal(recommendations.includes("/peer context retro"), false);
+});
+
 test("recommendations follow full priority order and dedupe repeated coordination commands", () => {
   const state = buildPeerCommandCenterState({
     setup: { exists: false },

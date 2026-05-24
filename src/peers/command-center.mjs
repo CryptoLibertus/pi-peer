@@ -18,6 +18,7 @@ export function buildPeerCommandCenterState(input = {}) {
   const metrics = input.metrics || derivePeerFactoryMetrics({ factoryState, contextState, goals, controlState });
   const factoryError = text(input.factoryError || factoryState.error, "");
   const factoryInitialized = input.factoryInitialized === true || factoryState.initialized === true;
+  const contextError = text(input.contextError || contextState.error, "");
 
   const state = {
     enabled: runtimeStatus.enabled === true,
@@ -60,6 +61,7 @@ export function buildPeerCommandCenterState(input = {}) {
     factoryInitialized,
     factoryError,
     contextState,
+    contextError,
     metrics,
     objective: input.objective || currentGoal?.objective || "new peer goal",
   };
@@ -74,6 +76,7 @@ export function derivePeerCommandCenterRecommendations(state = {}) {
   const failedRun = firstFactoryRunNeedingRework(state);
 
   if (state.factoryError) commands.push(recommend("/peer factory status", "inspect factory ledger error"));
+  if (state.contextError) commands.push(recommend("/peer context status", "inspect context lifecycle error"));
   if (failedRun) commands.push(recommend(`/peer factory rework ${commandArg(failedRun.runId)}`, "rework failed factory gates"));
   if (array(control.disconnectedTasks).length) commands.push(recommend("/peer reconnect", "resume disconnected peer tasks"));
   if (goal && array(goal.staleClaims).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "coordinate stale claims"));
@@ -110,6 +113,7 @@ export function formatPeerCommandCenter(state = {}) {
 
   lines.push(formatFactoryLine(state.metrics));
   if (state.factoryError) lines.push(`Factory warning: ${state.factoryError}`);
+  if (state.contextError) lines.push(`Context warning: ${state.contextError}`);
   lines.push(formatGoalLine(currentGoal, state.control));
   lines.push("Recommended:");
   if (recommendations.length) {
