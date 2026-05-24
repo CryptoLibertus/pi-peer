@@ -99,20 +99,20 @@ export function formatPeerFooterStatusLine(status = {}) {
     const count = status.pendingCount || 0;
     const tasks = formatFooterTaskRoster(status.activeTasks || []);
     const peers = formatFooterOnlineSuffix(status, { maxPeers: 2 });
-    return line("footer", "accent", `🔗 busy · ${count} ${plural(count, "task")}${tasks ? `: ${tasks}` : ""}${peers}`);
+    return line("footer", "accent", `🔗 ⏳ ${count} ${plural(count, "task")}${tasks ? ` · 🛠️ ${tasks}` : ""}${peers}`);
   }
   const activation = idle.lastCheck?.activated ? idle.lastCheck.activation : undefined;
   if (activation && shouldSurfaceCoordinationInFooter(activation, { coordinationSurface: "footer" })) {
     const kind = footerActivationLabel(activation.kind);
-    const goal = activation.goalId ? ` · ${truncateStatus(activation.goalId, 24)}` : "";
+    const goal = activation.goalId ? ` · 🎯 ${truncateStatus(activation.goalId, 24)}` : "";
     const peers = formatFooterOnlineSuffix(status, { maxPeers: 2 });
-    return line("footer", "accent", `🔗 needs ${kind}${goal}${peers}`);
+    return line("footer", "accent", `🔗 🚦 ${kind}${goal}${peers}`);
   }
   const sweep = idle.lastProtocolOfferSweep;
   if (sweep && ((sweep.sent || 0) > 0 || (sweep.duplicate || 0) > 0 || (sweep.errors || 0) > 0)) {
     const color = (sweep.errors || 0) > 0 ? "warning" : "accent";
     const peers = formatFooterOnlineSuffix(status, { maxPeers: 2 });
-    return line("footer", color, `🔗 offers · ${formatIdleOfferSweep(sweep)}${peers}`);
+    return line("footer", color, `🔗 📣 ${formatFooterIdleOfferSweep(sweep)}${peers}`);
   }
   const onlineCount = Number.isFinite(status.onlineCount) ? status.onlineCount : (status.activeCount || 0);
   const availabilityColor = status.enabled ? (onlineCount > 0 ? "success" : "warning") : "muted";
@@ -363,34 +363,48 @@ function peerContributionRows(state = {}) {
 }
 
 function formatFooterAvailability(status = {}) {
-  if (!status.enabled) return "🔗 peer messaging off · /peer setup";
+  if (!status.enabled) return "🔗 ⚪ off · ⚙️ /peer setup";
   const count = Number.isFinite(status.onlineCount) ? status.onlineCount : (status.activeCount || 0);
   const roster = formatPeerRoster(status.onlinePeers, { maxPeers: 3 });
   if (count <= 0) {
-    const offline = status.offlineCount ? ` · ${status.offlineCount} offline` : "";
-    return `🔗 no peers online${offline} · /peer reconnect`;
+    const offline = status.offlineCount ? ` · 💤 ${status.offlineCount} offline` : "";
+    return `🔗 📴 no peers${offline} · ↻ /peer reconnect`;
   }
-  const offline = status.offlineCount ? ` · ${status.offlineCount} offline` : "";
-  return `🔗 ${count} ${plural(count, "peer")} online${roster ? `: ${roster}` : ""}${offline}`;
+  const offline = status.offlineCount ? ` · 💤 ${status.offlineCount} offline` : "";
+  return `🔗 🟢 ${count} online${roster ? ` · 👥 ${roster}` : ""}${offline}`;
 }
 
 function formatFooterOnlineSuffix(status = {}, options = {}) {
-  if (!status.enabled) return " · peers off";
+  if (!status.enabled) return " · ⚪ off";
   const count = Number.isFinite(status.onlineCount) ? status.onlineCount : (status.activeCount || 0);
-  if (count <= 0) return " · no peers online";
+  if (count <= 0) return " · 📴 no peers";
   const roster = formatPeerRoster(status.onlinePeers, { maxPeers: options.maxPeers || 2 });
-  return ` · online ${roster || count}`;
+  return ` · 🟢 ${roster || count}`;
 }
 
 function formatFooterTaskRoster(tasks = []) {
   const rows = tasks.slice(0, 2).map((task) => {
     const peer = truncateStatus(task.peerId || "unknown", 18);
     const intent = footerIntentLabel(task.intent || "task");
-    return `${peer} ${intent}`;
+    return `${peer}→${intent}`;
   });
   const extra = tasks.length - rows.length;
   if (extra > 0) rows.push(`+${extra}`);
   return rows.join(", ");
+}
+
+function formatFooterIdleOfferSweep(sweep = {}) {
+  const sent = Number.isFinite(sweep.sent) ? sweep.sent : 0;
+  const duplicate = Number.isFinite(sweep.duplicate) ? sweep.duplicate : 0;
+  const errors = Number.isFinite(sweep.errors) ? sweep.errors : 0;
+  const skipped = Number.isFinite(sweep.skipped) ? sweep.skipped : 0;
+  const parts = [];
+  if (sent) parts.push(`✅${sent}`);
+  if (duplicate) parts.push(`↩️${duplicate}`);
+  if (errors) parts.push(`❌${errors}`);
+  if (skipped) parts.push(`⏭️${skipped}`);
+  if (!parts.length) parts.push("idle");
+  return parts.join(" · ");
 }
 
 function formatPeerRoster(peerIds = [], options = {}) {

@@ -13,6 +13,7 @@ test("package publishes bundled skills", () => {
 
 test("package files cover all declared pi and export entry points", () => {
   for (const dir of ["extensions", "skills", "src"]) assert.ok(packageJson.files.includes(dir));
+  for (const doc of ["AGENTS.md", "docs/peer-operator-guide.md"]) assert.ok(packageJson.files.includes(doc));
   for (const extension of packageJson.pi.extensions) assert.ok(extension.startsWith("extensions/"));
   assert.equal(packageJson.exports["."], "./src/peers/comms.mjs");
   assert.equal(packageJson.exports["./extension"], "./extensions/pi-peer/index.ts");

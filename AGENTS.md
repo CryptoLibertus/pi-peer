@@ -28,6 +28,14 @@ Factory workflow quickstart:
 
 Expected result: the run is `verified`, metrics show one verified run, and `/peer center` stops recommending rework for that run. `/peer do` mission commands create peer/factory records; they do not automatically run shell verification, publish artifacts, or perform remote writes.
 
+## Peer goal-board operating protocol
+
+Before starting substantial peer work, run `/peer center` or inspect the active goal with `/peer get <goal-id>` / `peer_get`. Do not duplicate active claims or work keys. Use read-only claims for research, planning, review, and coordination; claim write work only after naming concrete `--path` values.
+
+For idle-watcher or scout offers: inspect the goal, accept only if the work key is still unclaimed, post concrete evidence (`finding`, `handoff`, `note`, or `vote`), then release the claim. If the claim is duplicate or the board is no longer actionable, stop with a short handoff.
+
+Normal closure requires no unresolved blockers or unsuccessful handoffs, no active/stale claims, no running tasks, all proposals resolved/deferred, at least one current passing vote, and no failed votes. Final peer handoffs must include: `Status`, `Files changed`, `Verification`, `Blockers/risks`, and `Safe for review`.
+
 ## Bounded recursive self-improvement
 
 Use `/peer self-improve` when a user wants this repo to improve the peer system through bounded, reviewable experiments.

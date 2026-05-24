@@ -36,13 +36,13 @@ Without coordination, parallel agents step on files, duplicate the same task, lo
 
 ```bash
 pi install npm:@cryptolibertus/pi-peer
-# or while developing from this repo:
-pi install ./packages/pi-peer
+# or while developing from this repo root:
+pi install .
 ```
 
 ## What it adds
 
-- `/peer help|setup|doctor|status|list|init|reconnect|resume|cancel|send|get|await|spawn|goal|scout|hive|swarm|self-improve`
+- `/peer help|setup|center|work|do|accomplish|doctor|status|context|metrics|list|init|org|reconnect|resume|cancel|send|get|await|progress|spawn|subrun|factory|goal|scout|hive|swarm|self-improve`
 - `peer_list`, `peer_send`, `peer_get`, `peer_await`, and `peer_progress` tools
 - Local peer discovery and transport using project `.pi/peers.json`
 - Repo-scoped discovery: only Pi sessions in the same git repo/project appear as local peers
@@ -60,9 +60,12 @@ Open one Pi TUI session in the git repo and run the setup wizard:
 
 ```bash
 /peer setup
+/peer center
 /peer reconnect
 /peer list
 ```
+
+After setup, run `/peer center` first. It summarizes local identity, discovered peers, active goals/tasks, blockers, and the next recommended command.
 
 The interactive `/peer setup` wizard asks for the local peer id/role and can spawn managed headless worker peers for you. Non-interactive sessions can still use `/peer setup --id planner --role planner --subagents` plus `/peer spawn worker2,worker3 --role worker --subagents`.
 
@@ -113,7 +116,7 @@ For the primary workflow, tell Pi what you want to accomplish:
 8. Shepherd PRs
 9. Inspect status only
 
-`/peer do "<objective>"` is the natural-language mission facade. It creates or reuses a peer goal, seeds peer lanes, links a factory run, and prints only the next actions still needing evidence. If setup is missing, it tells you the setup command to run first.
+`/peer do "<objective>"` is the natural-language mission facade. It creates or reuses a peer goal, seeds peer lanes, links a factory run, and prints only the next actions still needing evidence. If setup is missing, it tells you the setup command to run first. The mission facade records goals, lane proposals, and factory run metadata; it does not run shell verification, publish packages, create PRs, or perform remote writes unless a later explicit command does so.
 
 `/peer center` shows the local role and domain, active peers, goal-board state, subruns, and recommended next commands. Use it when you want to inspect or resume a session.
 
@@ -163,7 +166,14 @@ The mission output includes the created `goal-id`, linked `run-id`, plan-review 
 /peer center
 ```
 
-Expected result: the run is `verified`, metrics show one verified run, and `/peer center` no longer recommends rework for that run. To test private peer-owned subagent teams instead, start with `/peer setup 5` and use `/peer subrun start <summary>` after `/peer center`.
+Expected result: the run is `verified`, metrics show one verified run, and `/peer center` no longer recommends rework for that run. If a required gate fails, record the failed gate first, then create a rework record. Do not rerun blindly; use the rework record to preserve evidence and next ownership:
+
+```bash
+/peer factory gate <run-id> test fail --evidence "npm test failed: <summary>"
+/peer factory rework <run-id>
+```
+
+To test private peer-owned subagent teams instead, start with `/peer setup 5` and use `/peer subrun start <summary>` after `/peer center`.
 
 Advanced factory and context commands:
 
@@ -259,6 +269,15 @@ The runner is intentionally conservative:
 - It releases the coordinator claim and posts a handoff when stopped or when duration expires.
 - It records supervisor lifecycle data to the control ledger; on session start Pi attempts to resume persisted hive supervisors whose deadlines have not elapsed.
 
+Agent fan-out checklist:
+
+1. Run `/peer list` or use `peer_list` before choosing peers.
+2. Create or reuse a goal.
+3. Use `/peer scout <goal-id>` to inspect existing proposals, claims, and work keys.
+4. Dispatch read/review/research lanes with stable `--key` values.
+5. Claim writes only with explicit `--path` values.
+6. End with `Status`, `Files changed`, `Verification`, `Blockers/risks`, and `Safe for review`.
+
 Use `/peer goal fanout ... --send` or `/peer goal claim ... --mode write` only after reviewing the scout suggestions.
 
 The board is stored locally at `.pi/peer-goals.json`; outbound message snapshots are stored in `.pi/peer-messages.json` so restarted planners can still inspect disconnected historical tasks. Peer task, hive supervisor, and private subagent run summaries are also appended to `.pi/peer-control-ledger.jsonl`; on session start Pi reconciles the ledger against live local messages, marks orphaned active tasks as disconnected, resumes persisted hive supervisors whose deadlines have not elapsed, and keeps compact `subrun` summaries available for inspection. Mutating goal-board operations take a short local lock before load/modify/save so concurrent peer appends do not drop events. `/peer send --goal <goal-id> --claim <path[,path]>` and the `peer_send` tool's `goalId`/`claimedPaths` parameters link long-running peer tasks to the board: Symphony records a task, claims overlapping write paths before dispatch, injects goal/heartbeat instructions into the peer prompt, keeps the claim alive with local heartbeats, and releases the claim after the peer returns a final response. Each goal-linked dispatch also gets a semantic work key (`goalId | lane | objective | mode | paths`) so duplicate read/review/research lanes are leased just like write paths; pass `--key <work-key>` / `workKey` for an explicit fingerprint and `--duplicate-policy allow-parallel` only when independent second opinions are intentional. The default dispatch policy is `reuse`, so a matching active work key returns the existing claim/task handle instead of starting another peer. `/peer goal fanout` turns a goal into role-specific peer lanes; planned fanouts create `planned` task rows, while `--send` records only the dispatched peer task so boards do not accumulate orphan `dispatching` placeholders. Scout suggestions are persona-aware: they surface a recommended lane (`research`, `review`, `implementation`, `coordination`, etc.), preferred roles, a safe default claim mode, a stable work key, rationale, and suppress suggestions already covered by active work keys. Worker peers can fall back to read-only review/coordination/research suggestions when no better-fit peer takes the work, so a swarm does not stall just because every discovered peer is named `worker*`. `/peer scout` prints the exact work key and a copyable `claim:` command for each read-only suggestion, and fulfilled proposal lanes also print a direct `resolve:` command. Empty goals emit multiple lane-specific read-only suggestions so idle peers can self-select research, review/QA, or implementation-planning work instead of waiting for a planner to assign lanes; goals with stale-only claims prompt stale-claim cleanup instead of generic new startup lanes. Lane-tagged proposals (for example `/peer goal propose <goal> "Check package contents" --lane review --key review:package-contents`) become matching scout suggestions that reuse the proposal work key, letting the next suitable peer claim or review that proposed lane and suppress duplicate suggestions while the lane is active. First-class work items (`/peer goal item ... --item-id <id> --depends-on <id[,id]>`) gate closure until terminal; omitted dependencies preserve the previous dependency list, while an explicit empty `--depends-on ''` clears it. Dependency-blocked work items scout as coordination/dependency cleanup, not implementation self-selection, until their prerequisites are done. Active write claims conflict on overlapping paths; write-claim paths are canonicalized for `.`/`..` and slash/backslash variants, and repo-escaping, absolute, or drive-letter paths are rejected. Active semantic claims conflict on matching work keys; released, stale, or expired claims are kept visible but inactive. Completed goal-linked tasks are shown with their handoff status instead of remaining visually stuck as `running`. Unsuccessful handoffs such as `blocked`, `partial`, or `ERROR` are terminal for activity/claim release but still block normal closure until explicitly resolved or superseded. Claims become stale after 45 minutes without a heartbeat unless the claim or heartbeat sets `--stale-after-ms`.
@@ -343,6 +362,10 @@ Configuration can be placed in `.pi/peers.json` as `idleWatcher` or in `.pi/sett
 Set `PI_PEER_IDLE_WATCHER=off` to disable it for a process. `PI_PEER_IDLE_WATCHER_INTERVAL_MS` and `PI_PEER_IDLE_WATCHER_COOLDOWN_MS` override timing for local testing. Set `PI_PEER_AUTO_COMPACT=off` or `idleWatcher.autoCompact: false` to keep the old pause-and-warn behavior. Set `PI_PEER_IDLE_COORDINATION_SURFACE=chat|footer|both` (or `idleWatcher.coordinationSurface`) to choose where coordination-only activations are surfaced. `idleWatcher.allowedKinds` accepts either an array or comma-separated string; set it to an empty array to leave the watcher enabled but suppress proactive scout activations.
 
 In addition to the local fallback interval, the extension watches goal-board changes and can push protocol-routed idle offers to active compatible peers (`idleWatcher.protocolOffers`, default on for planner/coordinator peers; `PI_PEER_IDLE_PROTOCOL_OFFERS=off` disables it for a process). Offers are normal goal-linked peer messages with read claims and work keys, so board claim validation remains the source of truth and duplicate offers are reused/suppressed. `/peer status` includes idle watcher diagnostics: whether the watcher is running, activation/check counts, the last activated or no-op reason, and the last protocol-offer sweep summary.
+
+## Documentation map for agents
+
+`README.md`, `AGENTS.md`, and `docs/peer-operator-guide.md` are the current operator instructions. `skills/pi-peer-publish/SKILL.md` governs npm release preparation and always leaves the final `npm publish --access public` command for the user. Files under `docs/superpowers/**` are historical implementation plans/specs; use them for design background only, and prefer current source, tests, README, AGENTS, and the operator guide for live command behavior.
 
 ## Package checks
 

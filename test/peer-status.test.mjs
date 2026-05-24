@@ -130,7 +130,9 @@ test("peer footer status prioritizes coordination activations and protocol offer
       },
     },
   }, { peers: [], messages: [] });
-  assert.equal(formatPeerFooterStatusLine(coordinationStatus).text, "🔗 needs handoff review · goal_noise · no peers online");
+  const coordinationFooter = formatPeerFooterStatusLine(coordinationStatus);
+  assert.equal(coordinationFooter.text, "🔗 🚦 handoff review · 🎯 goal_noise · 📴 no peers");
+  assert.equal(coordinationFooter.color, "accent");
 
   const offerStatus = derivePeerRuntimeStatus({
     enabled: true,
@@ -138,7 +140,19 @@ test("peer footer status prioritizes coordination activations and protocol offer
     source: "test",
     __peerIdleOfferLastSweep: { reason: "agent_end", sent: 1, duplicate: 0, errors: 0, skipped: 2 },
   }, { peers: [{ peerId: "worker2", status: "active" }], messages: [] });
-  assert.equal(formatPeerFooterStatusLine(offerStatus).text, "🔗 offers · 1 sent · 2 skipped · online worker2");
+  const offerFooter = formatPeerFooterStatusLine(offerStatus);
+  assert.equal(offerFooter.text, "🔗 📣 ✅1 · ⏭️2 · 🟢 worker2");
+  assert.equal(offerFooter.color, "accent");
+
+  const offerErrorStatus = derivePeerRuntimeStatus({
+    enabled: true,
+    localPeerId: "self",
+    source: "test",
+    __peerIdleOfferLastSweep: { reason: "agent_end", sent: 0, duplicate: 1, errors: 1, skipped: 0 },
+  }, { peers: [{ peerId: "worker2", status: "active" }], messages: [] });
+  const offerErrorFooter = formatPeerFooterStatusLine(offerErrorStatus);
+  assert.equal(offerErrorFooter.text, "🔗 📣 ↩️1 · ❌1 · 🟢 worker2");
+  assert.equal(offerErrorFooter.color, "warning");
 
   const workStatus = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test" }, {
     peers: [
@@ -146,9 +160,15 @@ test("peer footer status prioritizes coordination activations and protocol offer
       { peerId: "worker3", status: "active" },
       { peerId: "worker4", status: "active" },
     ],
-    messages: [{ messageId: "msg_1", peerId: "worker2", status: "running", request: { body: { intent: "task", metadata: {} } } }],
+    messages: [
+      { messageId: "msg_1", peerId: "worker2", status: "running", request: { body: { intent: "task", metadata: {} } } },
+      { messageId: "msg_2", peerId: "worker5", status: "queued", request: { body: { intent: "review", metadata: {} } } },
+      { messageId: "msg_3", peerId: "worker6", status: "running", request: { body: { intent: "ask", metadata: {} } } },
+    ],
   });
-  assert.equal(formatPeerFooterStatusLine(workStatus).text, "🔗 busy · 1 task: worker2 work · online worker3, worker4");
+  const workFooter = formatPeerFooterStatusLine(workStatus);
+  assert.equal(workFooter.text, "🔗 ⏳ 3 tasks · 🛠️ worker2→work, worker5→review, +1 · 🟢 worker3, worker4");
+  assert.equal(workFooter.color, "accent");
 });
 
 test("peer footer lists online peers and useful recovery commands", () => {
@@ -162,22 +182,24 @@ test("peer footer lists online peers and useful recovery commands", () => {
     ],
     messages: [],
   });
-  assert.equal(formatPeerFooterStatusLine(onlineStatus).text, "🔗 3 peers online: worker2, worker3, worker4 · 1 offline");
+  const onlineFooter = formatPeerFooterStatusLine(onlineStatus);
+  assert.equal(onlineFooter.text, "🔗 🟢 3 online · 👥 worker2, worker3, worker4 · 💤 1 offline");
+  assert.equal(onlineFooter.color, "success");
 
   const truncatedStatus = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test" }, {
     peers: ["worker2", "worker3", "worker4", "reviewer-a"].map((peerId) => ({ peerId, status: "active" })),
     messages: [],
   });
-  assert.equal(formatPeerFooterStatusLine(truncatedStatus).text, "🔗 4 peers online: worker2, worker3, worker4 +1");
+  assert.equal(formatPeerFooterStatusLine(truncatedStatus).text, "🔗 🟢 4 online · 👥 worker2, worker3, worker4 +1");
 
   const noPeersStatus = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test" }, { peers: [], messages: [] });
   const noPeersFooter = formatPeerFooterStatusLine(noPeersStatus);
-  assert.equal(noPeersFooter.text, "🔗 no peers online · /peer reconnect");
+  assert.equal(noPeersFooter.text, "🔗 📴 no peers · ↻ /peer reconnect");
   assert.equal(noPeersFooter.color, "warning");
 
   const disabledStatus = derivePeerRuntimeStatus({ enabled: false, localPeerId: "self", source: "test" }, { peers: [], messages: [] });
   const disabledFooter = formatPeerFooterStatusLine(disabledStatus);
-  assert.equal(disabledFooter.text, "🔗 peer messaging off · /peer setup");
+  assert.equal(disabledFooter.text, "🔗 ⚪ off · ⚙️ /peer setup");
   assert.equal(disabledFooter.color, "muted");
 });
 
