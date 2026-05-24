@@ -87,3 +87,47 @@ test("blank rework details do not append unknown failure context", () => {
   assert.equal(run.failures[0].failureType, "test");
   assert.equal(decision.failureType, "test");
 });
+
+test("reason-only rework details preserve existing failure context", () => {
+  const run = buildReworkDecisionRun({
+    run: {
+      runId: "fac_1",
+      failures: [{ failureType: "test", summary: "gate failed" }],
+    },
+    failure: {
+      runId: "fac_1",
+      summary: "still failing",
+    },
+  });
+
+  const decision = deriveReworkDecision({
+    policy: DEFAULT_REWORK_POLICY,
+    run,
+  });
+
+  assert.equal(run.failures.length, 1);
+  assert.equal(run.failures[0].failureType, "test");
+  assert.equal(decision.failureType, "test");
+});
+
+test("explicit unknown failure type can create unknown failure context", () => {
+  const run = buildReworkDecisionRun({
+    run: {
+      runId: "fac_1",
+      failures: [{ failureType: "test", summary: "gate failed" }],
+    },
+    failure: {
+      runId: "fac_1",
+      failureType: "unknown",
+      summary: "unclear failure",
+    },
+  });
+
+  const decision = deriveReworkDecision({
+    policy: DEFAULT_REWORK_POLICY,
+    run,
+  });
+
+  assert.equal(run.failures.length, 2);
+  assert.equal(decision.failureType, "unknown");
+});

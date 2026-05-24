@@ -114,12 +114,7 @@ export function formatReworkDecision(decision = {}) {
 }
 
 function hasFailureReportDetails(input = {}) {
-  return Boolean(
-    cleanText(input.failureType || input.type || input.metadata?.failureType)
-    || cleanText(input.summary || input.reason || input.metadata?.reason)
-    || cleanText(input.evidence)
-    || cleanText(input.owner || input.metadata?.owner),
-  );
+  return Boolean(cleanText(input.failureType || input.metadata?.failureType));
 }
 
 function currentAttemptCount(attempts) {
