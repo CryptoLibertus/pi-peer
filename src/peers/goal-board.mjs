@@ -1136,7 +1136,7 @@ function enrichScoutSuggestion(suggestion = {}) {
 function formatScoutClaimCommand(suggestion = {}) {
   if (suggestion.claimMode !== "read" || !suggestion.workKey || !suggestion.goalId || !suggestion.summary) return "";
   const lane = suggestion.recommendedLane ? ` --lane ${shellQuote(suggestion.recommendedLane)}` : "";
-  const paths = suggestion.paths?.length ? suggestion.paths.map((path) => ` --path ${shellQuote(path)}`).join("") : "";
+  const paths = suggestion.paths?.length ? suggestion.paths.map((path) => ` --path=${shellQuote(path)}`).join("") : "";
   return `/peer goal claim ${shellQuote(suggestion.goalId)} ${shellQuote(suggestion.summary)} --mode read${lane} --key ${shellQuote(suggestion.workKey)}${paths}`;
 }
 

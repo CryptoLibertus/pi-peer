@@ -360,7 +360,7 @@ function isCoordinationActivation(activation = {}) {
 function buildSuggestedReadClaim(activation = {}) {
   if (activation.claimMode !== "read" || !activation.workKey) return "";
   const lane = activation.recommendedLane ? ` --lane ${shellQuote(activation.recommendedLane)}` : "";
-  const paths = activation.paths?.length ? activation.paths.map((path) => ` --path ${shellQuote(path)}`).join("") : "";
+  const paths = activation.paths?.length ? activation.paths.map((path) => ` --path=${shellQuote(path)}`).join("") : "";
   return `\nSuggested first action: /peer goal claim ${shellQuote(activation.goalId)} ${shellQuote(activation.summary)} --mode read${lane} --key ${shellQuote(activation.workKey)}${paths}`;
 }
 

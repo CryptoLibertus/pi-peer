@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { derivePeerGoalWorkKey } from "../src/peers/goal-board.mjs";
+import { parsePeerCommand } from "../src/peers/command.mjs";
 import { deriveFanoutSuggestion, derivePeerRuntimeStatus, formatPeerFooterStatusLine, formatPeerGoalDashboard, formatPeerStatusText } from "../src/peers/status.mjs";
 
 test("fanout suggestion groups available peers by persona-aware lanes", () => {
@@ -230,6 +231,21 @@ test("goal dashboard groups proposal state and prints safe next actions", () => 
   assert.match(text, /\/peer goal claim goal_dash/);
   assert.match(text, /\/peer goal resolve goal_dash p3/);
   assert.match(text, /Peer contribution\/load/);
+});
+
+test("goal dashboard proposal claim round-trips dash-prefixed paths", () => {
+  const text = formatPeerGoalDashboard({
+    id: "goal_dash_path",
+    objective: "Test dash-prefixed path dashboard",
+    status: "open",
+    events: [
+      { id: "p1", type: "proposal", at: "2026-01-01T00:00:00.000Z", peerId: "planner", summary: "Review dash-prefixed fixtures", lane: "review", workKey: "review:dash-fixtures", paths: ["--fixtures"] },
+    ],
+  }, { now: "2026-01-01T00:05:00.000Z" });
+  const command = text.match(/next: (\/peer goal claim .*)/)?.[1];
+  assert.ok(command);
+  const parsed = parsePeerCommand(command.replace(/^\/peer\s+/, ""));
+  assert.deepEqual(parsed.paths, ["--fixtures"]);
 });
 
 test("goal dashboard groups implicit proposal work keys like scout", () => {

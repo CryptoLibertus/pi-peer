@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 
 import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, projectSubagentEvidence, recordPeerGoalTaskDispatch, validateGoalReadyToClose } from "../src/peers/goal-board.mjs";
 import { appendGoalJournalRecord, compactGoalJournal, goalJournalPath, replayGoalJournal } from "../src/peers/goal-store.mjs";
+import { parsePeerCommand } from "../src/peers/command.mjs";
 
 async function withGoal(t, fn) {
   const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-test-"));
@@ -902,6 +903,25 @@ test("scout suggestions turn lane proposals into self-selection work", async (t)
     assert.equal(laneSuggestion.claimMode, "read");
     assert.equal(laneSuggestion.workKey, "epic:implementation:cli-parsing");
     assert.match(formatPeerGoalScout(await loadPeerGoalBoard(root)), /claim: \/peer goal claim .*--key epic:implementation:cli-parsing/);
+
+    const dashPathRoot = await mkdtemp(join(tmpdir(), "pi-peer-goal-test-"));
+    t.after(async () => {
+      await rm(dashPathRoot, { recursive: true, force: true });
+    });
+    const dashPathGoal = await createPeerGoal(dashPathRoot, { objective: "dash path", peerId: "tester" });
+    await appendPeerGoalEvent(dashPathRoot, dashPathGoal.id, {
+      type: "proposal",
+      peerId: "planner-a",
+      summary: "Review dash-prefixed fixtures",
+      lane: "review",
+      paths: ["--fixtures"],
+      workKey: "epic:review:dash-fixtures",
+    });
+    const dashPathScoutText = formatPeerGoalScout(await loadPeerGoalBoard(dashPathRoot));
+    const dashPathClaim = dashPathScoutText.match(/claim: (\/peer goal claim .*)/)?.[1];
+    assert.ok(dashPathClaim);
+    const parsedDashPathClaim = parsePeerCommand(dashPathClaim.replace(/^\/peer\s+/, ""));
+    assert.deepEqual(parsedDashPathClaim.paths, ["--fixtures"]);
 
     const implicitRoot = await mkdtemp(join(tmpdir(), "pi-peer-goal-test-"));
     t.after(async () => {

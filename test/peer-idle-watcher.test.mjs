@@ -10,6 +10,7 @@ import {
   normalizePeerIdleWatcherConfig,
   shouldSurfaceCoordinationInFooter,
 } from "../src/peers/idle-watcher.mjs";
+import { parsePeerCommand } from "../src/peers/command.mjs";
 
 const openGoalBoard = {
   goals: {
@@ -415,6 +416,23 @@ test("idle activation prompt tells peer to inspect state and avoid duplicate uns
   assert.match(text, /post concrete goal-board evidence/);
   assert.match(text, /release the claim before your final response/);
   assert.match(text, /If the suggested claim fails as duplicate/);
+});
+
+test("idle activation suggested claim round-trips dash-prefixed paths", () => {
+  const text = buildPeerIdleActivationPrompt({
+    goalId: "goal_123",
+    priority: "P2",
+    kind: "next-step",
+    summary: "Review dash-prefixed fixtures",
+    recommendedLane: "review",
+    claimMode: "read",
+    workKey: "goal_123|review|dash-fixtures|read|--fixtures",
+    paths: ["--fixtures"],
+  }, { localPeerId: "worker-a" });
+  const command = text.match(/Suggested first action: (\/peer goal claim .*)/)?.[1];
+  assert.ok(command);
+  const parsed = parsePeerCommand(command.replace(/^\/peer\s+/, ""));
+  assert.deepEqual(parsed.paths, ["--fixtures"]);
 });
 
 test("derivePeerIdleActivation uses persona fit when suggestions prefer roles", () => {

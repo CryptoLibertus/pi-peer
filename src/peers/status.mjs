@@ -326,7 +326,7 @@ function dashboardProposalCommand(state = {}, proposal = {}, bucket = "") {
   if (bucket === "fulfilled-awaiting-resolve") return `/peer goal resolve ${shellQuote(state.id)} ${shellQuote(proposal.id)} ${shellQuote("fulfilled lane complete")}`;
   if (bucket !== "unclaimed") return "";
   const lane = proposal.lane || "review";
-  const paths = Array.isArray(proposal.paths) ? proposal.paths.map((path) => ` --path ${shellQuote(path)}`).join("") : "";
+  const paths = Array.isArray(proposal.paths) ? proposal.paths.map((path) => ` --path=${shellQuote(path)}`).join("") : "";
   const workKey = dashboardProposalWorkKey(state, proposal);
   const key = workKey ? ` --key ${shellQuote(workKey)}` : "";
   return `/peer goal claim ${shellQuote(state.id)} ${shellQuote(`Self-select proposed ${lane} lane: ${proposal.summary || "work"}`)} --mode read --lane ${shellQuote(lane)}${key}${paths}`;
