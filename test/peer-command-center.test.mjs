@@ -78,7 +78,7 @@ test("command center renders compact factory metrics", () => {
   assert.match(text, /Factory: runs 2 .*verified 1 .*autonomy 50% .*rework avg 2 .*escalations 1/);
 });
 
-test("command center recommends rework for active factory runs with failed gates", () => {
+test("command center recommends parseable factory rework for active factory runs with failed gates", () => {
   const state = buildPeerCommandCenterState({
     setupSession: { exists: true },
     factoryState: {
@@ -91,7 +91,12 @@ test("command center recommends rework for active factory runs with failed gates
     },
   });
 
-  assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer do rework fac_blocked");
+  const command = derivePeerCommandCenterRecommendations(state)[0].command;
+  assert.equal(command, "/peer factory rework fac_blocked");
+  const parsed = parsePeerCommand(command.replace(/^\/peer\s+/, ""));
+  assert.equal(parsed.subcommand, "factory");
+  assert.equal(parsed.factoryAction, "rework");
+  assert.equal(parsed.runId, "fac_blocked");
 });
 
 test("command center recommends factory init when collected factory state is empty", () => {

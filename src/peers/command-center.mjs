@@ -69,7 +69,7 @@ export function derivePeerCommandCenterRecommendations(state = {}) {
   const control = state.control || {};
   const failedRun = firstFactoryRunNeedingRework(state);
 
-  if (failedRun) commands.push(recommend(`/peer do rework ${commandArg(failedRun.runId)}`, "rework failed factory gates"));
+  if (failedRun) commands.push(recommend(`/peer factory rework ${commandArg(failedRun.runId)}`, "rework failed factory gates"));
   if (array(control.disconnectedTasks).length) commands.push(recommend("/peer reconnect", "resume disconnected peer tasks"));
   if (goal && array(goal.staleClaims).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "coordinate stale claims"));
   if (goal && array(goal.unresolvedTaskHandoffs).length) commands.push(recommend("/peer do resolve-handoffs", "resolve peer handoffs"));
