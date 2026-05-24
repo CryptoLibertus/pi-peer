@@ -81,6 +81,9 @@ export function parsePeerCommand(rawArgs = "") {
   if (subcommand === "goal") {
     return parsePeerGoalCommand(parsed, flags, positionals);
   }
+  if (subcommand === "context") {
+    return parsePeerContextCommand(parsed, flags, positionals);
+  }
   if (subcommand === "hive" || subcommand === "swarm") {
     return parsePeerHiveCommand(parsed, flags, positionals);
   }
@@ -149,6 +152,7 @@ export function formatPeerHelp() {
     "- `/peer metrics` — alias for `/peer factory metrics`",
     "- `/peer status` — show local peer runtime, endpoint/auth, discovered peers, pending messages, context pressure, and warnings",
     "- `/peer context` — show local context usage/pressure when Pi exposes it to extensions",
+    "- `/peer context status|patch|eval|retro ...` — inspect and append context-as-code lifecycle ledger records",
     "- `/peer list` — list configured and discovered peers",
     "- `/peer setup [--id <peer-id>] [--role planner|worker|reviewer] [--domain <domain>] [--subagents] [--peer <peer-id>]` — guided alias for creating .pi/peers.json with protocol/capability metadata; never overwrites",
     "- `/peer init [--id <peer-id>]` — create .pi/peers.json if missing; never overwrites",
@@ -220,6 +224,47 @@ function parsePeerHiveCommand(parsed, flags, positionals) {
     send: action === "run" || flagEnabled(flags.send),
     write: flagEnabled(flags.write),
   };
+}
+
+function parsePeerContextCommand(parsed, flags, positionals) {
+  const action = positionals[0];
+  if (!action) return parsed;
+  const rest = positionals.slice(1);
+  const withAction = { ...parsed, contextAction: action };
+  if (action === "status") return withAction;
+  if (action === "patch") {
+    return {
+      ...withAction,
+      trigger: stringFlag(flags.trigger, undefined),
+      change: stringFlag(flags.change, undefined),
+      metric: stringFlag(flags.metric, undefined),
+      evalName: stringFlag(flags.eval || flags.evalName, undefined),
+      owner: stringFlag(flags.owner, undefined),
+      reviewDate: stringFlag(flags.reviewDate, undefined),
+    };
+  }
+  if (action === "eval") {
+    const patchId = rest[0];
+    const status = rest[1];
+    if (!patchId || !status) return { ...withAction, error: "/peer context eval requires <patch-id> <pass|fail>" };
+    if (!["pass", "fail"].includes(status)) return { ...withAction, patchId, status, error: "/peer context eval status must be pass or fail" };
+    return {
+      ...withAction,
+      patchId,
+      status,
+      evalName: stringFlag(flags.eval || flags.evalName, undefined),
+      evidence: stringFlag(flags.evidence, undefined),
+    };
+  }
+  if (action === "retro") {
+    return {
+      ...withAction,
+      summary: stringFlag(flags.summary, undefined),
+      failureType: stringFlag(flags.failure || flags.failureType, undefined),
+      runId: stringFlag(flags.run || flags.runId, undefined),
+    };
+  }
+  return { ...withAction, error: `Unknown /peer context action '${action}'` };
 }
 
 function durationFlag(value) {

@@ -33,6 +33,35 @@ test("parses dashboard alias as read-only goal dashboard", () => {
 test("parses peer context command", () => {
   const parsed = parsePeerCommand("context");
   assert.equal(parsed.subcommand, "context");
+  assert.equal(parsed.contextAction, undefined);
+});
+
+test("parses peer context lifecycle commands", () => {
+  const status = parsePeerCommand("context status");
+  assert.equal(status.subcommand, "context");
+  assert.equal(status.contextAction, "status");
+
+  const patch = parsePeerCommand("context patch --trigger 'handoff failures' --change 'Require verification' --metric missing-count --eval handoff-quality --owner planner-a --review-date 2026-06-24");
+  assert.equal(patch.contextAction, "patch");
+  assert.equal(patch.trigger, "handoff failures");
+  assert.equal(patch.change, "Require verification");
+  assert.equal(patch.metric, "missing-count");
+  assert.equal(patch.evalName, "handoff-quality");
+  assert.equal(patch.owner, "planner-a");
+  assert.equal(patch.reviewDate, "2026-06-24");
+
+  const evalResult = parsePeerCommand("context eval ctx_123 pass --eval handoff-quality --evidence 'scenario passed'");
+  assert.equal(evalResult.contextAction, "eval");
+  assert.equal(evalResult.patchId, "ctx_123");
+  assert.equal(evalResult.status, "pass");
+  assert.equal(evalResult.evalName, "handoff-quality");
+  assert.equal(evalResult.evidence, "scenario passed");
+
+  const retro = parsePeerCommand("context retro --summary 'review missed failures' --failure review --run fac_123");
+  assert.equal(retro.contextAction, "retro");
+  assert.equal(retro.summary, "review missed failures");
+  assert.equal(retro.failureType, "review");
+  assert.equal(retro.runId, "fac_123");
 });
 
 test("parses peer command center facade", () => {

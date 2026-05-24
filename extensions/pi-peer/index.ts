@@ -8,6 +8,7 @@ import { installPeerRuntimeLifecycle } from "../../src/peers/extension-lifecycle
 import { initPeerConfig } from "../../src/peers/config.mjs";
 import { formatPeerCommandError, formatPeerHelp, formatPeerInitResult, parsePeerCommand } from "../../src/peers/command.mjs";
 import { capturePeerContextBudget, derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement } from "../../src/peers/context-budget.mjs";
+import { appendContextPatch, appendContextRetro, deriveContextLifecycleState, formatContextLifecycleStatus, loadContextLifecycle, recordContextEvalResult } from "../../src/peers/context-lifecycle.mjs";
 import { createPeerRuntime, getPeerRuntimeValue } from "../../src/peers/runtime.mjs";
 import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, recordPeerGoalTaskDispatch } from "../../src/peers/goal-board.mjs";
 import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerFooterStatusLine, formatPeerGoalDashboard, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
@@ -433,6 +434,16 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       return sendPeerMessage(pi, formatPeerSubagentRunResult(result));
     }
     if (parsed.subcommand === "context") {
+      if (parsed.contextAction) {
+        const root = ctx.cwd || process.cwd();
+        if (parsed.contextAction === "patch") await appendContextPatch(root, parsed);
+        else if (parsed.contextAction === "eval") await recordContextEvalResult(root, parsed);
+        else if (parsed.contextAction === "retro") await appendContextRetro(root, parsed);
+        else if (parsed.contextAction !== "status") throw new Error(`Unknown peer context action '${parsed.contextAction}'`);
+        const lifecycle = deriveContextLifecycleState(await loadContextLifecycle(root));
+        await refresh();
+        return sendPeerMessage(pi, formatContextLifecycleStatus(lifecycle));
+      }
       const budget = updatePeerContextBudget(runtime, ctx);
       const judgement = derivePeerContextJudgement(budget);
       await refresh();
