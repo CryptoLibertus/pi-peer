@@ -136,6 +136,7 @@ export function deriveFactoryState(records = []) {
       attempts: [],
       gateResults: {},
       failures: [],
+      reworkIds: new Set(),
       reworkCount: 0,
       status: "unknown",
       createdAt: record.at,
@@ -143,7 +144,7 @@ export function deriveFactoryState(records = []) {
     applyFactoryRecord(run, record);
     runsById.set(record.runId, run);
   }
-  const runs = [...runsById.values()].sort(sortByUpdatedAt);
+  const runs = [...runsById.values()].map(finalizeFactoryRun).sort(sortByUpdatedAt);
   const activeRuns = runs.filter((run) => !TERMINAL_RUN_STATUSES.has(run.status));
   const statusCounts = {};
   for (const run of runs) statusCounts[run.status] = (statusCounts[run.status] || 0) + 1;
@@ -171,6 +172,7 @@ export function formatFactoryStatus(state = {}) {
 
 export function formatFactoryRun(run = {}) {
   const gates = Object.entries(plainObject(run.gateResults) ? run.gateResults : {})
+    .sort(([a], [b]) => a.localeCompare(b))
     .map(([gateId, result]) => `${gateId}:${result?.status || "unknown"}`)
     .join(", ");
   const parts = [
@@ -206,7 +208,10 @@ function applyFactoryRecord(run, record) {
     const attempt = positiveInteger(record.attempt) || run.attempts.length || 1;
     const status = normalizeRunStatus(record.status) || "completed";
     upsertAttempt(run, { attempt, peerId: record.peerId, status, completedAt: record.at, recordId: record.id });
-    if (FAILED_STATUSES.has(status)) run.failures.push(failureFromRecord(record));
+    if (FAILED_STATUSES.has(status)) {
+      run.status = status;
+      run.failures.push(failureFromRecord(record));
+    }
   } else if (record.type === "gate-result") {
     const gateId = cleanText(record.gateId);
     if (gateId) run.gateResults[gateId] = stripEmpty({ gateId, status: normalizeGateStatus(record.status), evidence: record.evidence, at: record.at, recordId: record.id });
@@ -215,7 +220,7 @@ function applyFactoryRecord(run, record) {
       run.status = "blocked";
     }
   } else if (record.type === "rework-requested" || record.type === "rework-started") {
-    run.reworkCount = (run.reworkCount || 0) + 1;
+    if (shouldCountReworkCycle(run, record)) run.reworkCount = (run.reworkCount || 0) + 1;
     run.status = "rework";
   } else if (record.type === "run-completed") {
     const status = normalizeRunStatus(record.status) || "completed";
@@ -251,6 +256,7 @@ function normalizeFactoryRunRecord(record = {}) {
     paths: normalizeList(record.paths),
     gates: normalizeList(record.gates),
     gateId: cleanText(record.gateId),
+    reworkId: cleanText(record.reworkId || record.cycleId || record.metadata?.reworkId || record.metadata?.cycleId),
     attempt: positiveInteger(record.attempt),
     status: cleanText(record.status).toLowerCase(),
     evidence: cleanText(record.evidence),
@@ -258,6 +264,21 @@ function normalizeFactoryRunRecord(record = {}) {
     summary: cleanText(record.summary),
     metadata: plainObject(record.metadata) ? record.metadata : undefined,
   });
+}
+
+function shouldCountReworkCycle(run, record) {
+  const reworkId = cleanText(record.reworkId);
+  if (reworkId) {
+    if (run.reworkIds.has(reworkId)) return false;
+    run.reworkIds.add(reworkId);
+    return true;
+  }
+  return record.type === "rework-requested";
+}
+
+function finalizeFactoryRun(run) {
+  const { reworkIds, ...publicRun } = run;
+  return publicRun;
 }
 
 function failureFromRecord(record) {
