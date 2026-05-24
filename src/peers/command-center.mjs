@@ -1,4 +1,5 @@
 import { appendPeerGoalEvent, createPeerGoal } from "./goal-board.mjs";
+import { derivePeerFactoryMetrics } from "./metrics.mjs";
 import { formatPeerSetupPrompt } from "./setup-wizard.mjs";
 
 export function buildPeerCommandCenterState(input = {}) {
@@ -12,6 +13,9 @@ export function buildPeerCommandCenterState(input = {}) {
   const localPeerId = runtimeStatus.localPeerId || "unknown";
   const goals = Array.isArray(input.goals) ? input.goals : [];
   const currentGoal = selectCurrentGoal(input.currentGoal, goals, input.currentGoalId);
+  const factoryState = input.factoryState || {};
+  const contextState = input.contextState || {};
+  const metrics = input.metrics || derivePeerFactoryMetrics({ factoryState, contextState, goals, controlState });
 
   const state = {
     enabled: runtimeStatus.enabled === true,
@@ -49,7 +53,10 @@ export function buildPeerCommandCenterState(input = {}) {
       completedSubruns: array(controlState.completedSubruns),
     },
     factoryRecords: array(input.factoryRecords),
-    factoryState: input.factoryState || {},
+    factoryState,
+    factoryKnown: Object.hasOwn(input, "factoryState") || Object.hasOwn(input, "factoryRecords"),
+    contextState,
+    metrics,
     objective: input.objective || currentGoal?.objective || "new peer goal",
   };
   state.recommendations = derivePeerCommandCenterRecommendations(state);
@@ -60,7 +67,9 @@ export function derivePeerCommandCenterRecommendations(state = {}) {
   const goal = state.currentGoal || selectCurrentGoal(undefined, array(state.goals), state.currentGoalId);
   const commands = [];
   const control = state.control || {};
+  const failedRun = firstFactoryRunNeedingRework(state);
 
+  if (failedRun) commands.push(recommend(`/peer do rework ${commandArg(failedRun.runId)}`, "rework failed factory gates"));
   if (array(control.disconnectedTasks).length) commands.push(recommend("/peer reconnect", "resume disconnected peer tasks"));
   if (goal && array(goal.staleClaims).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "coordinate stale claims"));
   if (goal && array(goal.unresolvedTaskHandoffs).length) commands.push(recommend("/peer do resolve-handoffs", "resolve peer handoffs"));
@@ -69,6 +78,8 @@ export function derivePeerCommandCenterRecommendations(state = {}) {
   if (goal && !hasPlanReview(goal, state)) commands.push(recommend(`/peer do plan ${goal.id}`, "run adversarial plan review"));
   if (goal && shouldRecommendReview(goal)) commands.push(recommend(`/peer do review ${goal.id}`, "collect current review"));
   if (array(control.activeSubruns).length) commands.push(recommend("/peer subrun status", "check active subruns"));
+  if (!hasFactoryInitialized(state)) commands.push(recommend("/peer factory init", "initialize factory control plane"));
+  if (hasRepeatedContextFailures(state)) commands.push(recommend("/peer context retro", "review repeated context eval failures"));
   if (state.setup?.exists === false) commands.push(recommend("/peer setup", "configure peer command center"));
   if (!goal) commands.push(recommend(`/peer do start goal ${shellQuote(state.objective || "new peer goal")}`, "start a peer goal"));
 
@@ -92,6 +103,7 @@ export function formatPeerCommandCenter(state = {}) {
     for (const domain of group.domains) lines.push(`  ${domain.domain}: ${domain.peers.map((peer) => peer.peerId).join(", ")}`);
   }
 
+  lines.push(formatFactoryLine(state.metrics));
   lines.push(formatGoalLine(currentGoal, state.control));
   lines.push("Recommended:");
   if (recommendations.length) {
@@ -359,6 +371,27 @@ function shouldRecommendReview(goal = {}) {
   return !votes.some((vote) => vote.verdict === "pass" || vote.verdict === "pass-with-risks");
 }
 
+function firstFactoryRunNeedingRework(state = {}) {
+  const runs = array(state.factoryState?.activeRuns).length ? array(state.factoryState?.activeRuns) : array(state.factoryState?.runs);
+  return runs.find((run) => run?.runId && hasFailedGate(run));
+}
+
+function hasFailedGate(run = {}) {
+  return Object.values(run.gateResults && typeof run.gateResults === "object" ? run.gateResults : {})
+    .some((result) => ["fail", "failed", "error", "blocked"].includes(text(result?.status, "").toLowerCase()));
+}
+
+function hasFactoryInitialized(state = {}) {
+  if (state.factoryKnown !== true) return true;
+  return array(state.factoryState?.runs).length > 0 || Number(state.factoryState?.records || 0) > 0 || array(state.factoryRecords).length > 0;
+}
+
+function hasRepeatedContextFailures(state = {}) {
+  const failing = array(state.contextState?.failingEvalResults).length
+    || array(state.contextState?.evalResults).filter((result) => text(result?.status, "").toLowerCase() === "fail").length;
+  return failing >= 2;
+}
+
 function formatOrgLine(org = {}) {
   if (!org.exists) return "Org: not configured";
   const privateTeams = org.spawnPolicy?.privateTeams ? "private teams enabled" : "private teams disabled";
@@ -370,6 +403,24 @@ function formatGoalLine(goal, control = {}) {
   const activeTasks = array(goal.activeTasks).length || array(control.activeTasks).length;
   const subruns = array(control.activeSubruns).length;
   return `Goals: ${goal.id || "unknown"} ready ${goal.readyToClose ? "yes" : "no"} · blockers ${array(goal.blockingObjections).length} · active tasks ${activeTasks} · subruns ${subruns}`;
+}
+
+function formatFactoryLine(metrics = {}) {
+  return `Factory: runs ${number(metrics.totalRuns)} · verified ${number(metrics.verifiedRuns)} · autonomy ${percent(metrics.autonomyRate)} · rework avg ${formatNumber(metrics.averageReworkHops)} · escalations ${number(metrics.escalatedRuns ?? Math.round(number(metrics.escalationRate) * number(metrics.totalRuns)))}`;
+}
+
+function percent(value) {
+  return `${Math.round(number(value) * 100)}%`;
+}
+
+function formatNumber(value) {
+  const numeric = number(value);
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1).replace(/\.0$/, "");
+}
+
+function number(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
 }
 
 function recommend(command, reason) {

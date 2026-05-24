@@ -247,7 +247,7 @@ test("extension wires factory commands without requiring peer runtime transport"
   assert.match(extensionSource, /No factory run found for \$\{parsed\.runId\}\./);
   assert.match(extensionSource, /type:\s*"plan-review"/);
   assert.match(extensionSource, /severity:\s*"blocking"/);
-  assert.match(extensionSource, /# Factory metrics/);
+  assert.match(extensionSource, /formatPeerFactoryMetrics\(derivePeerFactoryMetrics/);
 
   const factoryBranch = extensionSource.indexOf("handlePeerFactoryCommand(parsed, ctx, runtime)");
   const firstEnsureEnabled = extensionSource.indexOf("ensureEnabled(runtime);", factoryBranch);

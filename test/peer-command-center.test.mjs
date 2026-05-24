@@ -62,6 +62,47 @@ test("command center renders local profile, org, peers, goal blockers, and subru
   assert.match(text, /\/peer do resolve-handoffs/);
 });
 
+test("command center renders compact factory metrics", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    factoryState: {
+      runs: [
+        { runId: "fac_1", status: "verified", reworkCount: 1, gateResults: { test: { status: "pass" } } },
+        { runId: "fac_2", status: "human-escalation", reworkCount: 3, escalationRequired: true, gateResults: { test: { status: "fail" } } },
+      ],
+    },
+  });
+
+  const text = formatPeerCommandCenter(state);
+
+  assert.match(text, /Factory: runs 2 .*verified 1 .*autonomy 50% .*rework avg 2 .*escalations 1/);
+});
+
+test("command center recommends rework for active factory runs with failed gates", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    factoryState: {
+      runs: [
+        { runId: "fac_blocked", status: "blocked", gateResults: { test: { status: "fail", required: true } } },
+      ],
+      activeRuns: [
+        { runId: "fac_blocked", status: "blocked", gateResults: { test: { status: "fail", required: true } } },
+      ],
+    },
+  });
+
+  assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer do rework fac_blocked");
+});
+
+test("command center recommends factory init when collected factory state is empty", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    factoryState: { records: 0, runs: [], activeRuns: [] },
+  });
+
+  assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer factory init");
+});
+
 test("recommendations follow full priority order and dedupe repeated coordination commands", () => {
   const state = buildPeerCommandCenterState({
     setup: { exists: false },

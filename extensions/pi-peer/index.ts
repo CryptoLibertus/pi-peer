@@ -43,6 +43,7 @@ import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg,
 import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
 import { buildPeerCommandCenterState, formatPeerCommandCenter, routePeerIntent } from "../../src/peers/command-center.mjs";
 import { cancelPeerSubagentRun, completePeerSubagentRun, formatPeerSubagentRunResult, formatPeerSubagentStatus, recordPeerSubagentRunProgress, startPeerSubagentRun } from "../../src/peers/subagents.mjs";
+import { derivePeerFactoryMetrics, formatPeerFactoryMetrics } from "../../src/peers/metrics.mjs";
 
 const MESSAGE_TYPE = "pi-peer";
 const DEFAULT_PEER_IDLE_OFFER_TIMEOUT_MS = 2 * 60 * 1000;
@@ -616,7 +617,10 @@ async function collectPeerCommandCenterInput(ctx: any, runtime: any) {
   const factoryRuns = await loadFactoryRuns(root).catch(() => ({ records: [] }));
   const factoryRecords = factoryRuns.records || [];
   const factoryState = deriveFactoryState(factoryRecords);
-  return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState, factoryRecords, factoryState };
+  const contextLifecycle = await loadContextLifecycle(root).catch(() => ({ patches: [], retros: [], evalResults: [], warnings: [] }));
+  const contextState = deriveContextLifecycleState(contextLifecycle);
+  const metrics = derivePeerFactoryMetrics({ factoryState, contextState, goals, controlState });
+  return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState, factoryRecords, factoryState, contextState, metrics };
 }
 
 async function handlePeerOrgCommand(parsed: any, ctx: any, runtime: any) {
@@ -865,17 +869,9 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
   }
 
   if (action === "metrics") {
-    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
-    const statusText = formatFactoryStatus(state);
-    return [
-      "# Factory metrics",
-      `records: ${state.records || 0}`,
-      `runs: ${state.runs?.length || 0}`,
-      `active: ${state.activeRuns?.length || 0}`,
-      `completed: ${state.completedRuns?.length || 0}`,
-      "",
-      statusText,
-    ].join("\n");
+    const factoryState = deriveFactoryState((await loadFactoryRuns(root)).records);
+    const contextState = deriveContextLifecycleState(await loadContextLifecycle(root).catch(() => ({ patches: [], retros: [], evalResults: [], warnings: [] })));
+    return formatPeerFactoryMetrics(derivePeerFactoryMetrics({ factoryState, contextState }));
   }
 
   return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
