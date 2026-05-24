@@ -1613,6 +1613,53 @@ test("completed goal-linked tasks do not keep showing as running", async (t) => 
   });
 
   await withGoal(t, async (root, goalId) => {
+    await appendPeerGoalEvent(root, goalId, { type: "vote", peerId: "reviewer-a", verdict: "pass", summary: "Ready once late evidence is counted" });
+    const link = await beginPeerGoalTask(root, goalId, {
+      targetPeerId: "worker-a",
+      prompt: "Research with late evidence",
+      mode: "read",
+      lane: "research",
+      duplicatePolicy: "reuse",
+      workKey: "late:evidence",
+    });
+    await recordPeerGoalTaskDispatch(root, goalId, {
+      requesterPeerId: "planner",
+      targetPeerId: "worker-a",
+      prompt: "Research with late evidence",
+      mode: "read",
+      lane: "research",
+      workKey: link.workKey,
+      messageId: "msg_late_evidence",
+      conversationId: "conv_late_evidence",
+      claimEventId: link.claimEvent.id,
+    });
+    await completePeerGoalTask(root, goalId, {
+      targetPeerId: "worker-a",
+      messageId: "msg_late_evidence",
+      conversationId: "conv_late_evidence",
+      claimEventId: link.claimEvent.id,
+      workKey: link.workKey,
+      status: "blocked",
+      responseStatus: "ERROR",
+      summary: "ERROR: local peer closed before final text",
+    });
+    await appendPeerGoalEvent(root, goalId, {
+      type: "finding",
+      peerId: "worker-a",
+      lane: "research",
+      workKey: link.workKey,
+      summary: "Late evidence arrived after the transport close event",
+    });
+
+    const state = deriveGoalState((await loadPeerGoalBoard(root)).goals[goalId]);
+    assert.equal(state.tasks[0].status, "superseded");
+    assert.equal(state.tasks[0].evidenceEventId.startsWith("evt_finding_"), true);
+    assert.equal(state.activeTasks.length, 0);
+    assert.equal(state.unresolvedTaskHandoffs.length, 0);
+    assert.equal(state.readyToClose, true);
+  });
+
+  await withGoal(t, async (root, goalId) => {
     await appendPeerGoalEvent(root, goalId, {
       type: "task",
       peerId: "planner",

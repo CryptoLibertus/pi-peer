@@ -12,7 +12,7 @@ const BLOCKING_SEVERITIES = new Set(["blocking", "blocker", "critical"]);
 const VOTE_VERDICTS = new Set(["pass", "fail", "pass-with-risks"]);
 const DUPLICATE_POLICIES = new Set(["error", "reuse", "allow-parallel"]);
 const ACTIVE_TASK_STATUSES = new Set(["queued", "dispatching", "planned", "running", "pending", "blocked"]);
-const SUCCESSFUL_TASK_HANDOFF_STATUSES = new Set(["done", "complete", "completed", "closed", "resolved", "ok", "pass", "passed"]);
+const SUCCESSFUL_TASK_HANDOFF_STATUSES = new Set(["done", "complete", "completed", "closed", "resolved", "ok", "pass", "passed", "superseded"]);
 const DEFAULT_GOAL_CLAIM_STALE_MS = 45 * 60 * 1000;
 const SCOUT_LANES = Object.freeze({
   blocker: { recommendedLane: "coordination", preferredRoles: ["planner", "coordinator", "reviewer"], claimMode: "read", suggestedIntent: "review", rationale: "Blocking objections need a coordination/review lane before more work starts." },
@@ -1030,6 +1030,18 @@ function isTerminalWorkItemStatus(status) {
 function projectTaskSummary(task, events) {
   const handoff = latestEvent(events.filter((event) => taskMatchesHandoff(task, event, events)));
   const projected = projectEventSummary(task);
+  const completionEvidence = latestTaskCompletionEvidence(task, events, handoff?.at || task.at);
+  if (completionEvidence && (!handoff || isUnsuccessfulHandoffStatus(handoff.status))) {
+    return stripEmpty({
+      ...projected,
+      status: handoff ? "superseded" : "done",
+      completedAt: completionEvidence.at,
+      handoffEventId: handoff?.id,
+      handoffPeerId: completionEvidence.peerId,
+      handoffSummary: handoff ? `Superseded by ${completionEvidence.type}: ${completionEvidence.summary}` : completionEvidence.summary,
+      evidenceEventId: completionEvidence.id,
+    });
+  }
   if (!handoff) return projected;
   return stripEmpty({
     ...projected,
@@ -1048,7 +1060,20 @@ function isActiveTaskSummary(task = {}) {
 
 function isUnsuccessfulTaskHandoffSummary(task = {}) {
   if (!task.completedAt && !task.handoffEventId) return false;
-  return !SUCCESSFUL_TASK_HANDOFF_STATUSES.has(String(task.status || "").toLowerCase());
+  return isUnsuccessfulHandoffStatus(task.status);
+}
+
+function isUnsuccessfulHandoffStatus(status) {
+  return !SUCCESSFUL_TASK_HANDOFF_STATUSES.has(String(status || "").toLowerCase());
+}
+
+function latestTaskCompletionEvidence(task, events, after = task.at) {
+  if (!task.workKey) return undefined;
+  const claimEventId = task.metadata?.claimEventId;
+  if (!claimEventId) return undefined;
+  const hasReleasedClaim = events.some((event) => event.type === "release" && event.resolves === claimEventId && event.at >= task.at);
+  if (!hasReleasedClaim) return undefined;
+  return latestEvent(events.filter((event) => ["finding", "note"].includes(event.type) && event.workKey === task.workKey && event.at >= after));
 }
 
 function taskMatchesHandoff(task, event, events) {

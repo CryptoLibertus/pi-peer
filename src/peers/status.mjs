@@ -91,24 +91,25 @@ export function formatPeerStatusText(status = {}) {
 export function formatPeerFooterStatusLine(status = {}) {
   const idle = status.idleWatcher || {};
   if ((status.pendingCount || 0) > 0) {
+    const count = status.pendingCount || 0;
     const task = (status.activeTasks || [])[0] || {};
-    const peer = task.peerId ? ` · ${safeStatusText(task.peerId) || task.peerId}` : "";
-    const intent = task.intent ? ` · ${safeStatusText(task.intent) || task.intent}` : "";
-    return line("footer", "accent", `🔗 peer work ${status.pendingCount} pending${peer}${intent}`);
+    const peer = task.peerId ? ` · ${truncateStatus(task.peerId, 18)}` : "";
+    const intent = task.intent ? ` · ${footerIntentLabel(task.intent)}` : "";
+    return line("footer", "accent", `🔗 peer busy · ${count} ${plural(count, "task")}${peer}${intent}`);
   }
   const activation = idle.lastCheck?.activated ? idle.lastCheck.activation : undefined;
   if (activation && shouldSurfaceCoordinationInFooter(activation, { coordinationSurface: "footer" })) {
-    const kind = safeStatusText(activation.kind) || "coordination";
-    const goal = activation.goalId ? ` · ${safeStatusText(activation.goalId) || activation.goalId}` : "";
-    const key = activation.workKey ? ` · ${truncateStatus(activation.workKey, 42)}` : "";
-    return line("footer", "accent", `🔗 peer coord ${kind}${goal}${key}`);
+    const kind = footerActivationLabel(activation.kind);
+    const goal = activation.goalId ? ` · ${truncateStatus(activation.goalId, 24)}` : "";
+    return line("footer", "accent", `🔗 needs ${kind}${goal}`);
   }
   const sweep = idle.lastProtocolOfferSweep;
   if (sweep && ((sweep.sent || 0) > 0 || (sweep.duplicate || 0) > 0 || (sweep.errors || 0) > 0)) {
     const color = (sweep.errors || 0) > 0 ? "warning" : "accent";
-    return line("footer", color, `🔗 peer offers ${formatIdleOfferSweep(sweep)}`);
+    return line("footer", color, `🔗 peer offers · ${formatIdleOfferSweep(sweep)}`);
   }
-  return line("footer", status.enabled ? "success" : "muted", `🔗 peers ${status.enabled ? "on" : "off"} · ${status.activeCount || 0} active`);
+  const activeCount = status.activeCount || 0;
+  return line("footer", status.enabled ? "success" : "muted", `🔗 peers ${status.enabled ? "ready" : "off"} · ${activeCount} online`);
 }
 
 export function shouldShowPeerWidget(status = {}) {
@@ -150,9 +151,13 @@ function formatIdleOfferSweep(sweep = {}) {
   const duplicate = Number.isFinite(sweep.duplicate) ? sweep.duplicate : 0;
   const errors = Number.isFinite(sweep.errors) ? sweep.errors : 0;
   const skipped = Number.isFinite(sweep.skipped) ? sweep.skipped : 0;
-  const reason = sweep.reason ? ` (${safeStatusText(sweep.reason)})` : "";
-  const noOp = sweep.noOpReason ? ` · ${safeStatusText(sweep.noOpReason)}` : "";
-  return `${sent} sent, ${duplicate} duplicate, ${errors} errors, ${skipped} skipped${reason}${noOp}`;
+  const parts = [];
+  if (sent) parts.push(`${sent} sent`);
+  if (duplicate) parts.push(`${duplicate} duplicate`);
+  if (errors) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
+  if (skipped) parts.push(`${skipped} skipped`);
+  if (!parts.length) parts.push("idle");
+  return parts.join(" · ");
 }
 
 function activeTaskSummary(message = {}) {
@@ -400,6 +405,26 @@ function recommendLaneForPeer(peer = {}) {
 
 function line(kind, color, text) {
   return { kind, color, text };
+}
+
+function footerActivationLabel(kind) {
+  const text = safeStatusText(kind) || "action";
+  if (text === "task-handoff") return "handoff review";
+  if (text === "failed-vote") return "vote check";
+  if (text === "stale-claim") return "claim cleanup";
+  if (text === "open-proposal") return "proposal triage";
+  if (text === "work-item") return "next step";
+  return text.replace(/-/g, " ");
+}
+
+function footerIntentLabel(intent) {
+  const text = safeStatusText(intent) || "task";
+  if (text === "task") return "work";
+  return text.replace(/-/g, " ");
+}
+
+function plural(count, singular) {
+  return count === 1 ? singular : `${singular}s`;
 }
 
 function truncateStatus(value, max = 80) {
