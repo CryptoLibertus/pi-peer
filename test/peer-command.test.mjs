@@ -382,6 +382,32 @@ test("extension wires factory commands without requiring peer runtime transport"
   assert.ok(firstEnsureEnabled > factoryBranch);
 });
 
+test("parses peer spawn process facade actions", () => {
+  const start = parsePeerCommand("spawn worker2,worker3 --role worker --domain implementation --subagents --subagent-provider pi-subagents --model sonnet:low");
+  assert.equal(start.subcommand, "spawn");
+  assert.equal(start.spawnAction, "start");
+  assert.deepEqual(start.peerIds, ["worker2", "worker3"]);
+  assert.equal(start.role, "worker");
+  assert.equal(start.domain, "implementation");
+  assert.equal(start.subagents, true);
+  assert.equal(start.subagentProvider, "pi-subagents");
+  assert.equal(start.model, "sonnet:low");
+
+  const explicitStart = parsePeerCommand("spawn start worker4");
+  assert.deepEqual(explicitStart.peerIds, ["worker4"]);
+
+  const counted = parsePeerCommand("spawn --count 2 --prefix reviewer --role reviewer");
+  assert.equal(counted.count, 2);
+  assert.equal(counted.prefix, "reviewer");
+
+  const stop = parsePeerCommand("spawn stop worker2");
+  assert.equal(stop.spawnAction, "stop");
+  assert.deepEqual(stop.peerIds, ["worker2"]);
+
+  const status = parsePeerCommand("spawn status");
+  assert.equal(status.spawnAction, "status");
+});
+
 test("parses hive and swarm start as safe self-selection goal starters", () => {
   const hive = parsePeerCommand("hive start Ship autonomous workers --constraint no-overlap --path src --path test --lane research,review --proposal \"Validate handoff evidence\"");
   assert.equal(hive.subcommand, "hive");
@@ -607,6 +633,7 @@ test("peer help documents claim lane, write shorthand, and stale flags", () => {
   assert.match(help, /\/peer work/);
   assert.match(help, /\/peer do <intent>/);
   assert.match(help, /\/peer subrun/);
+  assert.match(help, /\/peer spawn/);
   assert.match(help, /\/peer factory init\|status\|run\|gate\|attempt\|rework\|plan-review\|metrics/);
   assert.match(help, /\/peer metrics/);
 });

@@ -2,7 +2,7 @@ import { flagEnabled, parseFlags, splitCommandLine } from "../utils.mjs";
 import { formatPeerCommandError, formatPeerHelp, formatPeerInitResult } from "./command-help.mjs";
 export { formatPeerCommandError, formatPeerHelp, formatPeerInitResult } from "./command-help.mjs";
 
-export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "center", "work", "init", "setup", "do", "mission", "accomplish", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics"]);
+export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "center", "work", "init", "setup", "do", "mission", "accomplish", "subrun", "spawn", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics"]);
 
 const PEER_GOAL_ALIASES = Object.freeze({
   goals: ["list"],
@@ -97,6 +97,9 @@ export function parsePeerCommand(rawArgs = "") {
   }
   if (subcommand === "subrun") {
     return parsePeerSubrunCommand(parsed, flags, positionals);
+  }
+  if (subcommand === "spawn") {
+    return parsePeerSpawnCommand(parsed, flags, positionals);
   }
   if (subcommand === "factory") {
     return parsePeerFactoryCommand(parsed, flags, positionals);
@@ -358,6 +361,33 @@ function parsePeerDoCommand(parsed, flags, positionals) {
     gates: listFlag(flags.gate || flags.gates),
     lanes: listFlag(flags.lane || flags.lanes),
   };
+}
+
+function parsePeerSpawnCommand(parsed, flags, positionals) {
+  const knownActions = new Set(["start", "status", "list", "stop"]);
+  const first = positionals[0];
+  const spawnAction = knownActions.has(first) ? first : "start";
+  const peerTokens = knownActions.has(first) ? positionals.slice(1) : positionals;
+  const peerIds = listFlag(flags.peer || flags.peers || peerTokens.join(","));
+  return stripUndefined({
+    ...parsed,
+    spawnAction,
+    peerIds,
+    count: positiveIntegerFlag(flags.count),
+    prefix: stringFlag(flags.prefix, undefined),
+    role: stringFlag(flags.role, undefined),
+    domain: stringFlag(flags.domain, undefined),
+    persona: stringFlag(flags.persona, undefined),
+    subagents: flags.subagents === undefined ? undefined : flagEnabled(flags.subagents),
+    subagentProvider: stringFlag(flags.subagentProvider || flags.subagentsProvider, undefined),
+    command: stringFlag(flags.command || flags.cmd, undefined),
+    model: stringFlag(flags.model, undefined),
+    providerName: stringFlag(flags.provider, undefined),
+    thinking: stringFlag(flags.thinking, undefined),
+    includeCurrentExtension: flagEnabled(flags.currentExtension || flags.extension),
+    noSession: !flagEnabled(flags.session),
+    detached: flagEnabled(flags.detached),
+  });
 }
 
 function parsePeerSubrunCommand(parsed, flags, positionals) {

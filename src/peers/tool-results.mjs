@@ -541,7 +541,7 @@ function redactEvidenceText(value) {
 
 export function formatPeerList(enabled, peers, warnings = []) {
   if (!enabled) return "Pi-to-Pi peer messaging is disabled. Set experimental.peerMessaging: true in .pi/settings.json or enabled: true in .pi/peers.json.";
-  if (!peers.length) return "Pi-to-Pi peer messaging is enabled, but no peers are configured. Next: start another Pi session with PI_PEER_ID=<peer-id> pi, or edit .pi/peers.json to add a peer, then run /peer list again.";
+  if (!peers.length) return "Pi-to-Pi peer messaging is enabled, but no peers are configured. Next: run /peer setup, run /peer spawn worker2 --role worker, start another Pi session with PI_PEER_ID=<peer-id> pi, or edit .pi/peers.json to add a peer, then run /peer list again.";
   const lines = peers.map(formatPeerListLine);
   lines.push("Next: use /peer send <peer> <prompt> or peer_send with one of the peer ids above.");
   if (warnings.length) lines.push(`warnings: ${warnings.join("; ")}`);

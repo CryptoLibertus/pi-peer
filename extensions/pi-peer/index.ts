@@ -43,9 +43,10 @@ import { appendPrRecord, derivePrShepherdCommands, derivePrShepherdState, format
 import { derivePlanAdversaryReview, formatPlanAdversaryReview, hasMatchingPlanAdversaryObjection, normalizePlanContract, planAdversaryObjectionFingerprint, planAdversaryRunStatus } from "../../src/peers/plan-adversary.mjs";
 import { buildReworkDecisionRun, deriveReworkDecision, formatReworkDecision, reworkRecordTypeForAction } from "../../src/peers/rework.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
-import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
+import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, PEER_SETUP_CHOICES, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
 import { buildPeerCommandCenterState, buildPeerWorkLauncherItems, formatPeerCommandCenter, formatPeerWorkLauncher, routePeerIntent } from "../../src/peers/command-center.mjs";
 import { cancelPeerSubagentRun, completePeerSubagentRun, formatPeerSubagentRunResult, formatPeerSubagentStatus, recordPeerSubagentRunProgress, startPeerSubagentRun } from "../../src/peers/subagents.mjs";
+import { formatPeerProcessResult, listPeerProcesses, startPeerProcesses, stopPeerProcesses } from "../../src/peers/process-spawn.mjs";
 import { derivePeerFactoryMetrics, formatPeerFactoryMetrics } from "../../src/peers/metrics.mjs";
 import { handlePeerHiveCommand, dispatchPeerHiveRunTick, formatDuration, formatHiveDispatchLines, reconcilePeerControlState, resolveHiveRunPeers, resumePersistedHiveRuns, schedulePeerHiveRun, defaultHiveRunIntervalMs } from "../../src/peers/extension-hive.mjs";
 import { beginPeerSendGoalLink, buildFanoutPrompt, duplicatePeerSendToolResult, formatDuplicatePeerSend, inferFanoutClaimMode, inferFanoutWorkLane, recordPeerSendGoalDispatch, recordPeerSendGoalFailure, trackPeerSendGoalCompletion, withPeerGoalInstructions, withPeerIsolationInstructions } from "../../src/peers/extension-goal-linking.mjs";
@@ -95,6 +96,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (_event, ctx = {}) => {
     const runtime = await runtimeFor(pi, ctx.cwd);
+    await stopPeerProcesses(ctx.cwd || process.cwd(), {}).catch(() => undefined);
     runtime.__peerIdleWatcher?.stop?.();
     runtime.__peerGoalBoardWatcher?.close?.();
     runtime.__peerGoalBoardWatcher = undefined;
@@ -103,8 +105,8 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("peer", {
-    description: "Pi-to-Pi peers: setup, center, work, do, subrun, org, doctor, status, list, send, get, await, progress, goal, hive, self-improve, factory, metrics",
-    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "work", "init", "setup", "do", "mission", "accomplish", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
+    description: "Pi-to-Pi peers: setup, center, work, do, subrun, spawn, org, doctor, status, list, send, get, await, progress, goal, hive, self-improve, factory, metrics",
+    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "work", "init", "setup", "do", "mission", "accomplish", "subrun", "spawn", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (rawArgs, ctx) => {
@@ -399,6 +401,71 @@ async function showPeerWorkLauncher(pi: ExtensionAPI, ctx: any, state: any) {
   return sendPeerMessage(pi, `Prepared peer work command in the editor:\n${selected.command}`);
 }
 
+async function runInteractivePeerSetup(pi: ExtensionAPI, ctx: any, runtime: any, refresh: () => Promise<void>) {
+  const root = ctx.cwd || process.cwd();
+  const setupSession = await loadPeerSetupSession(root);
+  const choiceLabelByKey = new Map(Object.entries(PEER_SETUP_CHOICES).map(([key, choice]: any, index) => [`${index + 1}. ${choice.label}`, key]));
+  const selectedLabel = await ctx.ui.select("Peer setup — what should this session do?", [...choiceLabelByKey.keys()]);
+  const setupChoice = choiceLabelByKey.get(selectedLabel);
+  if (!setupChoice) return "Peer setup cancelled.";
+
+  const inspectOnly = PEER_SETUP_CHOICES[setupChoice]?.inspectOnly === true;
+  const existingPeerId = setupSession.peerId || stableRuntimePeerId(runtime);
+  let peerId: string | undefined;
+  if (!inspectOnly) {
+    const peerIdInput = await ctx.ui.editor("Local peer id for this Pi session:", existingPeerId || "planner");
+    peerId = cleanWizardText(peerIdInput) || existingPeerId;
+    if (!peerId) return "Peer setup cancelled: no peer id provided.";
+  }
+
+  const result = await applyPeerSetupChoice(root, { choice: setupChoice, peerId, runtime });
+  await resetRuntimeFor(ctx.cwd);
+  const restartedRuntime = await runtimeFor(pi, ctx.cwd);
+  if (restartedRuntime.enabled) await restartedRuntime.start(ctx);
+  await refresh();
+
+  let spawnResult: any;
+  if (!result.inspectOnly) {
+    const spawnChoice = await ctx.ui.select("Spawn peer workers now?", [
+      "Yes — spawn worker2,worker3",
+      "Yes — choose peer ids",
+      "No — I will add/spawn peers later",
+    ]);
+    if (spawnChoice?.startsWith("Yes")) {
+      const peerIdsText = spawnChoice.includes("choose")
+        ? await ctx.ui.editor("Peer ids to spawn (comma-separated):", "worker2,worker3")
+        : "worker2,worker3";
+      const peerIds = String(peerIdsText || "").split(",").map((item) => item.trim()).filter(Boolean);
+      if (peerIds.length) {
+        spawnResult = await startPeerProcesses(root, {
+          peerIds,
+          role: "worker",
+          domain: "implementation",
+          subagents: result.canSpawnSubagents === true,
+          includeCurrentExtension: true,
+        }, { runtimePeerId: restartedRuntime.localPeerId || restartedRuntime.summary?.localPeerId || result.peerId || "unknown" });
+        if (restartedRuntime.enabled) await restartedRuntime.refreshLocalPeers();
+        await refresh();
+      }
+    }
+  }
+
+  const lines = [formatPeerSetupResult(result)];
+  if (spawnResult) lines.push("", formatPeerProcessResult(spawnResult), "", "Next: /peer reconnect, then /peer list or /peer center.");
+  else if (!result.inspectOnly) lines.push("", "No peers spawned. Next: /peer spawn worker2,worker3 --role worker --subagents, or /peer center.");
+  return lines.join("\n");
+}
+
+function stableRuntimePeerId(runtime: any) {
+  const source = String(runtime?.summary?.localPeerIdSource || runtime?.config?.localPeerIdSource || "").toLowerCase();
+  if (!source || source === "generated") return undefined;
+  return runtime?.localPeerId || runtime?.summary?.localPeerId;
+}
+
+function cleanWizardText(value: any) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, refresh: () => Promise<void>) {
   const parsed = parsePeerCommand(rawArgs);
   if (parsed.error) return sendPeerMessage(pi, formatPeerCommandError(parsed.error));
@@ -409,6 +476,10 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       const root = ctx.cwd || process.cwd();
       const runtime = await runtimeFor(pi, ctx.cwd);
       if (parsed.setupAction === "show") {
+        if (ctx?.hasUI && ctx.ui?.select && ctx.ui?.editor) {
+          const text = await runInteractivePeerSetup(pi, ctx, runtime, refresh);
+          return sendPeerMessage(pi, text);
+        }
         return sendPeerMessage(pi, formatPeerSetupPrompt());
       }
       if (parsed.setupAction === "reset" || parsed.setupAction === "done") {
@@ -441,7 +512,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       const runtime = await runtimeFor(pi, ctx.cwd);
       if (runtime.enabled) await runtime.start(ctx);
       await refresh();
-      const suffix = parsed.subcommand === "setup" ? "\n\nNext: start another Pi session with PI_PEER_ID=<peer-id> pi, then run /peer doctor or /peer list." : "";
+      const suffix = parsed.subcommand === "setup" ? "\n\nNext: run /peer setup, run /peer spawn worker2 --role worker, or start another Pi session with PI_PEER_ID=<peer-id> pi, then run /peer doctor or /peer list." : "";
       return sendPeerMessage(pi, `${formatPeerInitResult(result)}${suffix}`);
     }
 
@@ -499,6 +570,19 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       if (!result) throw new Error(`Unknown peer subrun action '${parsed.subrunAction}'`);
       await refresh();
       return sendPeerMessage(pi, formatPeerSubagentRunResult(result));
+    }
+    if (parsed.subcommand === "spawn") {
+      const root = ctx.cwd || process.cwd();
+      const runtimePeerId = runtime.localPeerId || runtime.summary?.localPeerId || "unknown";
+      if (!["status", "list", "stop"].includes(parsed.spawnAction)) ensureEnabled(runtime);
+      const result = parsed.spawnAction === "status" || parsed.spawnAction === "list"
+        ? await listPeerProcesses(root, parsed)
+        : parsed.spawnAction === "stop"
+          ? await stopPeerProcesses(root, parsed)
+          : await startPeerProcesses(root, parsed, { runtimePeerId });
+      if (runtime.enabled) await runtime.refreshLocalPeers();
+      await refresh();
+      return sendPeerMessage(pi, formatPeerProcessResult(result));
     }
     if (parsed.subcommand === "context") {
       if (parsed.contextAction) {

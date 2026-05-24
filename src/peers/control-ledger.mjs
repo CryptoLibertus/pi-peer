@@ -300,6 +300,7 @@ function normalizePeerControlRecord(record = {}) {
     subrunId: cleanText(record.subrunId || record.runId),
     conversationId: cleanText(record.conversationId),
     peerId: cleanText(record.peerId),
+    pid: positiveNumber(record.pid),
     workKey: cleanText(record.workKey),
     summary: cleanText(record.summary),
     metadata: plainObject(record.metadata) ? record.metadata : undefined,
