@@ -68,3 +68,18 @@ test("eval manifests load defaults for missing files and reject corrupt json cle
     await assert.rejects(loadEvalManifests(root), /corrupt peer eval manifest context: /);
   });
 });
+
+test("eval manifest loader rejects structurally invalid explicit manifests", async (t) => {
+  await withRoot(t, async (root) => {
+    await initEvalManifests(root);
+
+    await writeFile(join(root, CONTEXT_EVALS_FILE), "{}\n", "utf8");
+    await assert.rejects(loadEvalManifests(root), /corrupt peer eval manifest context: invalid structure/);
+
+    await writeFile(join(root, CONTEXT_EVALS_FILE), `${JSON.stringify({ version: 1, suite: "context", evals: "bad" })}\n`, "utf8");
+    await assert.rejects(loadEvalManifests(root), /corrupt peer eval manifest context: invalid structure/);
+
+    await writeFile(join(root, CONTEXT_EVALS_FILE), `${JSON.stringify({ version: 1, suite: "context", evals: [{ label: "Missing id" }] })}\n`, "utf8");
+    await assert.rejects(loadEvalManifests(root), /corrupt peer eval manifest context: invalid structure/);
+  });
+});

@@ -77,6 +77,7 @@ export async function loadEvalManifests(root) {
       manifests[name] = normalizeEvalManifest(JSON.parse(text), name);
     } catch (error) {
       if (error instanceof SyntaxError) throw new Error(`corrupt peer eval manifest ${name}: ${error.message}`);
+      if (error instanceof TypeError) throw new Error(`corrupt peer eval manifest ${name}: invalid structure`);
       throw error;
     }
   }
@@ -111,11 +112,16 @@ export function formatEvalSuiteSummary(summary = {}) {
 }
 
 function normalizeEvalManifest(manifest, name) {
-  const source = plainObject(manifest) ? manifest : DEFAULT_EVAL_MANIFESTS[name];
-  const evals = Array.isArray(source.evals) ? source.evals.map(normalizeEvalDefinition).filter((item) => item.id) : [];
+  if (!plainObject(manifest)) throw new TypeError("invalid eval manifest structure");
+  if (!Number.isInteger(manifest.version) || manifest.version < 1) throw new TypeError("invalid eval manifest structure");
+  const suite = cleanText(manifest.suite) || name;
+  if (suite !== name) throw new TypeError("invalid eval manifest structure");
+  if (!Array.isArray(manifest.evals) || !manifest.evals.length) throw new TypeError("invalid eval manifest structure");
+  const evals = manifest.evals.map(normalizeEvalDefinition);
+  if (!evals.length || evals.some((item) => !item.id)) throw new TypeError("invalid eval manifest structure");
   return {
-    version: Number.isInteger(source.version) ? source.version : 1,
-    suite: cleanText(source.suite) || name,
+    version: manifest.version,
+    suite,
     evals,
   };
 }
