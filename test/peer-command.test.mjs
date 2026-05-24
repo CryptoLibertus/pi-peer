@@ -217,6 +217,13 @@ test("parses peer factory automation commands", () => {
   assert.match(parsePeerCommand("factory automate forever").error, /Unknown \/peer factory automate action 'forever'/);
   assert.match(parsePeerCommand("factory automate run").error, /run requires <automation-id> --goal <goal-id>/);
   assert.match(parsePeerCommand("factory automate run bug-fixer").error, /run requires <automation-id> --goal <goal-id>/);
+  assert.match(parsePeerCommand("factory automate status extra").error, /status accepts no positional arguments/);
+  assert.match(parsePeerCommand("factory automate init extra").error, /init accepts no positional arguments/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer extra --goal goal_123").error, /run requires exactly <automation-id> --goal <goal-id>/);
+  assert.match(parsePeerCommand("factory automate record pr-reviewer done extra --evidence nope").error, /record requires exactly <automation-id> <done\|blocked\|error> --evidence <text>/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer --goal goal_123 --dry").error, /Unknown \/peer factory automate flag '--dry'/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer --goalId goal_123").error, /Unknown \/peer factory automate flag '--goalId'/);
+  assert.match(parsePeerCommand("factory automate record bug-fixer done --evidence ok --goal goal_123").error, /Unknown \/peer factory automate record flag '--goal'/);
   assert.match(parsePeerCommand("factory automate record bug-fixer queued --evidence nope").error, /record requires <automation-id> <done\|blocked\|error> --evidence <text>/);
   assert.match(parsePeerCommand("factory automate record bug-fixer done").error, /record requires <automation-id> <done\|blocked\|error> --evidence <text>/);
 });
@@ -243,6 +250,10 @@ test("parses peer factory pr commands", () => {
   assert.equal(commands.body, "Verification-first control plane.");
   assert.equal(commands.branch, "feature/factory");
   assert.equal(commands.remote, "origin");
+
+  const rawWhitespace = parsePeerCommand("factory pr commands --title title --body body --branch ' feature/factory' --remote ' origin'");
+  assert.equal(rawWhitespace.branch, " feature/factory");
+  assert.equal(rawWhitespace.remote, " origin");
 });
 
 test("parses peer factory optional actions and validation", () => {

@@ -510,28 +510,34 @@ function parsePeerFactoryAutomateCommand(parsed, flags, positionals) {
   const rest = positionals.slice(1);
   const withAction = { ...parsed, automateAction: action };
   if (!["status", "init", "run", "record"].includes(action)) return { ...withAction, error: `Unknown /peer factory automate action '${action}'` };
+  if ((action === "status" || action === "init") && rest.length) return { ...withAction, error: `/peer factory automate ${action} accepts no positional arguments` };
   if (action === "status" || action === "init") return withAction;
   if (action === "run") {
+    if (flags.dry !== undefined) return { ...withAction, error: "Unknown /peer factory automate flag '--dry'" };
+    if (flags.goalId !== undefined) return { ...withAction, error: "Unknown /peer factory automate flag '--goalId'" };
     const automationId = rest[0];
-    const goalId = stringFlag(flags.goal || flags.goalId, undefined);
+    const goalId = stringFlag(flags.goal, undefined);
+    if (rest.length > 1) return { ...withAction, automationId, goalId, error: "/peer factory automate run requires exactly <automation-id> --goal <goal-id>" };
     if (!automationId || !goalId) return { ...withAction, automationId, goalId, error: "/peer factory automate run requires <automation-id> --goal <goal-id>" };
     return stripUndefined({
       ...withAction,
       automationId,
       goalId,
-      dryRun: flagEnabled(flags.dryRun || flags.dry),
+      dryRun: flagEnabled(flags.dryRun),
     });
   }
+  if (flags.goal !== undefined) return { ...withAction, error: "Unknown /peer factory automate record flag '--goal'" };
+  if (flags.goalId !== undefined) return { ...withAction, error: "Unknown /peer factory automate record flag '--goalId'" };
   const automationId = rest[0];
   const status = rest[1];
   const evidence = stringFlag(flags.evidence, undefined);
+  if (rest.length > 2) return { ...withAction, automationId, status, evidence, error: "/peer factory automate record requires exactly <automation-id> <done|blocked|error> --evidence <text>" };
   if (!automationId || !["done", "blocked", "error"].includes(status) || !evidence) return { ...withAction, automationId, status, evidence, error: "/peer factory automate record requires <automation-id> <done|blocked|error> --evidence <text>" };
   return stripUndefined({
     ...withAction,
     automationId,
     status,
     evidence,
-    goalId: stringFlag(flags.goal || flags.goalId, undefined),
   });
 }
 
@@ -562,8 +568,8 @@ function parsePeerFactoryPrCommand(parsed, flags, positionals) {
     ...withAction,
     title,
     body,
-    branch: stringFlag(flags.branch, undefined),
-    remote: stringFlag(flags.remote, undefined),
+    branch: rawStringFlag(flags.branch, undefined),
+    remote: rawStringFlag(flags.remote, undefined),
   });
 }
 
@@ -676,6 +682,12 @@ function closurePolicyFromFlags(flags = {}) {
 function stringFlag(value, fallback) {
   if (Array.isArray(value)) return stringFlag(value.at(-1), fallback);
   if (typeof value === "string" && value.trim()) return value.trim();
+  return fallback;
+}
+
+function rawStringFlag(value, fallback) {
+  if (Array.isArray(value)) return rawStringFlag(value.at(-1), fallback);
+  if (typeof value === "string" && value.length) return value;
   return fallback;
 }
 
