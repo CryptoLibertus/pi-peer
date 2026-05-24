@@ -136,6 +136,36 @@ test("repeated gate results keep the latest result per gate and format gates det
   });
 });
 
+test("passing gate retry clears stale blocked status from prior failed gate", async (t) => {
+  await withRoot(t, async (root) => {
+    const run = await startFactoryRun(root, { objective: "Retry failed gate" });
+    await appendFactoryRunRecord(root, { type: "gate-result", runId: run.runId, gateId: "test", status: "fail", evidence: "test failed" });
+    await appendFactoryRunRecord(root, { type: "gate-result", runId: run.runId, gateId: "test", status: "pass", evidence: "test passed" });
+
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+
+    assert.equal(state.runs[0].gateResults.test.status, "pass");
+    assert.equal(state.runs[0].status, "running");
+    assert.equal(state.activeRuns.length, 1);
+    assert.equal(state.completedRuns.length, 0);
+  });
+});
+
+test("error attempt completion is terminal and inactive", async (t) => {
+  await withRoot(t, async (root) => {
+    const run = await startFactoryRun(root, { objective: "Error attempt" });
+    await appendFactoryRunRecord(root, { type: "attempt-started", runId: run.runId, attempt: 1, peerId: "worker-a" });
+    await appendFactoryRunRecord(root, { type: "attempt-completed", runId: run.runId, attempt: 1, status: "error", evidence: "provider crashed" });
+
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+
+    assert.equal(state.runs[0].status, "error");
+    assert.equal(state.runs[0].attempts[0].status, "error");
+    assert.equal(state.activeRuns.length, 0);
+    assert.equal(state.completedRuns.length, 1);
+  });
+});
+
 test("one rework cycle is counted once when requested and started are both logged", async (t) => {
   await withRoot(t, async (root) => {
     const run = await startFactoryRun(root, { objective: "Rework once" });

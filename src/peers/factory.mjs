@@ -23,7 +23,7 @@ const DEFAULT_FACTORY_REWORK_POLICY = Object.freeze({
   promotionRequires: ["required gates pass", "terminal verified status", "ledger evidence"],
 });
 
-const TERMINAL_RUN_STATUSES = new Set(["verified", "completed", "failed", "blocked", "cancelled"]);
+const TERMINAL_RUN_STATUSES = new Set(["verified", "completed", "failed", "error", "blocked", "cancelled"]);
 const FAILED_STATUSES = new Set(["fail", "failed", "error", "blocked"]);
 
 export async function initFactory(root, options = {}) {
@@ -139,6 +139,7 @@ export function deriveFactoryState(records = []) {
       reworkIds: new Set(),
       reworkCount: 0,
       status: "unknown",
+      baseStatus: "unknown",
       createdAt: record.at,
     };
     applyFactoryRecord(run, record);
@@ -200,35 +201,41 @@ function applyFactoryRecord(run, record) {
     run.gates = record.gates || run.gates || [];
     run.source = record.source || run.source;
     run.status = normalizeRunStatus(record.status) || "running";
+    run.baseStatus = run.status;
   } else if (record.type === "attempt-started") {
     const attempt = positiveInteger(record.attempt) || run.attempts.length + 1;
     upsertAttempt(run, { attempt, peerId: record.peerId, status: "running", startedAt: record.at, recordId: record.id });
     run.status = "running";
+    run.baseStatus = "running";
   } else if (record.type === "attempt-completed") {
     const attempt = positiveInteger(record.attempt) || run.attempts.length || 1;
     const status = normalizeRunStatus(record.status) || "completed";
     upsertAttempt(run, { attempt, peerId: record.peerId, status, completedAt: record.at, recordId: record.id });
     if (FAILED_STATUSES.has(status)) {
       run.status = status;
+      run.baseStatus = status;
       run.failures.push(failureFromRecord(record));
     }
   } else if (record.type === "gate-result") {
     const gateId = cleanText(record.gateId);
     if (gateId) run.gateResults[gateId] = stripEmpty({ gateId, status: normalizeGateStatus(record.status), evidence: record.evidence, at: record.at, recordId: record.id });
+    run.status = statusFromLatestGateResults(run) || run.baseStatus || run.status;
     if (FAILED_STATUSES.has(normalizeGateStatus(record.status))) {
       run.failures.push(failureFromRecord(record));
-      run.status = "blocked";
     }
   } else if (record.type === "rework-requested" || record.type === "rework-started") {
     if (shouldCountReworkCycle(run, record)) run.reworkCount = (run.reworkCount || 0) + 1;
     run.status = "rework";
+    run.baseStatus = "rework";
   } else if (record.type === "run-completed") {
     const status = normalizeRunStatus(record.status) || "completed";
     run.status = status;
+    run.baseStatus = status;
     run.completedAt = record.at;
     if (FAILED_STATUSES.has(status)) run.failures.push(failureFromRecord(record));
   } else if (record.status) {
     run.status = normalizeRunStatus(record.status) || run.status;
+    run.baseStatus = run.status;
   }
 }
 
@@ -277,8 +284,14 @@ function shouldCountReworkCycle(run, record) {
 }
 
 function finalizeFactoryRun(run) {
-  const { reworkIds, ...publicRun } = run;
+  const status = statusFromLatestGateResults(run) || run.baseStatus || run.status;
+  const { reworkIds, baseStatus, ...publicRun } = { ...run, status };
   return publicRun;
+}
+
+function statusFromLatestGateResults(run) {
+  const results = Object.values(plainObject(run.gateResults) ? run.gateResults : {});
+  return results.some((result) => FAILED_STATUSES.has(cleanText(result?.status).toLowerCase())) ? "blocked" : "";
 }
 
 function failureFromRecord(record) {
