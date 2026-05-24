@@ -79,15 +79,15 @@ export function derivePeerCommandCenterRecommendations(state = {}) {
   if (primary) commands.push(primary);
   if (state.factoryError) commands.push(recommend("/peer factory status", "inspect factory ledger error"));
   if (state.contextError) commands.push(recommend("/peer context status", "inspect context lifecycle error"));
-  if (failedRun) commands.push(recommend(`/peer do rework ${commandArg(failedRun.runId)}`, "rework failed factory gates"));
+  if (failedRun) commands.push(reworkRecommendation(failedRun.runId));
   if (array(control.disconnectedTasks).length) commands.push(recommend("/peer reconnect", "resume disconnected peer tasks"));
-  if (goal && array(goal.staleClaims).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "coordinate stale claims"));
+  if (goal && array(goal.staleClaims).length) commands.push(goalIntentRecommendation("coordinate", goal.id, "coordinate stale claims"));
   if (goal && array(goal.unresolvedTaskHandoffs).length) commands.push(recommend("/peer do resolve-handoffs", "resolve peer handoffs"));
-  if (goal && array(goal.blockingObjections).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "clear blockers"));
-  if (goal && array(goal.failedVotes).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "resolve failed votes"));
-  if (goal && !hasPlanReview(goal, state)) commands.push(recommend(`/peer do plan ${goal.id}`, "run adversarial plan review"));
-  if (goal && shouldRecommendVerification(goal, state)) commands.push(recommend(`/peer do verify ${goal.id}`, "verify current goal"));
-  if (goal && shouldRecommendReview(goal)) commands.push(recommend(`/peer do review ${goal.id}`, "collect current review"));
+  if (goal && array(goal.blockingObjections).length) commands.push(goalIntentRecommendation("coordinate", goal.id, "clear blockers"));
+  if (goal && array(goal.failedVotes).length) commands.push(goalIntentRecommendation("coordinate", goal.id, "resolve failed votes"));
+  if (goal && !hasPlanReview(goal, state)) commands.push(goalIntentRecommendation("plan", goal.id, "run adversarial plan review"));
+  if (goal && shouldRecommendVerification(goal, state)) commands.push(goalIntentRecommendation("verify", goal.id, "verify current goal"));
+  if (goal && shouldRecommendReview(goal)) commands.push(goalIntentRecommendation("review", goal.id, "collect current review"));
   if (array(control.activeSubruns).length) commands.push(recommend("/peer subrun status", "check active subruns"));
   if (hasRepeatedContextFailures(state)) commands.push(recommend("/peer context retro", "review repeated context eval failures"));
   if (state.setup?.exists === false) commands.push(recommend("/peer setup", "configure peer command center"));
@@ -98,9 +98,9 @@ export function derivePeerCommandCenterRecommendations(state = {}) {
 
 function primaryPeerCommandCenterRecommendation(state, goal, control, failedRun) {
   if (state.setup?.exists === false) return recommend("/peer setup", "configure peer command center");
-  if (failedRun) return recommend(`/peer do rework ${commandArg(failedRun.runId)}`, "rework failed factory gates");
-  if (goal && !hasPlanReview(goal, state)) return recommend(`/peer do plan ${goal.id}`, "run adversarial plan review");
-  if (goal && shouldRecommendVerification(goal, state)) return recommend(`/peer do verify ${goal.id}`, "verify current goal");
+  if (failedRun) return reworkRecommendation(failedRun.runId);
+  if (goal && !hasPlanReview(goal, state)) return goalIntentRecommendation("plan", goal.id, "run adversarial plan review");
+  if (goal && shouldRecommendVerification(goal, state)) return goalIntentRecommendation("verify", goal.id, "verify current goal");
   if (array(control.activeSubruns).length) return recommend("/peer subrun status", "check active subruns");
   if (!goal) return recommend(`/peer do start goal ${shellQuote(state.objective || "new peer goal")}`, "start a peer goal");
   return recommend("/peer do metrics", "inspect peer factory metrics");
@@ -547,6 +547,19 @@ function number(value) {
 
 function recommend(command, reason) {
   return { command, reason };
+}
+
+function goalIntentRecommendation(intent, goalId, reason) {
+  if (isFlagLike(goalId)) {
+    const objective = `${intent} goal ${goalId || "<goal-id>"}`;
+    return recommend(`/peer do start goal ${shellQuote(objective)}`, `${reason}; goal id must not start with -- for facade copy/paste`);
+  }
+  return recommend(`/peer do ${intent} ${commandArg(goalId)}`, reason);
+}
+
+function reworkRecommendation(runId) {
+  if (isFlagLike(runId)) return recommend("/peer factory status", "inspect failed run; run id starts with -- and cannot be used in /peer do rework");
+  return recommend(`/peer do rework ${commandArg(runId)}`, "rework failed factory gates");
 }
 
 function dedupeRecommendations(recommendations) {

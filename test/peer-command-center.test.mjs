@@ -97,6 +97,63 @@ test("command center recommends parseable do rework for active factory runs with
 
   const command = derivePeerCommandCenterRecommendations(state)[0].command;
   assert.equal(command, "/peer do rework fac_blocked");
+  const parsed = parsePeerLine(command);
+  assert.equal(parsed.subcommand, "do");
+  assert.equal(parsed.intent, "rework");
+  assert.deepEqual(parsed.intentArgs, ["fac_blocked"]);
+});
+
+test("command center avoids unparseable facade recommendations for flag-like ids", () => {
+  const failedRunState = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    factoryState: {
+      activeRuns: [
+        { runId: "--run", status: "blocked", gateResults: { test: { status: "fail", required: true } } },
+      ],
+    },
+  });
+  const planGoalState = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    currentGoalId: "--goal",
+    goals: [{
+      id: "--goal",
+      objective: "Flag-like id",
+      currentVotes: [],
+      staleClaims: [],
+      unresolvedTaskHandoffs: [],
+      blockingObjections: [],
+      openProposals: [],
+    }],
+  });
+  const verifyGoalState = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    currentGoalId: "--verify",
+    goals: [{
+      id: "--verify",
+      objective: "Flag-like verify id",
+      readyToClose: true,
+      currentVotes: [{ verdict: "pass" }],
+      factoryRecords: [{ type: "plan-review", goalId: "--verify" }],
+      staleClaims: [],
+      unresolvedTaskHandoffs: [],
+      blockingObjections: [],
+      openProposals: [],
+    }],
+  });
+
+  const commands = [
+    ...derivePeerCommandCenterRecommendations(failedRunState).map((item) => item.command),
+    ...derivePeerCommandCenterRecommendations(planGoalState).map((item) => item.command),
+    ...derivePeerCommandCenterRecommendations(verifyGoalState).map((item) => item.command),
+  ];
+
+  assert.equal(commands.includes("/peer do rework --run"), false);
+  assert.equal(commands.includes("/peer do plan --goal"), false);
+  assert.equal(commands.includes("/peer do verify --verify"), false);
+  for (const command of commands) {
+    const parsed = parsePeerLine(command);
+    assert.equal(parsed.error, undefined, command);
+  }
 });
 
 test("command center recommends metrics in stable state with empty factory state", () => {
@@ -191,6 +248,7 @@ test("setup missing is the primary command center recommendation", () => {
 
   assert.equal(recommendations[0].command, "/peer setup");
   assert.equal(recommendations.filter((item) => item.command === "/peer do coordinate goal_123").length, 1);
+  assert.equal(parsePeerLine("/peer do coordinate goal_123").error, undefined);
 });
 
 test("recommendations place blocker coordination after unresolved handoffs when no stale claim duplicates it", () => {
