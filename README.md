@@ -104,13 +104,46 @@ For the primary workflow, start with the guided command center:
 3. Review work
 4. Research
 5. Manage private subagents
-6. Inspect status only
+6. Run factory verification
+7. Improve context
+8. Shepherd PRs
+9. Inspect status only
 
 `/peer center` shows the local role and domain, active peers, goal-board state, subruns, and recommended next commands.
 
 `/peer do <intent>` handles common workflows such as status, review, research, work, resolve-handoffs, and subagents without requiring the full command tree.
 
 Private subagent teams are optional. `/peer subrun start <summary>` records compact local subagent work in `.pi/peer-control-ledger.jsonl`; when `pi-subagents` is missing, the command records a blocked/manual state instead of crashing.
+
+## Verification-first factory workflow
+
+The factory workflow turns peer collaboration into structured, reviewable runs:
+
+1. `/peer setup`
+2. `/peer center`
+3. `/peer do start goal "Objective"`
+4. `/peer do plan <goal-id>`
+5. `/peer do verify <goal-id>`
+6. `/peer do rework <run-id>` when gates fail
+7. `/peer do metrics`
+
+Factory state is stored locally under `.pi/factory/`. It records run starts, attempts, gate results, rework decisions, plan reviews, PR lifecycle records, and metrics snapshots. The default behavior is record-and-recommend; automatic shell execution and PR operations require explicit future opt-in.
+
+Advanced factory and context commands:
+
+```bash
+/peer factory init
+/peer factory status
+/peer factory run
+/peer factory gate
+/peer factory rework
+/peer factory plan-review
+/peer factory metrics
+/peer context patch
+/peer context eval
+/peer factory pr status
+/peer factory automate status
+```
 
 ## Setup and health checks
 

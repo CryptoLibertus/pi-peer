@@ -1,5 +1,9 @@
 # pi-peer agent notes
 
+## Verification-first factory
+
+Use `/peer factory status` and `/peer do metrics` before closing substantial peer work. Failed gates should become `/peer factory rework` records, not blind retries. Repeated failures should become `/peer context patch` proposals with eval evidence.
+
 ## Bounded recursive self-improvement
 
 Use `/peer self-improve` when a user wants this repo to improve the peer system through bounded, reviewable experiments.
