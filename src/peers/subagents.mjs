@@ -335,7 +335,12 @@ async function enrichRequestFromLedger(root, request = {}) {
     childCount: request.childCount ?? existing.childCount,
     doneCount: request.doneCount ?? existing.completedCount,
     blockedCount: request.blockedCount ?? existing.blockedCount,
+    toolsetIds: requestToolsetOverride(request) ? request.toolsetIds : request.toolsetIds || existing.metadata?.toolsetIds,
   };
+}
+
+function requestToolsetOverride(request = {}) {
+  return Boolean(request.toolRegistry || request.toolset || request.toolsetIds);
 }
 
 function completionStatus(request = {}) {
