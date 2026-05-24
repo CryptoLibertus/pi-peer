@@ -506,9 +506,10 @@ function parsePeerFactoryCommand(parsed, flags, positionals) {
 }
 
 function parsePeerFactoryAutomateCommand(parsed, flags, positionals) {
-  const action = positionals[0] || "status";
+  const action = positionals[0];
   const rest = positionals.slice(1);
   const withAction = { ...parsed, automateAction: action };
+  if (!action) return { ...withAction, error: "/peer factory automate requires <status|init|run|record>" };
   if (!["status", "init", "run", "record"].includes(action)) return { ...withAction, error: `Unknown /peer factory automate action '${action}'` };
   const flagError = validatePeerFactoryAutomateFlags(parsed, action);
   if (flagError) return { ...withAction, error: flagError };

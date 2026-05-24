@@ -214,6 +214,7 @@ test("parses peer factory automation commands", () => {
   assert.equal(record.status, "done");
   assert.equal(record.evidence, "review passed");
 
+  assert.match(parsePeerCommand("factory automate").error, /automate requires <status\|init\|run\|record>/);
   assert.match(parsePeerCommand("factory automate forever").error, /Unknown \/peer factory automate action 'forever'/);
   assert.match(parsePeerCommand("factory automate run").error, /run requires <automation-id> --goal <goal-id>/);
   assert.match(parsePeerCommand("factory automate run bug-fixer").error, /run requires <automation-id> --goal <goal-id>/);
