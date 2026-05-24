@@ -99,7 +99,7 @@ For the primary workflow, start with the guided command center:
 
 `/peer setup <choice>` configures the local peer for a common role:
 
-1. Coordinate other peers
+1. Coordinate peers
 2. Implement code
 3. Review work
 4. Research
@@ -127,7 +127,7 @@ The factory workflow turns peer collaboration into structured, reviewable runs:
 6. `/peer do rework <run-id>` when gates fail, then run the printed `/peer factory rework ...` command
 7. `/peer do metrics`, then run the printed `/peer factory metrics` command
 
-Factory state is stored locally under `.pi/factory/`. It records run starts, attempts, gate results, rework decisions, plan reviews, PR lifecycle records, and metrics snapshots. The default behavior is record-and-recommend; automatic shell execution and PR operations require explicit future opt-in.
+Factory state is stored locally under `.pi/factory/`. It records run starts, attempts, gate results, rework decisions, plan reviews, and PR lifecycle records; metrics are derived from those local ledgers when requested. The default behavior is record-and-recommend; automatic shell execution and PR operations require explicit future opt-in.
 
 Advanced factory and context commands:
 
@@ -140,8 +140,8 @@ Advanced factory and context commands:
 /peer factory rework <run-id>
 /peer factory plan-review <goal-id>
 /peer factory metrics
-/peer context patch
-/peer context eval <patch-id> <pass|fail>
+/peer context patch --trigger <trigger> --change <change> --metric <metric> --eval <eval-name> --owner <peer-id> --review-date YYYY-MM-DD
+/peer context eval <patch-id> <pass|fail> --eval <eval-name> --evidence <text>
 /peer factory pr status
 /peer factory automate status
 ```
