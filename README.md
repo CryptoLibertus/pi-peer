@@ -87,6 +87,31 @@ Or coordinate through a goal board:
 /peer scout <goal-id>
 ```
 
+## Simplified command center workflow
+
+For the primary workflow, start with the guided command center:
+
+```bash
+/peer setup
+/peer setup 1
+/peer center
+```
+
+`/peer setup <choice>` configures the local peer for a common role:
+
+1. Coordinate other peers
+2. Implement code
+3. Review work
+4. Research
+5. Manage private subagents
+6. Inspect status only
+
+`/peer center` shows the local role and domain, active peers, goal-board state, subruns, and recommended next commands.
+
+`/peer do <intent>` handles common workflows such as status, review, research, work, resolve-handoffs, and subagents without requiring the full command tree.
+
+Private subagent teams are optional. `/peer subrun start <summary>` records compact local subagent work in `.pi/peer-control-ledger.jsonl`; when `pi-subagents` is missing, the command records a blocked/manual state instead of crashing.
+
 ## Setup and health checks
 
 ```bash
