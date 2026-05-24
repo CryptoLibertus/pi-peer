@@ -76,8 +76,7 @@ export function deriveToolsetForRole(registry, input = {}) {
   const roleNames = rolesForInput(input);
   if (roleNames.length === 0) return [];
   return source.tools.filter((tool) => {
-    const toolRoles = Array.isArray(tool.roles) ? tool.roles.map(cleanKey).filter(Boolean) : [];
-    return roleNames.some((role) => toolRoles.includes(role));
+    return roleNames.some((role) => tool.roles.includes(role));
   });
 }
 
@@ -102,11 +101,27 @@ export function formatToolRegistryStatus(registry = {}) {
 }
 
 function normalizeRegistry(registry = {}) {
-  const tools = Array.isArray(registry.tools) ? registry.tools.filter((tool) => tool && typeof tool === "object") : [];
+  const tools = Array.isArray(registry.tools)
+    ? registry.tools.map(normalizeTool).filter(Boolean)
+    : [];
   return {
     ...registry,
     version: registry.version || DEFAULT_TOOL_REGISTRY.version,
     tools,
+  };
+}
+
+function normalizeTool(tool = {}) {
+  if (!tool || typeof tool !== "object" || typeof tool.id !== "string") return undefined;
+  const id = cleanText(tool.id);
+  if (!id) return undefined;
+  return {
+    ...tool,
+    id,
+    risk: cleanKey(tool.risk),
+    roles: normalizeStringList(tool.roles, cleanKey),
+    permissions: normalizeStringList(tool.permissions, cleanKey),
+    failureModes: normalizeStringList(tool.failureModes, cleanKey),
   };
 }
 
@@ -115,7 +130,7 @@ function rolesForInput(input = {}) {
     input.role,
     input.parentPeerRole,
     input.peerRole,
-    input.domain,
+    input.localRole,
   ];
   return [...new Set(rawRoles.flatMap(roleAliases).filter(Boolean))];
 }
@@ -139,6 +154,11 @@ function errorMessage(error) {
 
 function cleanKey(value) {
   return cleanText(value).toLowerCase();
+}
+
+function normalizeStringList(value, cleaner = cleanText) {
+  const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  return [...new Set(values.map(cleaner).filter(Boolean))];
 }
 
 function cleanText(value) {

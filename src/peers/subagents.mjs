@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger } from "./control-ledger.mjs";
 import { completePeerGoalTask, recordPeerGoalTaskDispatch } from "./goal-board.mjs";
 import { loadPeerOrg } from "./org.mjs";
-import { DEFAULT_TOOL_REGISTRY, deriveToolsetForRole } from "./tool-registry.mjs";
+import { DEFAULT_TOOL_REGISTRY, deriveToolsetForRole, loadToolRegistry } from "./tool-registry.mjs";
 
 export const PEER_SUBAGENT_LEDGER_KIND = "subrun";
 
@@ -31,6 +31,7 @@ export function normalizeSubagentRunRequest(input = {}) {
     capabilities: source.capabilities,
     role: cleanKey(source.role),
     parentPeerRole: cleanKey(source.parentPeerRole || source.peerRole),
+    localRole: cleanKey(source.localRole),
     domain: cleanKey(source.domain),
     toolRegistry: source.toolRegistry,
     toolset: source.toolset,
@@ -85,7 +86,7 @@ export async function resolveSubagentProvider(root, input = {}) {
 }
 
 export async function startPeerSubagentRun(root, input = {}) {
-  const request = normalizeSubagentRunRequest(input);
+  const request = await enrichRequestWithToolRegistry(root, normalizeSubagentRunRequest(input));
   const provider = await resolveSubagentProvider(root, input);
   const subrunId = request.subrunId || newSubrunId();
   const common = {
@@ -260,6 +261,19 @@ async function importProviderModule(importModule, providerName) {
   }
 }
 
+async function enrichRequestWithToolRegistry(root, request = {}) {
+  if (!root || request.toolRegistry || !hasRoleLikeInput(request)) return request;
+  try {
+    return { ...request, toolRegistry: await loadToolRegistry(root) };
+  } catch (error) {
+    return {
+      ...request,
+      toolRegistry: DEFAULT_TOOL_REGISTRY,
+      toolRegistryWarning: corruptToolRegistryWarning(error),
+    };
+  }
+}
+
 function subrunMetadata(input = {}) {
   const toolsetIds = deriveSubrunToolsetIds(input);
   return stripEmpty({
@@ -274,16 +288,22 @@ function subrunMetadata(input = {}) {
     workKey: cleanText(input.workKey),
     role: cleanKey(input.role),
     parentPeerRole: cleanKey(input.parentPeerRole),
+    localRole: cleanKey(input.localRole),
     domain: cleanKey(input.domain),
     toolsetIds,
+    toolRegistryWarning: cleanText(input.toolRegistryWarning),
   });
 }
 
 function deriveSubrunToolsetIds(input = {}) {
   const explicit = normalizeToolsetIds(input.toolset || input.toolsetIds);
   if (explicit.length > 0) return explicit;
-  if (!input.role && !input.parentPeerRole && !input.peerRole && !input.domain) return [];
+  if (!hasRoleLikeInput(input)) return [];
   return deriveToolsetForRole(input.toolRegistry || DEFAULT_TOOL_REGISTRY, input).map((tool) => tool.id);
+}
+
+function hasRoleLikeInput(input = {}) {
+  return Boolean(input.role || input.parentPeerRole || input.peerRole || input.localRole);
 }
 
 function subagentEvidence(input = {}) {
@@ -338,6 +358,11 @@ function requiredSubrunId(value) {
 
 function errorMessage(error) {
   return cleanText(error?.message || error) || "unknown error";
+}
+
+function corruptToolRegistryWarning(error) {
+  const message = errorMessage(error);
+  return message.startsWith("corrupt peer tool registry") ? "corrupt peer tool registry" : "peer tool registry unavailable";
 }
 
 function normalizeList(value) {
