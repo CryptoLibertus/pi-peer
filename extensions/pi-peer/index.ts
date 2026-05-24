@@ -26,6 +26,15 @@ import { buildPeerIdleActivationPrompt, createPeerIdleWatcher, derivePeerIdleAct
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcileDisconnectedPeerGoalTasks, reconcilePeerControlLedger } from "../../src/peers/control-ledger.mjs";
 import { formatHiveRunPeerHealthPauseSummary, summarizeHiveRunPeerHealth } from "../../src/peers/hive-supervisor.mjs";
 import { formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
+import {
+  appendFactoryRunRecord,
+  formatFactoryRun,
+  formatFactoryStatus,
+  initFactory,
+  loadFactoryRuns,
+  startFactoryRun,
+  deriveFactoryState,
+} from "../../src/peers/factory.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
 import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
 import { buildPeerCommandCenterState, formatPeerCommandCenter, routePeerIntent } from "../../src/peers/command-center.mjs";
@@ -85,8 +94,8 @@ export default function piPeerExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("peer", {
-    description: "Pi-to-Pi peers: setup, center, do, subrun, org, doctor, status, list, send, get, await, progress, goal, hive, self-improve",
-    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "init", "setup", "do", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
+    description: "Pi-to-Pi peers: setup, center, do, subrun, org, doctor, status, list, send, get, await, progress, goal, hive, self-improve, factory, metrics",
+    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "init", "setup", "do", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (rawArgs, ctx) => {
@@ -458,6 +467,11 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       await refresh();
       return sendPeerMessage(pi, text);
     }
+    if (parsed.subcommand === "factory" || parsed.subcommand === "metrics") {
+      const text = await handlePeerFactoryCommand(parsed, ctx, runtime);
+      await refresh();
+      return sendPeerMessage(pi, text);
+    }
 
     ensureEnabled(runtime);
     if (parsed.subcommand === "progress") {
@@ -689,6 +703,77 @@ async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any)
   }
 
   return formatSelfImproveRunResult(result);
+}
+
+async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
+  const root = ctx?.cwd || process.cwd();
+  const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown";
+  const action = parsed.subcommand === "metrics" ? "metrics" : parsed.factoryAction || "status";
+
+  if (action === "init") {
+    const result = await initFactory(root);
+    return [
+      "# Factory initialized",
+      result.created.length ? `created: ${result.created.join(", ")}` : "created: none",
+      result.skipped.length ? `existing: ${result.skipped.join(", ")}` : "existing: none",
+    ].join("\n");
+  }
+
+  if (action === "run") {
+    const run = await startFactoryRun(root, { ...parsed, peerId });
+    return formatFactoryRun(run);
+  }
+
+  if (action === "gate") {
+    await appendFactoryRunRecord(root, {
+      type: "gate-result",
+      runId: parsed.runId,
+      gateId: parsed.gateId,
+      status: parsed.status,
+      evidence: parsed.evidence,
+      peerId,
+      metadata: {
+        failureType: parsed.failureType,
+      },
+    });
+    return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
+  }
+
+  if (action === "attempt") {
+    await appendFactoryRunRecord(root, {
+      type: parsed.attemptAction === "finish" ? "attempt-completed" : "attempt-started",
+      runId: parsed.runId,
+      attempt: parsed.attempt,
+      peerId: parsed.peerId || peerId,
+      summary: parsed.summary,
+    });
+    return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
+  }
+
+  if (action === "rework") {
+    await appendFactoryRunRecord(root, {
+      type: "rework-requested",
+      runId: parsed.runId,
+      peerId,
+      summary: parsed.reason,
+      metadata: {
+        failureType: parsed.failureType,
+        owner: parsed.owner,
+        reason: parsed.reason,
+      },
+    });
+    return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
+  }
+
+  if (action === "plan-review") {
+    return "Factory plan-review handler will be available after the plan-adversary module lands.";
+  }
+
+  if (action === "status" || action === "metrics") {
+    return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
+  }
+
+  return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
 }
 
 async function handlePeerHiveCommand(parsed: any, ctx: any, runtime: any) {

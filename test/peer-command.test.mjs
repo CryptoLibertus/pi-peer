@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import { formatPeerHelp, parsePeerCommand } from "../src/peers/command.mjs";
+
+const extensionSource = await readFile(new URL("../extensions/pi-peer/index.ts", import.meta.url), "utf8");
 
 test("parses top-level scout alias as read-only goal scout", () => {
   const parsed = parsePeerCommand("scout goal_123 --limit 3 --include-closed");
@@ -185,6 +188,18 @@ test("parses peer factory optional actions and validation", () => {
   assert.match(parsePeerCommand("factory attempt fac_123").error, /attempt requires <run-id> <start\|finish>/);
   assert.match(parsePeerCommand("factory rework").error, /rework requires <run-id>/);
   assert.match(parsePeerCommand("factory plan-review").error, /plan-review requires <goal-id>/);
+});
+
+test("extension wires factory commands without requiring peer runtime transport", () => {
+  assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/factory\.mjs"/);
+  assert.match(extensionSource, /handlePeerFactoryCommand\(parsed, ctx, runtime\)/);
+  assert.match(extensionSource, /parsed\.subcommand === "factory" \|\| parsed\.subcommand === "metrics"/);
+  assert.match(extensionSource, /metadata:\s*\{[^}]*failureType[^}]*owner[^}]*reason/s);
+
+  const factoryBranch = extensionSource.indexOf("handlePeerFactoryCommand(parsed, ctx, runtime)");
+  const firstEnsureEnabled = extensionSource.indexOf("ensureEnabled(runtime);", factoryBranch);
+  assert.ok(factoryBranch >= 0);
+  assert.ok(firstEnsureEnabled > factoryBranch);
 });
 
 test("parses hive and swarm start as safe self-selection goal starters", () => {
