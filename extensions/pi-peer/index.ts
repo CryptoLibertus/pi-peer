@@ -897,8 +897,16 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
 
   if (action === "metrics") {
     const factoryState = deriveFactoryState((await loadFactoryRuns(root)).records);
-    const contextState = deriveContextLifecycleState(await loadContextLifecycle(root).catch(() => ({ patches: [], retros: [], evalResults: [], warnings: [] })));
-    return formatPeerFactoryMetrics(derivePeerFactoryMetrics({ factoryState, contextState }));
+    let contextState: any = { patches: [], retros: [], evalResults: [], warnings: [] };
+    let contextError: string | undefined;
+    try {
+      contextState = deriveContextLifecycleState(await loadContextLifecycle(root));
+    } catch (error: any) {
+      contextError = error?.message || String(error);
+      contextState = { patches: [], retros: [], evalResults: [], warnings: [], error: contextError };
+    }
+    const text = formatPeerFactoryMetrics(derivePeerFactoryMetrics({ factoryState, contextState }));
+    return contextError ? `${text}\nContext warning: ${contextError}` : text;
   }
 
   return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
