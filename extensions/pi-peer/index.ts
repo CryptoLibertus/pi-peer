@@ -27,7 +27,7 @@ import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger,
 import { formatHiveRunPeerHealthPauseSummary, summarizeHiveRunPeerHealth } from "../../src/peers/hive-supervisor.mjs";
 import { formatSelfImproveInitResult, formatSelfImproveRunResult, formatSelfImproveStatus, initSelfImprove, loadSelfImproveState, startSelfImproveRun } from "../../src/peers/self-improve.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
-import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, resetPeerSetupSession } from "../../src/peers/setup-wizard.mjs";
+import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
 import { buildPeerCommandCenterState, formatPeerCommandCenter, routePeerIntent } from "../../src/peers/command-center.mjs";
 import { cancelPeerSubagentRun, completePeerSubagentRun, formatPeerSubagentRunResult, formatPeerSubagentStatus, recordPeerSubagentRunProgress, startPeerSubagentRun } from "../../src/peers/subagents.mjs";
 
@@ -343,7 +343,18 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
         await refresh();
         return sendPeerMessage(pi, "Peer setup wizard state reset.\n\nNext: /peer setup");
       }
-      const result = await applyPeerSetupChoice(root, { choice: parsed.setupChoice, peerId: parsed.localPeerId, runtime });
+      if (parsed.setupAction === "id") {
+        await savePeerSetupSession(root, {
+          version: 1,
+          peerId: parsed.localPeerId,
+          updatedAt: new Date().toISOString(),
+        });
+        await refresh();
+        return sendPeerMessage(pi, `Peer setup id recorded: ${parsed.localPeerId}\n\nNext: /peer setup <choice>`);
+      }
+      if (!parsed.setupChoice) return sendPeerMessage(pi, formatPeerCommandError("Unknown peer setup choice"));
+      const setupSession = await loadPeerSetupSession(root);
+      const result = await applyPeerSetupChoice(root, { choice: parsed.setupChoice, peerId: parsed.localPeerId || setupSession.peerId, runtime });
       await resetRuntimeFor(ctx.cwd);
       const restartedRuntime = await runtimeFor(pi, ctx.cwd);
       if (restartedRuntime.enabled) await restartedRuntime.start(ctx);
@@ -569,11 +580,12 @@ async function collectPeerCommandCenterInput(ctx: any, runtime: any) {
   const root = ctx?.cwd || process.cwd();
   const runtimeStatus = await collectPeerRuntimeStatus(runtime);
   const orgState = await loadPeerOrg(root, { allowMissing: true });
+  const setupSession = await loadPeerSetupSession(root);
   const board = await loadPeerGoalBoard(root).catch(() => ({ goals: {}, currentGoalId: undefined }));
   const goals = Object.values(board.goals || {}).map((goal: any) => deriveGoalState(goal));
   const loadedControl = await loadPeerControlLedger(root);
   const controlState = derivePeerControlState(loadedControl.records);
-  return { runtimeStatus, orgState, goals, currentGoalId: board.currentGoalId, controlState };
+  return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState };
 }
 
 async function handlePeerOrgCommand(parsed: any, ctx: any, runtime: any) {
@@ -1325,8 +1337,12 @@ async function runtimeFor(pi: ExtensionAPI, cwd?: string) {
 async function resetRuntimeFor(cwd?: string) {
   const key = cwd || process.cwd();
   const pending = runtimeByCwd.get(key);
-  runtimeByCwd.delete(key);
   const runtime = await pending?.catch(() => undefined);
+  runtime?.__peerGoalBoardWatcher?.close?.();
+  if (runtime) runtime.__peerGoalBoardWatcher = undefined;
+  if (runtime?.__peerIdleOfferTimer) clearTimeout(runtime.__peerIdleOfferTimer);
+  if (runtime) runtime.__peerIdleOfferTimer = undefined;
+  runtimeByCwd.delete(key);
   runtime?.__peerIdleWatcher?.stop?.();
   await runtime?.dispose?.();
 }

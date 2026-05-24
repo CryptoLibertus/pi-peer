@@ -147,6 +147,18 @@ test("recommendations put no-goal starter after active subruns and missing setup
   ]);
 });
 
+test("setup session suppresses setup recommendation even without org or runtime config", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true, inspectOnly: true },
+    objective: "Ship command center",
+    goals: [],
+  });
+
+  assert.deepEqual(derivePeerCommandCenterRecommendations(state).map((item) => item.command), [
+    "/peer do start goal \"Ship command center\"",
+  ]);
+});
+
 test("currentGoalId selects the current goal over older blocked goals", () => {
   const state = buildPeerCommandCenterState({
     currentGoalId: "goal_current",

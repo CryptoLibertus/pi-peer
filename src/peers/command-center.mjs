@@ -5,7 +5,7 @@ export function buildPeerCommandCenterState(input = {}) {
   const runtimeStatus = input.runtimeStatus || {};
   const orgState = input.orgState || {};
   const orgData = normalizeOrgData(orgState);
-  const setup = input.setup || {};
+  const setup = input.setup || input.setupSession || {};
   const controlState = input.controlState || {};
   const peers = Array.isArray(runtimeStatus.peers) ? runtimeStatus.peers : [];
   const activePeers = peers.filter((peer) => peer.status === "active");
