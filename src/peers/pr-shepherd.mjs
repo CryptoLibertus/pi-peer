@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 export const PR_SHEPHERD_FILE = ".pi/factory/pr-shepherd.jsonl";
 
 const VALID_ACTIONS = new Set(["created", "ci-failed", "ci-passed", "merged", "post-merge-verified", "stale", "closed"]);
+const TERMINAL_ACTIONS = new Set(["closed", "merged", "post-merge-verified"]);
+const CI_ACTIONS = new Set(["ci-failed", "ci-passed"]);
 
 export function normalizePrRecord(input = {}) {
   const action = cleanText(input.action) || "created";
@@ -66,8 +68,8 @@ export async function loadPrRecords(root) {
 
 export function derivePrShepherdState(records = []) {
   const groupsByKey = new Map();
-  for (const item of Array.isArray(records) ? records : []) {
-    const record = normalizePrRecord(item);
+  for (const [index, item] of (Array.isArray(records) ? records : []).entries()) {
+    const record = { ...normalizePrRecord(item), sequence: index };
     const keys = prGroupKeys(record);
     const existingGroups = [...new Set(keys.map((candidate) => groupsByKey.get(candidate)).filter(Boolean))];
     const key = keys.find((candidate) => groupsByKey.has(candidate)) || keys[0];
@@ -111,8 +113,8 @@ export function derivePrShepherdState(records = []) {
 }
 
 export function derivePrShepherdCommands(input = {}) {
-  const remote = cleanText(input.remote) || "origin";
-  const branch = cleanText(input.branch) || "<branch>";
+  const remote = validateGitCommandValue(cleanText(input.remote) || "origin", "remote");
+  const branch = validateGitCommandValue(cleanText(input.branch) || "HEAD", "branch");
   const title = cleanText(input.title) || "<title>";
   const body = cleanText(input.body) || "<body>";
   return [
@@ -139,13 +141,30 @@ export function formatPrShepherdStatus(state = {}) {
 }
 
 function finalizePrGroup(group) {
-  const actions = new Set(group.records.map((record) => record.action));
+  const orderedRecords = group.records.slice().sort(sortBySequence);
+  const actions = new Set(orderedRecords.map((record) => record.action));
+  const latestTerminal = latestMatchingRecord(orderedRecords, (record) => TERMINAL_ACTIONS.has(record.action));
+  const latestCi = latestMatchingRecord(orderedRecords, (record) => CI_ACTIONS.has(record.action));
+  const latestStale = latestMatchingRecord(orderedRecords, (record) => record.action === "stale");
+  const hasOpenEvent = orderedRecords.some((record) => record.action === "created" || record.action === "stale" || CI_ACTIONS.has(record.action));
+  const status = latestTerminal ? statusFromTerminalAction(latestTerminal.action) : hasOpenEvent ? "open" : group.status || "unknown";
+  const ciStatus = latestCi ? statusFromCiAction(latestCi.action) : undefined;
+  const isTerminal = Boolean(latestTerminal);
+  const isOpen = !isTerminal && status === "open";
+  const stale = Boolean(!isTerminal && latestStale);
+  const displayStatus = formatDisplayStatus({ status, ciStatus, stale });
   const { aliasKeys, ...publicGroup } = group;
   return {
     ...publicGroup,
+    status,
+    displayStatus,
+    isOpen,
+    isTerminal,
+    ciStatus,
+    stale,
     merged: actions.has("merged"),
-    postMergeVerified: hasPostMergeVerificationAfterMerge(group.records),
-    records: group.records.length,
+    postMergeVerified: hasPostMergeVerificationAfterMerge(orderedRecords),
+    records: orderedRecords.length,
   };
 }
 
@@ -168,11 +187,11 @@ function mergePrGroup(target, source, groupsByKey) {
 }
 
 function hasPostMergeVerificationAfterMerge(records) {
-  let lastMergedAt = "";
+  let lastMergedSequence = -1;
   for (const record of records) {
-    if (record.action === "merged") lastMergedAt = record.at;
+    if (record.action === "merged") lastMergedSequence = record.sequence ?? -1;
   }
-  return records.some((record) => record.action === "post-merge-verified" && (!lastMergedAt || record.at >= lastMergedAt));
+  return records.some((record) => record.action === "post-merge-verified" && (lastMergedSequence < 0 || (record.sequence ?? -1) > lastMergedSequence));
 }
 
 function prGroupKeys(record) {
@@ -191,6 +210,42 @@ function statusFromAction(action) {
   return action;
 }
 
+function statusFromTerminalAction(action) {
+  if (action === "post-merge-verified") return "verified";
+  return action;
+}
+
+function statusFromCiAction(action) {
+  return action === "ci-passed" ? "passed" : "failed";
+}
+
+function latestMatchingRecord(records, predicate) {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    if (predicate(records[index])) return records[index];
+  }
+  return undefined;
+}
+
+function formatDisplayStatus({ status, ciStatus, stale }) {
+  return [status, stale ? "stale" : undefined, ciStatus ? `ci ${ciStatus}` : undefined].filter(Boolean).join(" · ");
+}
+
+function validateGitCommandValue(value, label) {
+  const text = cleanText(value);
+  if (!text) throw new Error(`unsafe ${label}: empty value`);
+  const unsafe = text.startsWith("-")
+    || text.includes(":")
+    || /\s/.test(text)
+    || /['"`;$(){}[\]<>|&\\]/.test(text)
+    || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(text)
+    || text.includes("..")
+    || text.includes("//")
+    || text.endsWith("/")
+    || text.endsWith(".");
+  if (unsafe) throw new Error(`unsafe ${label}: ${text}`);
+  return text;
+}
+
 function countStatuses(prs) {
   const counts = {};
   for (const pr of prs) counts[pr.status || "unknown"] = (counts[pr.status || "unknown"] || 0) + 1;
@@ -199,6 +254,10 @@ function countStatuses(prs) {
 
 function sortByUpdatedAt(a, b) {
   return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+}
+
+function sortBySequence(a, b) {
+  return (a.sequence ?? 0) - (b.sequence ?? 0);
 }
 
 function shellQuote(value) {
