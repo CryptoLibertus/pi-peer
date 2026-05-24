@@ -2,19 +2,12 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { initGatePolicy } from "./gates.mjs";
+
 export const FACTORY_DIR = ".pi/factory";
 export const FACTORY_RUNS_FILE = `${FACTORY_DIR}/runs.jsonl`;
 export const FACTORY_GATES_FILE = `${FACTORY_DIR}/gates.json`;
 export const FACTORY_REWORK_POLICY_FILE = `${FACTORY_DIR}/rework-policy.json`;
-
-const DEFAULT_FACTORY_GATES = Object.freeze({
-  version: 1,
-  gates: [
-    { id: "test", command: "npm test", required: true },
-    { id: "pack", command: "npm pack --dry-run", required: false },
-    { id: "review", command: "peer review evidence", required: true },
-  ],
-});
 
 const DEFAULT_FACTORY_REWORK_POLICY = Object.freeze({
   version: 1,
@@ -32,14 +25,12 @@ export async function initFactory(root, options = {}) {
   const created = [];
   const skipped = [];
 
-  const gatesPath = join(root, FACTORY_GATES_FILE);
   const reworkPolicyPath = join(root, FACTORY_REWORK_POLICY_FILE);
   const runsPath = join(root, FACTORY_RUNS_FILE);
 
-  if (await shouldWrite(gatesPath, options.overwrite)) {
-    await writeFile(gatesPath, `${JSON.stringify(DEFAULT_FACTORY_GATES, null, 2)}\n`, "utf8");
-    created.push(FACTORY_GATES_FILE);
-  } else skipped.push(FACTORY_GATES_FILE);
+  const gatePolicy = await initGatePolicy(root, { overwrite: options.overwrite });
+  created.push(...gatePolicy.created);
+  skipped.push(...gatePolicy.skipped);
 
   if (await shouldWrite(reworkPolicyPath, options.overwrite)) {
     await writeFile(reworkPolicyPath, `${JSON.stringify(DEFAULT_FACTORY_REWORK_POLICY, null, 2)}\n`, "utf8");
