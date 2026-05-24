@@ -1,6 +1,6 @@
 const VERIFIED_STATUSES = new Set(["verified", "verified-with-risks"]);
 const FAILED_RUN_STATUSES = new Set(["failed", "fail", "error", "blocked", "cancelled"]);
-const ACTIVE_RUN_STATUSES = new Set(["running", "active", "rework", "blocked", "unknown"]);
+const TERMINAL_RUN_STATUSES = new Set(["verified", "verified-with-risks", "completed", "failed", "fail", "error", "blocked", "cancelled", "human-escalation"]);
 const PASS_STATUSES = new Set(["pass", "passed", "verified", "ok"]);
 const FAIL_STATUSES = new Set(["fail", "failed", "error", "blocked"]);
 const ESCALATION_STATUSES = new Set(["human-escalation", "escalated"]);
@@ -12,7 +12,7 @@ export function derivePeerFactoryMetrics(input = {}) {
   const totalRuns = runs.length;
   const verifiedRuns = runs.filter(isVerifiedRun).length;
   const failedRuns = runs.filter(isFailedRun).length;
-  const activeRuns = array(factoryState.activeRuns).length || runs.filter(isActiveRun).length;
+  const activeRuns = Object.hasOwn(factoryState, "activeRuns") ? array(factoryState.activeRuns).length : runs.filter(isActiveRun).length;
   const gateResults = runs.flatMap((run) => Object.values(plainObject(run.gateResults) ? run.gateResults : {}));
   const passingGates = gateResults.filter((result) => PASS_STATUSES.has(cleanText(result?.status))).length;
   const reworkCounts = runs.map((run) => number(run.reworkCount)).filter((value) => value !== undefined);
@@ -66,7 +66,7 @@ function isFailedRun(run) {
 }
 
 function isActiveRun(run) {
-  return ACTIVE_RUN_STATUSES.has(cleanText(run?.status)) && !isVerifiedRun(run);
+  return !TERMINAL_RUN_STATUSES.has(cleanText(run?.status));
 }
 
 function isEscalatedRun(run) {

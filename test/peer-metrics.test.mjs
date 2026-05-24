@@ -27,3 +27,31 @@ test("metrics summarize autonomy, gates, rework, escalation, and context patches
   assert.equal(metrics.contextPatchCount, 1);
   assert.match(formatPeerFactoryMetrics(metrics), /autonomy rate: 50%/i);
 });
+
+test("metrics do not count blocked runs as active when recomputing active runs", () => {
+  const metrics = derivePeerFactoryMetrics({
+    factoryState: {
+      runs: [
+        { runId: "fac_blocked", status: "blocked", gateResults: { test: { status: "fail" } } },
+      ],
+    },
+  });
+
+  assert.equal(metrics.totalRuns, 1);
+  assert.equal(metrics.failedRuns, 1);
+  assert.equal(metrics.activeRuns, 0);
+});
+
+test("metrics treat an empty activeRuns array as authoritative", () => {
+  const metrics = derivePeerFactoryMetrics({
+    factoryState: {
+      runs: [
+        { runId: "fac_running", status: "running" },
+      ],
+      activeRuns: [],
+    },
+  });
+
+  assert.equal(metrics.totalRuns, 1);
+  assert.equal(metrics.activeRuns, 0);
+});

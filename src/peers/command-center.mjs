@@ -16,6 +16,8 @@ export function buildPeerCommandCenterState(input = {}) {
   const factoryState = input.factoryState || {};
   const contextState = input.contextState || {};
   const metrics = input.metrics || derivePeerFactoryMetrics({ factoryState, contextState, goals, controlState });
+  const factoryError = text(input.factoryError || factoryState.error, "");
+  const factoryInitialized = input.factoryInitialized === true || factoryState.initialized === true;
 
   const state = {
     enabled: runtimeStatus.enabled === true,
@@ -55,6 +57,8 @@ export function buildPeerCommandCenterState(input = {}) {
     factoryRecords: array(input.factoryRecords),
     factoryState,
     factoryKnown: Object.hasOwn(input, "factoryState") || Object.hasOwn(input, "factoryRecords"),
+    factoryInitialized,
+    factoryError,
     contextState,
     metrics,
     objective: input.objective || currentGoal?.objective || "new peer goal",
@@ -69,6 +73,7 @@ export function derivePeerCommandCenterRecommendations(state = {}) {
   const control = state.control || {};
   const failedRun = firstFactoryRunNeedingRework(state);
 
+  if (state.factoryError) commands.push(recommend("/peer factory status", "inspect factory ledger error"));
   if (failedRun) commands.push(recommend(`/peer factory rework ${commandArg(failedRun.runId)}`, "rework failed factory gates"));
   if (array(control.disconnectedTasks).length) commands.push(recommend("/peer reconnect", "resume disconnected peer tasks"));
   if (goal && array(goal.staleClaims).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "coordinate stale claims"));
@@ -104,6 +109,7 @@ export function formatPeerCommandCenter(state = {}) {
   }
 
   lines.push(formatFactoryLine(state.metrics));
+  if (state.factoryError) lines.push(`Factory warning: ${state.factoryError}`);
   lines.push(formatGoalLine(currentGoal, state.control));
   lines.push("Recommended:");
   if (recommendations.length) {
@@ -372,7 +378,8 @@ function shouldRecommendReview(goal = {}) {
 }
 
 function firstFactoryRunNeedingRework(state = {}) {
-  const runs = array(state.factoryState?.activeRuns).length ? array(state.factoryState?.activeRuns) : array(state.factoryState?.runs);
+  const factoryState = state.factoryState || {};
+  const runs = Object.hasOwn(factoryState, "activeRuns") ? array(factoryState.activeRuns) : array(factoryState.runs);
   return runs.find((run) => run?.runId && hasFailedGate(run));
 }
 
@@ -383,12 +390,15 @@ function hasFailedGate(run = {}) {
 
 function hasFactoryInitialized(state = {}) {
   if (state.factoryKnown !== true) return true;
+  if (state.factoryError || state.factoryInitialized === true || state.factoryState?.initialized === true) return true;
   return array(state.factoryState?.runs).length > 0 || Number(state.factoryState?.records || 0) > 0 || array(state.factoryRecords).length > 0;
 }
 
 function hasRepeatedContextFailures(state = {}) {
-  const failing = array(state.contextState?.failingEvalResults).length
-    || array(state.contextState?.evalResults).filter((result) => text(result?.status, "").toLowerCase() === "fail").length;
+  const contextState = state.contextState || {};
+  const failing = Object.hasOwn(contextState, "failingEvalResults")
+    ? array(contextState.failingEvalResults).length
+    : array(contextState.evalResults).filter((result) => text(result?.status, "").toLowerCase() === "fail").length;
   return failing >= 2;
 }
 

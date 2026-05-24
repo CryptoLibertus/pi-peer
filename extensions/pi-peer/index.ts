@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { watch } from "node:fs";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -31,6 +32,7 @@ import {
   appendFactoryRunRecord,
   formatFactoryRun,
   formatFactoryStatus,
+  FACTORY_RUNS_FILE,
   initFactory,
   loadFactoryReworkPolicy,
   loadFactoryRuns,
@@ -614,13 +616,32 @@ async function collectPeerCommandCenterInput(ctx: any, runtime: any) {
   const goals = Object.values(board.goals || {}).map((goal: any) => deriveGoalState(goal));
   const loadedControl = await loadPeerControlLedger(root);
   const controlState = derivePeerControlState(loadedControl.records);
-  const factoryRuns = await loadFactoryRuns(root).catch(() => ({ records: [] }));
-  const factoryRecords = factoryRuns.records || [];
-  const factoryState = deriveFactoryState(factoryRecords);
+  const factoryInitialized = await fileExists(join(root, FACTORY_RUNS_FILE));
+  let factoryRecords: any[] = [];
+  let factoryError: string | undefined;
+  let factoryWarnings: any[] = [];
+  try {
+    const factoryRuns = await loadFactoryRuns(root);
+    factoryRecords = factoryRuns.records || [];
+    factoryWarnings = factoryRuns.warnings || [];
+  } catch (error: any) {
+    factoryError = error?.message || String(error);
+  }
+  const factoryState = { ...deriveFactoryState(factoryRecords), initialized: factoryInitialized, error: factoryError, warnings: factoryWarnings };
   const contextLifecycle = await loadContextLifecycle(root).catch(() => ({ patches: [], retros: [], evalResults: [], warnings: [] }));
   const contextState = deriveContextLifecycleState(contextLifecycle);
   const metrics = derivePeerFactoryMetrics({ factoryState, contextState, goals, controlState });
-  return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState, factoryRecords, factoryState, contextState, metrics };
+  return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState, factoryRecords, factoryState, factoryInitialized, factoryError, contextState, metrics };
+}
+
+async function fileExists(path: string) {
+  try {
+    await stat(path);
+    return true;
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 async function handlePeerOrgCommand(parsed: any, ctx: any, runtime: any) {

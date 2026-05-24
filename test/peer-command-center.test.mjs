@@ -108,6 +108,42 @@ test("command center recommends factory init when collected factory state is emp
   assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer factory init");
 });
 
+test("command center does not recommend factory init when empty factory is initialized", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    factoryInitialized: true,
+    factoryState: { initialized: true, records: 0, runs: [], activeRuns: [] },
+  });
+
+  assert.equal(derivePeerCommandCenterRecommendations(state).some((item) => item.command === "/peer factory init"), false);
+});
+
+test("command center surfaces factory ledger errors and recommends inspection instead of init", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    factoryInitialized: true,
+    factoryError: "corrupt factory run ledger record at line 2",
+    factoryState: { initialized: true, records: 0, runs: [], activeRuns: [] },
+  });
+  const recommendations = derivePeerCommandCenterRecommendations(state).map((item) => item.command);
+
+  assert.match(formatPeerCommandCenter(state), /Factory warning: corrupt factory run ledger record at line 2/);
+  assert.equal(recommendations.includes("/peer factory init"), false);
+  assert.equal(recommendations.includes("/peer factory status"), true);
+});
+
+test("command center treats empty failingEvalResults as authoritative for context retro recommendations", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true },
+    contextState: {
+      evalResults: [{ status: "fail" }, { status: "fail" }],
+      failingEvalResults: [],
+    },
+  });
+
+  assert.equal(derivePeerCommandCenterRecommendations(state).some((item) => item.command === "/peer context retro"), false);
+});
+
 test("recommendations follow full priority order and dedupe repeated coordination commands", () => {
   const state = buildPeerCommandCenterState({
     setup: { exists: false },
