@@ -225,6 +225,7 @@ export async function routePeerIntent(root, parsed = {}, context = {}) {
   if (intent === "plan") {
     const goalId = args[0];
     if (!goalId) return { mutated: false, text: "/peer do plan <goal-id>" };
+    if (isFlagLike(goalId)) return { mutated: false, text: "Cannot generate /peer factory plan-review for a goal id that starts with --." };
     return {
       mutated: false,
       text: planReviewCommand(goalId, parsed),
@@ -236,13 +237,14 @@ export async function routePeerIntent(root, parsed = {}, context = {}) {
     if (!goalId) return { mutated: false, text: "/peer do verify <goal-id> [--gate <gate>]" };
     return {
       mutated: false,
-      text: [`/peer factory run ${commandArg(`Verify ${goalId}`)} --goal ${commandArg(goalId)}`, factoryFacadeFlags({ gates: parsed.gates })].filter(Boolean).join(" "),
+      text: [`/peer factory run ${commandArg(`Verify ${goalId}`)} ${flagArg("--goal", goalId)}`, factoryFacadeFlags({ gates: parsed.gates })].filter(Boolean).join(" "),
     };
   }
 
   if (intent === "rework") {
     const runId = args[0];
     if (!runId) return { mutated: false, text: "/peer do rework <run-id>" };
+    if (isFlagLike(runId)) return { mutated: false, text: "Cannot generate /peer factory rework for a run id that starts with --." };
     return { mutated: false, text: `/peer factory rework ${commandArg(runId)}` };
   }
 
@@ -345,9 +347,9 @@ function hasPlanReview(goal, state) {
 
 function planReviewCommand(goalId, parsed) {
   const flags = [
-    ...array(parsed.paths).flatMap((path) => ["--path", commandArg(path)]),
-    ...array(parsed.gates).flatMap((gate) => ["--gate", commandArg(gate)]),
-    ...array(parsed.lanes).flatMap((lane) => ["--lane", commandArg(lane)]),
+    ...array(parsed.paths).map((path) => flagArg("--path", path)),
+    ...array(parsed.gates).map((gate) => flagArg("--gate", gate)),
+    ...array(parsed.lanes).map((lane) => flagArg("--lane", lane)),
   ];
   return ["/peer factory plan-review", commandArg(goalId), ...flags].join(" ");
 }
@@ -368,7 +370,15 @@ function factoryFacadeFlags(parsed = {}) {
     ["--lane", parsed.lanes],
     ["--gate", parsed.gates],
   ];
-  return entries.flatMap(([flag, values]) => array(values).map((value) => `${flag} ${commandArg(value)}`)).join(" ");
+  return entries.flatMap(([flag, values]) => array(values).map((value) => flagArg(flag, value))).join(" ");
+}
+
+function flagArg(flag, value) {
+  return `${flag}=${commandArg(value)}`;
+}
+
+function isFlagLike(value) {
+  return String(value || "").startsWith("--");
 }
 
 function prCommandSuggestion(runId) {

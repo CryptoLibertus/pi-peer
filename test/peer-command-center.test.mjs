@@ -8,6 +8,10 @@ import { parsePeerCommand } from "../src/peers/command.mjs";
 import { buildPeerCommandCenterState, derivePeerCommandCenterRecommendations, formatPeerCommandCenter, routePeerIntent } from "../src/peers/command-center.mjs";
 import { loadPeerGoalBoard } from "../src/peers/goal-board.mjs";
 
+function parsePeerLine(command) {
+  return parsePeerCommand(command.replace(/^\/peer\s+/, ""));
+}
+
 test("command center renders local profile, org, peers, goal blockers, and subruns", () => {
   const state = buildPeerCommandCenterState({
     runtimeStatus: {
@@ -503,7 +507,13 @@ test("routePeerIntent plan returns factory plan review command", async () => {
   }, { peerId: "planner-a" });
 
   assert.equal(result.mutated, false);
-  assert.equal(result.text, "/peer factory plan-review goal_123 --path src/peers --gate test --lane implementation --lane review");
+  assert.equal(result.text, "/peer factory plan-review goal_123 --path=src/peers --gate=test --lane=implementation --lane=review");
+  const parsed = parsePeerLine(result.text);
+  assert.equal(parsed.factoryAction, "plan-review");
+  assert.equal(parsed.goalId, "goal_123");
+  assert.deepEqual(parsed.paths, ["src/peers"]);
+  assert.deepEqual(parsed.gates, ["test"]);
+  assert.deepEqual(parsed.lanes, ["implementation", "review"]);
 });
 
 test("routePeerIntent work path command round-trips flag-like paths through parser", async () => {
@@ -521,7 +531,7 @@ test("routePeerIntent work path command round-trips flag-like paths through pars
   const command = result.text.trim();
   assert.match(command, /^\/peer goal claim /);
 
-  const parsed = parsePeerCommand(command.replace(/^\/peer\s+/, ""));
+  const parsed = parsePeerLine(command);
 
   assert.equal(parsed.subcommand, "goal");
   assert.equal(parsed.goalAction, "claim");
@@ -535,12 +545,16 @@ test("routePeerIntent plan returns factory plan-review command with facade flags
   const result = await routePeerIntent(root, {
     intent: "plan",
     intentArgs: ["goal_123"],
-    lanes: ["research", "review"],
-    paths: ["src/peers"],
+    lanes: ["research", "--review"],
+    paths: ["src/peers", "--fixtures"],
   });
 
   assert.equal(result.mutated, false);
-  assert.equal(result.text, "/peer factory plan-review goal_123 --path src/peers --lane research --lane review");
+  assert.equal(result.text, "/peer factory plan-review goal_123 --path=src/peers --path=--fixtures --lane=research --lane=--review");
+  const parsed = parsePeerLine(result.text);
+  assert.equal(parsed.factoryAction, "plan-review");
+  assert.deepEqual(parsed.paths, ["src/peers", "--fixtures"]);
+  assert.deepEqual(parsed.lanes, ["research", "--review"]);
 });
 
 test("routePeerIntent verify returns factory run command with gates", async () => {
@@ -553,7 +567,28 @@ test("routePeerIntent verify returns factory run command with gates", async () =
   });
 
   assert.equal(result.mutated, false);
-  assert.equal(result.text, "/peer factory run \"Verify goal_123\" --goal goal_123 --gate test --gate pack");
+  assert.equal(result.text, "/peer factory run \"Verify goal_123\" --goal=goal_123 --gate=test --gate=pack");
+  const parsed = parsePeerLine(result.text);
+  assert.equal(parsed.factoryAction, "run");
+  assert.equal(parsed.objective, "Verify goal_123");
+  assert.equal(parsed.goalId, "goal_123");
+  assert.deepEqual(parsed.gates, ["test", "pack"]);
+});
+
+test("routePeerIntent verify preserves flag-like goal ids in generated flags", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "verify",
+    intentArgs: ["--run"],
+    gates: ["--fixtures"],
+  });
+
+  assert.equal(result.mutated, false);
+  const parsed = parsePeerLine(result.text);
+  assert.equal(parsed.factoryAction, "run");
+  assert.equal(parsed.goalId, "--run");
+  assert.deepEqual(parsed.gates, ["--fixtures"]);
 });
 
 test("routePeerIntent rework returns factory rework command", async () => {
@@ -566,6 +601,27 @@ test("routePeerIntent rework returns factory rework command", async () => {
 
   assert.equal(result.mutated, false);
   assert.equal(result.text, "/peer factory rework fac_123");
+  const parsed = parsePeerLine(result.text);
+  assert.equal(parsed.factoryAction, "rework");
+  assert.equal(parsed.runId, "fac_123");
+});
+
+test("routePeerIntent refuses flag-like positional ids it cannot render safely", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const plan = await routePeerIntent(root, {
+    intent: "plan",
+    intentArgs: ["--goal"],
+  });
+  const rework = await routePeerIntent(root, {
+    intent: "rework",
+    intentArgs: ["--run"],
+  });
+
+  assert.equal(plan.mutated, false);
+  assert.match(plan.text, /Cannot generate \/peer factory plan-review/);
+  assert.equal(rework.mutated, false);
+  assert.match(rework.text, /Cannot generate \/peer factory rework/);
 });
 
 test("routePeerIntent metrics returns factory metrics command", async () => {
@@ -578,6 +634,8 @@ test("routePeerIntent metrics returns factory metrics command", async () => {
 
   assert.equal(result.mutated, false);
   assert.equal(result.text, "/peer factory metrics");
+  const parsed = parsePeerLine(result.text);
+  assert.equal(parsed.factoryAction, "metrics");
 });
 
 test("routePeerIntent ship returns factory pr status and command suggestions", async () => {
@@ -592,6 +650,12 @@ test("routePeerIntent ship returns factory pr status and command suggestions", a
   assert.match(result.text, /\/peer factory pr status/);
   assert.match(result.text, /\/peer factory pr commands --title "Factory run fac_123"/);
   assert.match(result.text, /--body "Summarize verification evidence for factory run fac_123 before creating this PR\."/);
+  for (const command of result.text.split("\n")) {
+    const parsed = parsePeerLine(command);
+    assert.equal(parsed.subcommand, "factory");
+    assert.equal(parsed.factoryAction, "pr");
+    assert.equal(parsed.error, undefined);
+  }
 });
 
 test("routePeerIntent automate returns factory automate status command", async () => {
@@ -604,4 +668,7 @@ test("routePeerIntent automate returns factory automate status command", async (
 
   assert.equal(result.mutated, false);
   assert.equal(result.text, "/peer factory automate status");
+  const parsed = parsePeerLine(result.text);
+  assert.equal(parsed.factoryAction, "automate");
+  assert.equal(parsed.automateAction, "status");
 });
