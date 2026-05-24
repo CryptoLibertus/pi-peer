@@ -458,6 +458,15 @@ function parsePeerFactoryCommand(parsed, flags, positionals) {
       status,
       evidence: stringFlag(flags.evidence, undefined),
       failureType: stringFlag(flags.failure || flags.failureType, undefined),
+      command: stringFlag(flags.command, undefined),
+      cwd: stringFlag(flags.cwd, undefined),
+      gitSha: stringFlag(flags.gitSha || flags.git, undefined),
+      dirty: booleanFlag(flags.dirty),
+      durationMs: positiveIntegerFlag(flags.durationMs || flags.duration),
+      exitCode: integerFlag(flags.exitCode),
+      stdoutHash: stringFlag(flags.stdoutHash, undefined),
+      stderrHash: stringFlag(flags.stderrHash, undefined),
+      artifact: stringFlag(flags.artifact, undefined),
     });
   }
   if (action === "attempt") {
@@ -716,6 +725,19 @@ function firstDefined(...values) {
   return values.find((value) => value !== undefined);
 }
 
+function integerFlag(value) {
+  if (Array.isArray(value)) return integerFlag(value.at(-1));
+  if (value === undefined || value === true) return undefined;
+  const number = Number(value);
+  return Number.isInteger(number) ? number : undefined;
+}
+
+function booleanFlag(value) {
+  if (Array.isArray(value)) return booleanFlag(value.at(-1));
+  if (value === undefined) return undefined;
+  return flagEnabled(value);
+}
+
 function positiveIntegerFlag(value) {
   if (Array.isArray(value)) return positiveIntegerFlag(value.at(-1));
   if (value === undefined || value === true) return undefined;
@@ -763,6 +785,7 @@ function metadataFromFlags(flags = {}, options = {}) {
   const workLane = options.workLane || stringFlag(flags.workLane || flags.lane, undefined);
   const duplicatePolicy = options.duplicatePolicy || stringFlag(flags.duplicatePolicy, undefined);
   const isolationMode = options.isolationMode || isolationModeFromFlags(flags);
+  const goalClaimMode = options.goalClaimMode || stringFlag(flags.claimMode, undefined);
   return {
     ...(claimedPaths.length ? { claimedPaths } : {}),
     ...(goalId ? { goalId } : {}),
@@ -770,6 +793,7 @@ function metadataFromFlags(flags = {}, options = {}) {
     ...(workLane ? { workLane } : {}),
     ...(duplicatePolicy ? { duplicatePolicy } : {}),
     ...(isolationMode ? { isolationMode } : {}),
+    ...(goalClaimMode ? { goalClaimMode } : {}),
   };
 }
 

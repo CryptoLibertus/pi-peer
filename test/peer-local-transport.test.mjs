@@ -98,6 +98,57 @@ test("discovery ignores descriptors with non-positive pids", async (t) => {
   });
 });
 
+test("comms rejects write-claimed tasks to read-only peers before dispatch", async (t) => {
+  const comms = createPeerComms({
+    localPeerId: "planner",
+    registry: new MemoryPeerRegistry([{ peerId: "reviewer", trust: "read-only", capabilities: { writeAccess: false } }]),
+  });
+  t.after(async () => comms.dispose());
+
+  await assert.rejects(
+    comms.sendMessage("reviewer", {
+      prompt: "please edit this file",
+      intent: "task",
+      metadata: { claimedPaths: ["src/peers"], goalClaimMode: "write" },
+    }),
+    (error) => error.code === "PI_PEER_CAPABILITY_DENIED" && /read-only/.test(error.message),
+  );
+});
+
+test("comms allows explicit read claims with paths to read-only peers", async (t) => {
+  const comms = createPeerComms({
+    localPeerId: "planner",
+    registry: new MemoryPeerRegistry([{ peerId: "reviewer", trust: "read-only", capabilities: { writeAccess: false } }]),
+  });
+  t.after(async () => comms.dispose());
+
+  const handle = await comms.sendMessage("reviewer", {
+    prompt: "review this path without editing",
+    intent: "review",
+    metadata: { claimedPaths: ["src/peers"], goalClaimMode: "read" },
+  });
+  const response = await handle.response;
+
+  assert.equal(response.status, "OK");
+});
+
+test("comms honors advertised peer intent capabilities", async (t) => {
+  const comms = createPeerComms({
+    localPeerId: "planner",
+    registry: new MemoryPeerRegistry([{ peerId: "reviewer", trust: "conversation", capabilities: { intents: ["review"] } }]),
+  });
+  t.after(async () => comms.dispose());
+
+  await assert.rejects(
+    comms.sendMessage("reviewer", { prompt: "do implementation", intent: "task" }),
+    (error) => error.code === "PI_PEER_CAPABILITY_DENIED" && /intent 'task'/.test(error.message),
+  );
+
+  const handle = await comms.sendMessage("reviewer", { prompt: "review only", intent: "review" });
+  const response = await handle.response;
+  assert.equal(response.status, "OK");
+});
+
 test("local transport handles cancel signals already aborted before request delivery", async (t) => {
   await withTempRoot(t, async (root) => {
     const discoveryDir = join(root, "discovery");

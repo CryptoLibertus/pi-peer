@@ -126,6 +126,10 @@ test("parses peer do facade intents", () => {
   const review = parsePeerCommand("do review goal_123");
   assert.equal(review.intent, "review");
   assert.deepEqual(review.intentArgs, ["goal_123"]);
+
+  const readClaim = parsePeerCommand("send reviewer review --claim src/peers --claim-mode read");
+  assert.equal(readClaim.goalClaimMode, "read");
+  assert.equal(readClaim.metadata.goalClaimMode, "read");
 });
 
 test("parses natural-language mission intents", () => {
@@ -217,13 +221,21 @@ test("parses peer factory commands", () => {
   assert.deepEqual(run.gates, ["test", "pack"]);
   assert.equal(run.source, "peer-do");
 
-  const gate = parsePeerCommand("factory gate fac_123 test fail --evidence 'unit failure' --failure test");
+  const gate = parsePeerCommand("factory gate fac_123 test fail --evidence 'unit failure' --failure test --command 'npm test' --exit-code 1 --duration-ms 123 --dirty false --git-sha abc123 --stdout-hash sha256:out --stderr-hash sha256:err --artifact .pi/factory/test.log");
   assert.equal(gate.factoryAction, "gate");
   assert.equal(gate.runId, "fac_123");
   assert.equal(gate.gateId, "test");
   assert.equal(gate.status, "fail");
   assert.equal(gate.evidence, "unit failure");
   assert.equal(gate.failureType, "test");
+  assert.equal(gate.command, "npm test");
+  assert.equal(gate.exitCode, 1);
+  assert.equal(gate.durationMs, 123);
+  assert.equal(gate.dirty, false);
+  assert.equal(gate.gitSha, "abc123");
+  assert.equal(gate.stdoutHash, "sha256:out");
+  assert.equal(gate.stderrHash, "sha256:err");
+  assert.equal(gate.artifact, ".pi/factory/test.log");
 
   const rework = parsePeerCommand("factory rework fac_123 --reason 'test failed' --evidence 'AssertionError' --owner reviewer-a");
   assert.equal(rework.factoryAction, "rework");

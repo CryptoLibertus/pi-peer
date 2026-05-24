@@ -16,6 +16,8 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
   const endpoint = runtime.localEndpoint || null;
   const enabled = runtime.enabled === true;
   const activePeers = peers.filter((peer) => peer.status === "active");
+  const visibleActivePeers = activePeers.filter((peer) => !isSelfPeer(peer, runtime.localPeerId || runtime.summary?.localPeerId));
+  const inactiveVisiblePeers = peers.filter((peer) => !isSelfPeer(peer, runtime.localPeerId || runtime.summary?.localPeerId) && peer.status !== "active" && peer.trust !== "disabled");
   const discoveredPeers = peers.filter((peer) => peer.discoveredAt || peer.socketPath || peer.pipeName);
   const pendingMessages = messages.filter((message) => ["queued", "running"].includes(message.status));
   const activeTasks = pendingMessages.map(activeTaskSummary);
@@ -51,6 +53,9 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
     peerCount: peers.length,
     discoveredCount: discoveredPeers.length,
     activeCount: activePeers.length,
+    onlinePeers: visibleActivePeers.map(peerDisplayId).filter(Boolean),
+    onlineCount: visibleActivePeers.length,
+    offlineCount: inactiveVisiblePeers.length,
     pendingCount: pendingMessages.length,
     activeTasks,
     disconnectedTasks,
@@ -92,24 +97,26 @@ export function formatPeerFooterStatusLine(status = {}) {
   const idle = status.idleWatcher || {};
   if ((status.pendingCount || 0) > 0) {
     const count = status.pendingCount || 0;
-    const task = (status.activeTasks || [])[0] || {};
-    const peer = task.peerId ? ` · ${truncateStatus(task.peerId, 18)}` : "";
-    const intent = task.intent ? ` · ${footerIntentLabel(task.intent)}` : "";
-    return line("footer", "accent", `🔗 peer busy · ${count} ${plural(count, "task")}${peer}${intent}`);
+    const tasks = formatFooterTaskRoster(status.activeTasks || []);
+    const peers = formatFooterOnlineSuffix(status, { maxPeers: 2 });
+    return line("footer", "accent", `🔗 busy · ${count} ${plural(count, "task")}${tasks ? `: ${tasks}` : ""}${peers}`);
   }
   const activation = idle.lastCheck?.activated ? idle.lastCheck.activation : undefined;
   if (activation && shouldSurfaceCoordinationInFooter(activation, { coordinationSurface: "footer" })) {
     const kind = footerActivationLabel(activation.kind);
     const goal = activation.goalId ? ` · ${truncateStatus(activation.goalId, 24)}` : "";
-    return line("footer", "accent", `🔗 needs ${kind}${goal}`);
+    const peers = formatFooterOnlineSuffix(status, { maxPeers: 2 });
+    return line("footer", "accent", `🔗 needs ${kind}${goal}${peers}`);
   }
   const sweep = idle.lastProtocolOfferSweep;
   if (sweep && ((sweep.sent || 0) > 0 || (sweep.duplicate || 0) > 0 || (sweep.errors || 0) > 0)) {
     const color = (sweep.errors || 0) > 0 ? "warning" : "accent";
-    return line("footer", color, `🔗 peer offers · ${formatIdleOfferSweep(sweep)}`);
+    const peers = formatFooterOnlineSuffix(status, { maxPeers: 2 });
+    return line("footer", color, `🔗 offers · ${formatIdleOfferSweep(sweep)}${peers}`);
   }
-  const activeCount = status.activeCount || 0;
-  return line("footer", status.enabled ? "success" : "muted", `🔗 peers ${status.enabled ? "ready" : "off"} · ${activeCount} online`);
+  const onlineCount = Number.isFinite(status.onlineCount) ? status.onlineCount : (status.activeCount || 0);
+  const availabilityColor = status.enabled ? (onlineCount > 0 ? "success" : "warning") : "muted";
+  return line("footer", availabilityColor, formatFooterAvailability(status));
 }
 
 export function shouldShowPeerWidget(status = {}) {
@@ -353,6 +360,54 @@ function peerContributionRows(state = {}) {
     if (event.type === "vote") ensure(event.peerId).votes += 1;
   }
   return [...rows.values()].sort((a, b) => (b.activeClaims + b.activeTasks + b.handoffs + b.findings + b.votes) - (a.activeClaims + a.activeTasks + a.handoffs + a.findings + a.votes) || a.peerId.localeCompare(b.peerId));
+}
+
+function formatFooterAvailability(status = {}) {
+  if (!status.enabled) return "🔗 peer messaging off · /peer setup";
+  const count = Number.isFinite(status.onlineCount) ? status.onlineCount : (status.activeCount || 0);
+  const roster = formatPeerRoster(status.onlinePeers, { maxPeers: 3 });
+  if (count <= 0) {
+    const offline = status.offlineCount ? ` · ${status.offlineCount} offline` : "";
+    return `🔗 no peers online${offline} · /peer reconnect`;
+  }
+  const offline = status.offlineCount ? ` · ${status.offlineCount} offline` : "";
+  return `🔗 ${count} ${plural(count, "peer")} online${roster ? `: ${roster}` : ""}${offline}`;
+}
+
+function formatFooterOnlineSuffix(status = {}, options = {}) {
+  if (!status.enabled) return " · peers off";
+  const count = Number.isFinite(status.onlineCount) ? status.onlineCount : (status.activeCount || 0);
+  if (count <= 0) return " · no peers online";
+  const roster = formatPeerRoster(status.onlinePeers, { maxPeers: options.maxPeers || 2 });
+  return ` · online ${roster || count}`;
+}
+
+function formatFooterTaskRoster(tasks = []) {
+  const rows = tasks.slice(0, 2).map((task) => {
+    const peer = truncateStatus(task.peerId || "unknown", 18);
+    const intent = footerIntentLabel(task.intent || "task");
+    return `${peer} ${intent}`;
+  });
+  const extra = tasks.length - rows.length;
+  if (extra > 0) rows.push(`+${extra}`);
+  return rows.join(", ");
+}
+
+function formatPeerRoster(peerIds = [], options = {}) {
+  const ids = Array.isArray(peerIds) ? peerIds.map((id) => truncateStatus(id, 18)).filter(Boolean) : [];
+  const maxPeers = Math.max(1, options.maxPeers || 3);
+  const visible = ids.slice(0, maxPeers);
+  const extra = ids.length - visible.length;
+  return `${visible.join(", ")}${extra > 0 ? ` +${extra}` : ""}`;
+}
+
+function peerDisplayId(peer = {}) {
+  return safeStatusText(peer.peerId || peer.id || peer.name);
+}
+
+function isSelfPeer(peer = {}, localPeerId) {
+  const peerId = peerDisplayId(peer);
+  return peer.current === true || peer.self === true || (peerId && localPeerId && peerId === localPeerId);
 }
 
 function capabilitySummary(capabilities = {}) {

@@ -46,6 +46,48 @@ test("goal-store journal replays event records equivalent to current board seman
   assert.deepEqual(replayed.warnings, []);
 });
 
+test("live goal-board mutations append replayable journal snapshots", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-live-journal-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const goal = await createPeerGoal(root, { objective: "live journal", peerId: "tester" });
+  await appendPeerGoalEvent(root, goal.id, {
+    type: "finding",
+    peerId: "reviewer",
+    lane: "review",
+    summary: "live journal captured this event",
+  });
+
+  const canonical = await loadPeerGoalBoard(root);
+  const replayed = await replayGoalJournal(root);
+
+  assert.deepEqual(replayed.board, canonical);
+  assert.deepEqual(replayed.warnings, []);
+});
+
+test("loadPeerGoalBoard recovers a corrupt snapshot from the live journal", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-journal-recover-"));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const goal = await createPeerGoal(root, { objective: "recover from journal", peerId: "tester" });
+  await appendPeerGoalEvent(root, goal.id, {
+    type: "finding",
+    peerId: "reviewer",
+    lane: "review",
+    summary: "recoverable evidence",
+  });
+  const canonical = await replayGoalJournal(root);
+  await writeFile(join(root, ".pi/peer-goals.json"), "{not json", "utf8");
+
+  const recovered = await loadPeerGoalBoard(root);
+
+  assert.deepEqual(recovered, canonical.board);
+});
+
 test("goal-store compaction preserves migration-compatible snapshot semantics", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "pi-peer-goal-store-compact-"));
   t.after(async () => {

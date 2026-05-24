@@ -3,7 +3,7 @@ import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, posix as pathPosix } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { normalizePeerGoalClosurePolicy } from "./config.mjs";
-import { goalBoardPath, loadGoalBoardSnapshot, PEER_GOAL_BOARD_RELATIVE_PATH as STORE_PEER_GOAL_BOARD_RELATIVE_PATH, saveGoalBoardSnapshot } from "./goal-store.mjs";
+import { appendGoalJournalRecord, goalBoardPath, loadGoalBoardSnapshot, PEER_GOAL_BOARD_RELATIVE_PATH as STORE_PEER_GOAL_BOARD_RELATIVE_PATH, replayGoalJournal, saveGoalBoardSnapshot } from "./goal-store.mjs";
 
 export const PEER_GOAL_BOARD_RELATIVE_PATH = STORE_PEER_GOAL_BOARD_RELATIVE_PATH;
 
@@ -34,7 +34,13 @@ const GOAL_BOARD_LOCK_RETRY_MS = 10;
 const GOAL_BOARD_LOCK_TIMEOUT_MS = 5_000;
 
 export async function loadPeerGoalBoard(root) {
-  return loadGoalBoardSnapshot(root, { normalize: normalizeBoard });
+  try {
+    return await loadGoalBoardSnapshot(root, { normalize: normalizeBoard });
+  } catch (error) {
+    const replayed = await replayGoalJournal(root, { normalize: normalizeBoard }).catch(() => undefined);
+    if (replayed?.board && (Object.keys(replayed.board.goals || {}).length || replayed.board.currentGoalId)) return replayed.board;
+    throw error;
+  }
 }
 
 export async function savePeerGoalBoard(root, board) {
@@ -1251,6 +1257,7 @@ async function updatePeerGoalBoard(root, updater) {
   return withGoalBoardLock(root, async () => {
     const board = await loadPeerGoalBoard(root);
     const result = await updater(board);
+    await appendGoalJournalRecord(root, { type: "snapshot", board });
     await savePeerGoalBoard(root, board);
     return result;
   });
