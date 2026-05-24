@@ -8,7 +8,7 @@ const HIGH_RISK_PATH_PATTERNS = Object.freeze([
 ]);
 const HIGH_RISK_PATH_STEMS = new Set(["auth", "billing", "payment", "payments", "migration", "migrations", "security", "secret", "secrets"]);
 
-const WRITE_LANES = new Set(["implementation", "work", "write"]);
+const WRITE_LANES = new Set(["implementation", "worker", "work", "write"]);
 const REVIEW_LANES = new Set(["review", "qa"]);
 const BLOCKING_CODES = new Set(["missing-objective", "missing-write-paths", "missing-required-gates", "dependency-cycle", "duplicate-work-key", "path-overlap"]);
 
@@ -95,6 +95,41 @@ export function formatPlanAdversaryReview(review = {}) {
   return lines.join("\n");
 }
 
+export function planAdversaryRunStatus(verdict = "") {
+  const text = cleanText(verdict).toLowerCase();
+  if (text === "block") return "blocked";
+  if (text === "pass-with-risks") return "verified-with-risks";
+  if (text === "pass") return "verified";
+  return "completed";
+}
+
+export function planAdversaryObjectionFingerprint(review = {}) {
+  const goalId = cleanText(review.goalId || review.plan?.goalId) || "unknown";
+  const verdict = cleanText(review.verdict) || "pass";
+  const codes = uniqueList((Array.isArray(review.findings) ? review.findings : []).map((item) => item?.code)).sort().join(",");
+  return `${goalId}:${verdict}:${codes}`;
+}
+
+export function hasMatchingPlanAdversaryObjection(events = [], review = {}) {
+  const fingerprint = planAdversaryObjectionFingerprint(review);
+  const verdict = cleanText(review.verdict);
+  const resolved = new Set((Array.isArray(events) ? events : [])
+    .filter((event) => event?.type === "resolve" && event.resolves)
+    .map((event) => event.resolves));
+  return (Array.isArray(events) ? events : []).some((event) => {
+    if (event?.type !== "objection" || resolved.has(event.id)) return false;
+    const metadata = plainObject(event.metadata) ? event.metadata : {};
+    if (metadata.source !== "factory-plan-review") return false;
+    if (metadata.planAdversaryFingerprint) return metadata.planAdversaryFingerprint === fingerprint;
+    const eventReview = {
+      goalId: review.goalId || review.plan?.goalId,
+      verdict: metadata.verdict || verdict,
+      findings: Array.isArray(metadata.findings) ? metadata.findings : [],
+    };
+    return metadata.verdict === verdict && planAdversaryObjectionFingerprint(eventReview) === fingerprint;
+  });
+}
+
 function normalizeWorkItems(input, context) {
   const supplied = Array.isArray(input) ? input.map((item, index) => normalizeWorkItem(item, index, context)) : [];
   const byLane = new Map(supplied.filter((item) => item.lane).map((item) => [item.lane, item]));
@@ -151,6 +186,7 @@ function isWriteWorkItem(item) {
 function firstPathOverlap(workItems) {
   const entries = [];
   for (const item of workItems) {
+    if (!isWriteWorkItem(item)) continue;
     for (const path of uniqueList(item.paths)) entries.push({ id: item.id, path: normalizePath(path) });
   }
   for (let i = 0; i < entries.length; i += 1) {

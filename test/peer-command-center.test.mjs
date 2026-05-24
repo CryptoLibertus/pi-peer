@@ -181,6 +181,27 @@ test("command center recommends plan review for current goals", () => {
   assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer do plan goal_123");
 });
 
+test("command center suppresses plan recommendation after factory plan review", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true, inspectOnly: true },
+    currentGoalId: "goal_123",
+    factoryRecords: [{ type: "plan-review", goalId: "goal_123", runId: "plan:goal_123" }],
+    goals: [{
+      id: "goal_123",
+      objective: "Ship control plane",
+      activeClaims: [],
+      activeTasks: [],
+      staleClaims: [],
+      unresolvedTaskHandoffs: [],
+      blockingObjections: [],
+      openProposals: [],
+      currentVotes: [],
+    }],
+  });
+
+  assert.equal(derivePeerCommandCenterRecommendations(state).some((item) => item.command === "/peer do plan goal_123"), false);
+});
+
 test("currentGoalId selects the current goal over older blocked goals", () => {
   const state = buildPeerCommandCenterState({
     currentGoalId: "goal_current",

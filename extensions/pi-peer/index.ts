@@ -36,7 +36,7 @@ import {
   startFactoryRun,
   deriveFactoryState,
 } from "../../src/peers/factory.mjs";
-import { derivePlanAdversaryReview, formatPlanAdversaryReview, normalizePlanContract } from "../../src/peers/plan-adversary.mjs";
+import { derivePlanAdversaryReview, formatPlanAdversaryReview, hasMatchingPlanAdversaryObjection, normalizePlanContract, planAdversaryObjectionFingerprint, planAdversaryRunStatus } from "../../src/peers/plan-adversary.mjs";
 import { buildReworkDecisionRun, deriveReworkDecision, formatReworkDecision, reworkRecordTypeForAction } from "../../src/peers/rework.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
 import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
@@ -602,7 +602,10 @@ async function collectPeerCommandCenterInput(ctx: any, runtime: any) {
   const goals = Object.values(board.goals || {}).map((goal: any) => deriveGoalState(goal));
   const loadedControl = await loadPeerControlLedger(root);
   const controlState = derivePeerControlState(loadedControl.records);
-  return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState };
+  const factoryRuns = await loadFactoryRuns(root).catch(() => ({ records: [] }));
+  const factoryRecords = factoryRuns.records || [];
+  const factoryState = deriveFactoryState(factoryRecords);
+  return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState, factoryRecords, factoryState };
 }
 
 async function handlePeerOrgCommand(parsed: any, ctx: any, runtime: any) {
@@ -813,16 +816,17 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
       runId: `plan:${parsed.goalId}`,
       goalId: parsed.goalId,
       peerId,
-      status: review.verdict,
+      status: planAdversaryRunStatus(review.verdict),
       summary: `Plan adversary review: ${review.verdict}`,
       metadata: {
         verdict: review.verdict,
         requiresHuman: review.requiresHuman,
+        planAdversaryFingerprint: planAdversaryObjectionFingerprint(review),
         findings: review.findings,
         plan,
       },
     });
-    if (review.verdict === "block") {
+    if (review.verdict === "block" && !hasMatchingPlanAdversaryObjection(goalState.events, review)) {
       await appendPeerGoalEvent(root, parsed.goalId, {
         type: "objection",
         peerId,
@@ -831,6 +835,8 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
         summary: text,
         metadata: {
           source: "factory-plan-review",
+          verdict: review.verdict,
+          planAdversaryFingerprint: planAdversaryObjectionFingerprint(review),
           findings: review.findings,
         },
       });

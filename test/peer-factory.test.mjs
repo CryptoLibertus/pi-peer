@@ -284,3 +284,21 @@ test("factory status summarizes active and terminal counts", async (t) => {
     assert.match(text, /verified 1/);
   });
 });
+
+test("blocking plan-review records derive terminal blocked state", async (t) => {
+  await withRoot(t, async (root) => {
+    await appendFactoryRunRecord(root, {
+      type: "plan-review",
+      runId: "plan:goal_123",
+      goalId: "goal_123",
+      status: "block",
+      metadata: { verdict: "block" },
+    });
+
+    const state = deriveFactoryState((await loadFactoryRuns(root)).records);
+
+    assert.equal(state.runs[0].status, "blocked");
+    assert.equal(state.activeRuns.length, 0);
+    assert.equal(state.completedRuns.length, 1);
+  });
+});

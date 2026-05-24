@@ -48,6 +48,8 @@ export function buildPeerCommandCenterState(input = {}) {
       activeSubruns: array(controlState.activeSubruns),
       completedSubruns: array(controlState.completedSubruns),
     },
+    factoryRecords: array(input.factoryRecords),
+    factoryState: input.factoryState || {},
     objective: input.objective || currentGoal?.objective || "new peer goal",
   };
   state.recommendations = derivePeerCommandCenterRecommendations(state);

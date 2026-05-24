@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   derivePlanAdversaryReview,
   formatPlanAdversaryReview,
+  hasMatchingPlanAdversaryObjection,
   normalizePlanContract,
 } from "../src/peers/plan-adversary.mjs";
 
@@ -62,6 +63,71 @@ test("adversary blocks write work without paths or verification gates", () => {
   assert.match(formatPlanAdversaryReview(review), /block/i);
 });
 
+test("adversary allows read-only lanes to share implementation paths", () => {
+  const review = derivePlanAdversaryReview({
+    plan: normalizePlanContract({
+      goalId: "goal_123",
+      objective: "Ship normal multi-lane plan",
+      lanes: ["research", "implementation", "review"],
+      paths: ["src/peers/plan-adversary.mjs"],
+      gates: ["test"],
+    }),
+  });
+
+  assert.equal(review.findings.some((item) => item.code === "path-overlap"), false);
+  assert.notEqual(review.verdict, "block");
+});
+
+test("adversary blocks overlapping write-capable work items", () => {
+  const review = derivePlanAdversaryReview({
+    plan: normalizePlanContract({
+      goalId: "goal_123",
+      objective: "Ship conflicting writes",
+      lanes: ["implementation", "worker", "review"],
+      gates: ["test"],
+      workItems: [
+        { id: "impl_a", lane: "implementation", paths: ["src/peers"] },
+        { id: "impl_b", lane: "worker", mode: "write", paths: ["src/peers/plan-adversary.mjs"] },
+      ],
+    }),
+  });
+
+  assert.equal(review.verdict, "block");
+  assert.equal(review.findings.some((item) => item.code === "path-overlap"), true);
+});
+
+test("adversary blocks duplicate work keys and dependency cycles", () => {
+  const duplicate = derivePlanAdversaryReview({
+    plan: normalizePlanContract({
+      goalId: "goal_123",
+      objective: "Duplicate keys",
+      lanes: ["implementation", "review"],
+      gates: ["test"],
+      workItems: [
+        { id: "impl_a", lane: "implementation", workKey: "same", paths: ["src/a.mjs"] },
+        { id: "impl_b", lane: "worker", mode: "write", workKey: "same", paths: ["src/b.mjs"] },
+      ],
+    }),
+  });
+  assert.equal(duplicate.verdict, "block");
+  assert.equal(duplicate.findings.some((item) => item.code === "duplicate-work-key"), true);
+
+  const cycle = derivePlanAdversaryReview({
+    plan: normalizePlanContract({
+      goalId: "goal_123",
+      objective: "Cycle",
+      lanes: ["implementation", "review"],
+      gates: ["test"],
+      workItems: [
+        { id: "impl_a", lane: "implementation", dependsOn: ["impl_b"], paths: ["src/a.mjs"] },
+        { id: "impl_b", lane: "review", dependsOn: ["impl_a"] },
+      ],
+    }),
+  });
+  assert.equal(cycle.verdict, "block");
+  assert.equal(cycle.findings.some((item) => item.code === "dependency-cycle"), true);
+});
+
 test("adversary flags human approval for high-risk paths", () => {
   const review = derivePlanAdversaryReview({
     plan: normalizePlanContract({
@@ -92,4 +158,28 @@ test("adversary treats high-risk file basenames as high risk", () => {
     assert.equal(review.requiresHuman, true);
     assert.equal(review.findings.some((item) => item.code === "high-risk-path"), true);
   }
+});
+
+test("plan adversary objection helper detects unresolved matching objections", () => {
+  const review = derivePlanAdversaryReview({
+    plan: normalizePlanContract({
+      goalId: "goal_123",
+      objective: "Missing gates",
+      lanes: ["implementation"],
+      paths: ["src/peers/plan-adversary.mjs"],
+      gates: [],
+    }),
+  });
+  const event = {
+    id: "obj_1",
+    type: "objection",
+    metadata: {
+      source: "factory-plan-review",
+      planAdversaryFingerprint: "goal_123:block:missing-required-gates,missing-review-lane",
+      verdict: "block",
+    },
+  };
+
+  assert.equal(hasMatchingPlanAdversaryObjection([event], review), true);
+  assert.equal(hasMatchingPlanAdversaryObjection([event, { type: "resolve", resolves: "obj_1" }], review), false);
 });

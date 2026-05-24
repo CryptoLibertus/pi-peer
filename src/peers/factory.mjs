@@ -12,7 +12,7 @@ export const FACTORY_REWORK_POLICY_FILE = `${FACTORY_DIR}/rework-policy.json`;
 
 const DEFAULT_FACTORY_REWORK_POLICY = DEFAULT_REWORK_POLICY;
 
-const TERMINAL_RUN_STATUSES = new Set(["verified", "completed", "failed", "error", "blocked", "cancelled"]);
+const TERMINAL_RUN_STATUSES = new Set(["verified", "verified-with-risks", "completed", "failed", "error", "blocked", "cancelled"]);
 const FAILED_STATUSES = new Set(["fail", "failed", "error", "blocked"]);
 
 export async function initFactory(root, options = {}) {
@@ -242,6 +242,14 @@ function applyFactoryRecord(run, record) {
     run.latestReworkDecision = decisionFromRecord(record);
     run.status = "blocked";
     run.baseStatus = "blocked";
+  } else if (record.type === "plan-review") {
+    run.goalId = record.goalId || run.goalId;
+    run.peerId = record.peerId || run.peerId;
+    run.summary = record.summary || run.summary;
+    const status = normalizePlanReviewStatus(record.status || record.metadata?.verdict);
+    run.status = status;
+    run.baseStatus = status;
+    run.completedAt = record.at;
   } else if (record.type === "run-completed") {
     const status = normalizeRunStatus(record.status) || "completed";
     run.status = status;
@@ -378,9 +386,17 @@ function normalizeList(value) {
 function normalizeRunStatus(status) {
   const text = cleanText(status).toLowerCase();
   if (text === "pass") return "verified";
+  if (text === "pass-with-risks") return "verified-with-risks";
   if (text === "fail") return "failed";
+  if (text === "block") return "blocked";
   if (text === "done") return "completed";
   return text;
+}
+
+function normalizePlanReviewStatus(status) {
+  const text = normalizeRunStatus(status);
+  if (text === "verified" || text === "verified-with-risks" || text === "blocked") return text;
+  return "completed";
 }
 
 function normalizeGateStatus(status) {
