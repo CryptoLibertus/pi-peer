@@ -338,13 +338,14 @@ function parsePeerSetupCommand(parsed, flags, positionals) {
 
 function parsePeerDoCommand(parsed, flags, positionals) {
   const intent = positionals[0] || "status";
-  const validIntents = ["setup", "status", "start", "coordinate", "review", "research", "work", "resolve-handoffs", "subagents"];
+  const validIntents = ["setup", "status", "start", "coordinate", "review", "research", "work", "plan", "resolve-handoffs", "subagents"];
   const withIntent = { ...parsed, intent, intentArgs: positionals.slice(1) };
   if (!validIntents.includes(intent)) return { ...withIntent, error: `Unknown /peer do intent '${intent}'` };
   return {
     ...withIntent,
     constraints: listFlag(flags.constraint || flags.constraints),
     paths: listFlag(flags.path || flags.paths),
+    gates: listFlag(flags.gate || flags.gates),
     lanes: listFlag(flags.lane || flags.lanes),
   };
 }
@@ -446,7 +447,13 @@ function parsePeerFactoryCommand(parsed, flags, positionals) {
   }
   const goalId = rest[0];
   if (!goalId) return { ...withAction, error: "/peer factory plan-review requires <goal-id>" };
-  return { ...withAction, goalId };
+  return stripUndefined({
+    ...withAction,
+    goalId,
+    paths: listFlag(flags.path || flags.paths),
+    gates: listFlag(flags.gate || flags.gates),
+    lanes: listFlag(flags.lane || flags.lanes),
+  });
 }
 
 function parsePeerGoalCommand(parsed, flags, positionals) {

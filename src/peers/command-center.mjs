@@ -64,6 +64,7 @@ export function derivePeerCommandCenterRecommendations(state = {}) {
   if (goal && array(goal.unresolvedTaskHandoffs).length) commands.push(recommend("/peer do resolve-handoffs", "resolve peer handoffs"));
   if (goal && array(goal.blockingObjections).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "clear blockers"));
   if (goal && array(goal.failedVotes).length) commands.push(recommend(`/peer do coordinate ${goal.id}`, "resolve failed votes"));
+  if (goal && !hasPlanReview(goal, state)) commands.push(recommend(`/peer do plan ${goal.id}`, "run adversarial plan review"));
   if (goal && shouldRecommendReview(goal)) commands.push(recommend(`/peer do review ${goal.id}`, "collect current review"));
   if (array(control.activeSubruns).length) commands.push(recommend("/peer subrun status", "check active subruns"));
   if (state.setup?.exists === false) commands.push(recommend("/peer setup", "configure peer command center"));
@@ -179,6 +180,15 @@ export async function routePeerIntent(root, parsed = {}, context = {}) {
     };
   }
 
+  if (intent === "plan") {
+    const goalId = args[0];
+    if (!goalId) return { mutated: false, text: "/peer do plan <goal-id>" };
+    return {
+      mutated: false,
+      text: planReviewCommand(goalId, parsed),
+    };
+  }
+
   if (intent === "resolve-handoffs") {
     const goal = resolveRouteGoal(args[0], context);
     const commands = handoffResolveCommands(goal);
@@ -234,6 +244,25 @@ function handoffResolveCommands(goal) {
     const handoffId = handoff.handoffEventId || handoff.id || handoff.eventId;
     return handoffId ? `/peer goal resolve ${commandArg(goal.id)} ${commandArg(handoffId)} ${commandArg("accepted or superseded unsuccessful peer handoff")}` : undefined;
   }).filter(Boolean);
+}
+
+function hasPlanReview(goal, state) {
+  const records = [
+    ...array(goal.factoryRecords),
+    ...array(goal.planReviews),
+    ...array(state.factoryRecords),
+    ...array(state.factoryState?.records),
+  ];
+  return records.some((record) => record?.type === "plan-review" && (!goal?.id || record.goalId === goal.id));
+}
+
+function planReviewCommand(goalId, parsed) {
+  const flags = [
+    ...array(parsed.paths).flatMap((path) => ["--path", commandArg(path)]),
+    ...array(parsed.gates).flatMap((gate) => ["--gate", commandArg(gate)]),
+    ...array(parsed.lanes).flatMap((lane) => ["--lane", commandArg(lane)]),
+  ];
+  return ["/peer factory plan-review", commandArg(goalId), ...flags].join(" ");
 }
 
 function laneClaimCommand(goalId, lane, summary, workKey) {

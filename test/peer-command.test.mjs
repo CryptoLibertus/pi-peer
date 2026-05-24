@@ -177,9 +177,12 @@ test("parses peer factory optional actions and validation", () => {
   assert.equal(attempt.status, "failed");
   assert.equal(attempt.evidence, "unit failure");
 
-  const review = parsePeerCommand("factory plan-review goal_123");
+  const review = parsePeerCommand("factory plan-review goal_123 --path src/peers --gate test --lane implementation --lane review");
   assert.equal(review.factoryAction, "plan-review");
   assert.equal(review.goalId, "goal_123");
+  assert.deepEqual(review.paths, ["src/peers"]);
+  assert.deepEqual(review.gates, ["test"]);
+  assert.deepEqual(review.lanes, ["implementation", "review"]);
 
   const metrics = parsePeerCommand("metrics");
   assert.equal(metrics.subcommand, "factory");
@@ -193,14 +196,28 @@ test("parses peer factory optional actions and validation", () => {
   assert.match(parsePeerCommand("factory plan-review").error, /plan-review requires <goal-id>/);
 });
 
+test("parses peer do plan intent", () => {
+  const parsed = parsePeerCommand("do plan goal_123 --path src/peers --gate test --lane review");
+
+  assert.equal(parsed.subcommand, "do");
+  assert.equal(parsed.intent, "plan");
+  assert.deepEqual(parsed.intentArgs, ["goal_123"]);
+  assert.deepEqual(parsed.paths, ["src/peers"]);
+  assert.deepEqual(parsed.gates, ["test"]);
+  assert.deepEqual(parsed.lanes, ["review"]);
+});
+
 test("extension wires factory commands without requiring peer runtime transport", () => {
   assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/factory\.mjs"/);
+  assert.match(extensionSource, /from "\.\.\/\.\.\/src\/peers\/plan-adversary\.mjs"/);
   assert.match(extensionSource, /loadFactoryReworkPolicy/);
   assert.match(extensionSource, /reworkRecordTypeForAction/);
   assert.match(extensionSource, /handlePeerFactoryCommand\(parsed, ctx, runtime\)/);
   assert.match(extensionSource, /parsed\.subcommand === "factory" \|\| parsed\.subcommand === "metrics"/);
   assert.match(extensionSource, /metadata:\s*\{[^}]*failureType[^}]*owner[^}]*reason/s);
   assert.match(extensionSource, /No factory run found for \$\{parsed\.runId\}\./);
+  assert.match(extensionSource, /type:\s*"plan-review"/);
+  assert.match(extensionSource, /severity:\s*"blocking"/);
   assert.match(extensionSource, /# Factory metrics/);
 
   const factoryBranch = extensionSource.indexOf("handlePeerFactoryCommand(parsed, ctx, runtime)");

@@ -36,6 +36,7 @@ import {
   startFactoryRun,
   deriveFactoryState,
 } from "../../src/peers/factory.mjs";
+import { derivePlanAdversaryReview, formatPlanAdversaryReview, normalizePlanContract } from "../../src/peers/plan-adversary.mjs";
 import { buildReworkDecisionRun, deriveReworkDecision, formatReworkDecision, reworkRecordTypeForAction } from "../../src/peers/rework.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
 import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
@@ -793,7 +794,48 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
   }
 
   if (action === "plan-review") {
-    return "Factory plan-review handler will be available after the plan-adversary module lands.";
+    const board = await loadPeerGoalBoard(root);
+    const goal = board.goals?.[parsed.goalId];
+    if (!goal) return `No peer goal found for ${parsed.goalId}.`;
+    const goalState = deriveGoalState(goal);
+    const plan = normalizePlanContract({
+      goalId: parsed.goalId,
+      objective: goal.objective,
+      lanes: parsed.lanes?.length ? parsed.lanes : inferPlanLanes(goalState),
+      paths: parsed.paths?.length ? parsed.paths : inferPlanPaths(goalState),
+      gates: parsed.gates,
+      workItems: inferPlanWorkItems(goalState),
+    });
+    const review = derivePlanAdversaryReview({ plan });
+    const text = formatPlanAdversaryReview(review);
+    await appendFactoryRunRecord(root, {
+      type: "plan-review",
+      runId: `plan:${parsed.goalId}`,
+      goalId: parsed.goalId,
+      peerId,
+      status: review.verdict,
+      summary: `Plan adversary review: ${review.verdict}`,
+      metadata: {
+        verdict: review.verdict,
+        requiresHuman: review.requiresHuman,
+        findings: review.findings,
+        plan,
+      },
+    });
+    if (review.verdict === "block") {
+      await appendPeerGoalEvent(root, parsed.goalId, {
+        type: "objection",
+        peerId,
+        lane: "review",
+        severity: "blocking",
+        summary: text,
+        metadata: {
+          source: "factory-plan-review",
+          findings: review.findings,
+        },
+      });
+    }
+    return text;
   }
 
   if (action === "status") {
@@ -820,6 +862,39 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
   }
 
   return formatFactoryStatus(deriveFactoryState((await loadFactoryRuns(root)).records));
+}
+
+function inferPlanLanes(goalState: any) {
+  const lanes = [
+    ...array(goalState.workItems).map((item: any) => item.lane),
+    ...array(goalState.openProposals).map((item: any) => item.lane),
+    ...array(goalState.proposals).map((item: any) => item.lane),
+  ].filter(Boolean);
+  return lanes.length ? [...new Set(lanes)] : ["research", "implementation", "review"];
+}
+
+function inferPlanPaths(goalState: any) {
+  return [
+    ...array(goalState.workItems).flatMap((item: any) => array(item.paths)),
+    ...array(goalState.activeWriteClaims).flatMap((item: any) => array(item.paths)),
+    ...array(goalState.openProposals).flatMap((item: any) => array(item.paths)),
+  ];
+}
+
+function inferPlanWorkItems(goalState: any) {
+  return array(goalState.workItems).map((item: any) => ({
+    id: item.itemId || item.id,
+    itemId: item.itemId || item.id,
+    lane: item.lane,
+    summary: item.summary,
+    workKey: item.workKey,
+    paths: item.paths,
+    dependsOn: item.dependsOn,
+  }));
+}
+
+function array(value: any) {
+  return Array.isArray(value) ? value : [];
 }
 
 async function handlePeerHiveCommand(parsed: any, ctx: any, runtime: any) {

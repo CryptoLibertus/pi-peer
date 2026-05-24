@@ -92,6 +92,7 @@ test("recommendations follow full priority order and dedupe repeated coordinatio
     "/peer reconnect",
     "/peer do coordinate goal_123",
     "/peer do resolve-handoffs",
+    "/peer do plan goal_123",
     "/peer do review goal_123",
     "/peer subrun status",
     "/peer setup",
@@ -122,6 +123,7 @@ test("recommendations place blocker coordination after unresolved handoffs when 
   assert.deepEqual(recommendations.map((item) => item.command), [
     "/peer do resolve-handoffs",
     "/peer do coordinate goal_123",
+    "/peer do plan goal_123",
   ]);
 });
 
@@ -159,6 +161,26 @@ test("setup session suppresses setup recommendation even without org or runtime 
   ]);
 });
 
+test("command center recommends plan review for current goals", () => {
+  const state = buildPeerCommandCenterState({
+    setupSession: { exists: true, inspectOnly: true },
+    currentGoalId: "goal_123",
+    goals: [{
+      id: "goal_123",
+      objective: "Ship control plane",
+      activeClaims: [],
+      activeTasks: [],
+      staleClaims: [],
+      unresolvedTaskHandoffs: [],
+      blockingObjections: [],
+      openProposals: [],
+      currentVotes: [],
+    }],
+  });
+
+  assert.equal(derivePeerCommandCenterRecommendations(state)[0].command, "/peer do plan goal_123");
+});
+
 test("currentGoalId selects the current goal over older blocked goals", () => {
   const state = buildPeerCommandCenterState({
     currentGoalId: "goal_current",
@@ -188,6 +210,7 @@ test("currentGoalId selects the current goal over older blocked goals", () => {
   assert.match(formatPeerCommandCenter(state), /Goals: goal_current ready no/);
   assert.deepEqual(derivePeerCommandCenterRecommendations(state).map((item) => item.command), [
     "/peer do resolve-handoffs",
+    "/peer do plan goal_current",
     "/peer do review goal_current",
     "/peer setup",
   ]);
@@ -212,6 +235,7 @@ test("failed votes recommend deterministic coordination even when current votes 
 
   assert.deepEqual(derivePeerCommandCenterRecommendations(state).map((item) => item.command), [
     "/peer do coordinate goal_review",
+    "/peer do plan goal_review",
   ]);
 });
 
@@ -295,6 +319,21 @@ test("routePeerIntent work without explicit paths is conservative", async () => 
   assert.equal(result.mutated, false);
   assert.match(result.text, /No write claim created/);
   assert.match(result.text, /\/peer goal claim goal_123/);
+});
+
+test("routePeerIntent plan returns factory plan review command", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "plan",
+    intentArgs: ["goal_123"],
+    paths: ["src/peers"],
+    gates: ["test"],
+    lanes: ["implementation", "review"],
+  }, { peerId: "planner-a" });
+
+  assert.equal(result.mutated, false);
+  assert.equal(result.text, "/peer factory plan-review goal_123 --path src/peers --gate test --lane implementation --lane review");
 });
 
 test("routePeerIntent work path command round-trips flag-like paths through parser", async () => {
