@@ -2,7 +2,7 @@
 
 ## Verification-first factory
 
-Use `/peer factory status` and `/peer do metrics` before closing substantial peer work. Failed gates should become `/peer factory rework` records, not blind retries. Repeated failures should become `/peer context patch` proposals with eval evidence.
+Use `/peer factory status` and `/peer do metrics` before closing substantial peer work. Failed gates should become `/peer factory rework <run-id>` records, not blind retries. Repeated failures should become `/peer context patch` proposals with eval evidence.
 
 ## Bounded recursive self-improvement
 

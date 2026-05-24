@@ -122,10 +122,10 @@ The factory workflow turns peer collaboration into structured, reviewable runs:
 1. `/peer setup`
 2. `/peer center`
 3. `/peer do start goal "Objective"`
-4. `/peer do plan <goal-id>`
-5. `/peer do verify <goal-id>`
-6. `/peer do rework <run-id>` when gates fail
-7. `/peer do metrics`
+4. `/peer do plan <goal-id>`, then run the printed `/peer factory plan-review ...` command
+5. `/peer do verify <goal-id>`, then run the printed `/peer factory run ...` command
+6. `/peer do rework <run-id>` when gates fail, then run the printed `/peer factory rework ...` command
+7. `/peer do metrics`, then run the printed `/peer factory metrics` command
 
 Factory state is stored locally under `.pi/factory/`. It records run starts, attempts, gate results, rework decisions, plan reviews, PR lifecycle records, and metrics snapshots. The default behavior is record-and-recommend; automatic shell execution and PR operations require explicit future opt-in.
 
@@ -133,14 +133,15 @@ Advanced factory and context commands:
 
 ```bash
 /peer factory init
-/peer factory status
-/peer factory run
-/peer factory gate
-/peer factory rework
-/peer factory plan-review
+/peer factory status [run-id]
+/peer factory run "Objective" --goal <goal-id> --gate <gate-id>
+/peer factory attempt <run-id> <start|finish>
+/peer factory gate <run-id> <gate-id> <pass|fail|skip>
+/peer factory rework <run-id>
+/peer factory plan-review <goal-id>
 /peer factory metrics
 /peer context patch
-/peer context eval
+/peer context eval <patch-id> <pass|fail>
 /peer factory pr status
 /peer factory automate status
 ```
