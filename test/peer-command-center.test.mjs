@@ -150,6 +150,8 @@ test("command center avoids unparseable facade recommendations for flag-like ids
   assert.equal(commands.includes("/peer do rework --run"), false);
   assert.equal(commands.includes("/peer do plan --goal"), false);
   assert.equal(commands.includes("/peer do verify --verify"), false);
+  assert.equal(commands.includes('/peer do start goal "plan goal --goal"'), false);
+  assert.equal(commands.includes('/peer do start goal "verify goal --verify"'), false);
   for (const command of commands) {
     const parsed = parsePeerLine(command);
     assert.equal(parsed.error, undefined, command);

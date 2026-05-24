@@ -551,8 +551,7 @@ function recommend(command, reason) {
 
 function goalIntentRecommendation(intent, goalId, reason) {
   if (isFlagLike(goalId)) {
-    const objective = `${intent} goal ${goalId || "<goal-id>"}`;
-    return recommend(`/peer do start goal ${shellQuote(objective)}`, `${reason}; goal id must not start with -- for facade copy/paste`);
+    return recommend("/peer center", `${reason}; goal id starts with -- and cannot be used in /peer do ${intent}`);
   }
   return recommend(`/peer do ${intent} ${commandArg(goalId)}`, reason);
 }
