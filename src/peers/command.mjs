@@ -510,11 +510,11 @@ function parsePeerFactoryAutomateCommand(parsed, flags, positionals) {
   const rest = positionals.slice(1);
   const withAction = { ...parsed, automateAction: action };
   if (!["status", "init", "run", "record"].includes(action)) return { ...withAction, error: `Unknown /peer factory automate action '${action}'` };
+  const flagError = validatePeerFactoryAutomateFlags(parsed, action);
+  if (flagError) return { ...withAction, error: flagError };
   if ((action === "status" || action === "init") && rest.length) return { ...withAction, error: `/peer factory automate ${action} accepts no positional arguments` };
   if (action === "status" || action === "init") return withAction;
   if (action === "run") {
-    if (flags.dry !== undefined) return { ...withAction, error: "Unknown /peer factory automate flag '--dry'" };
-    if (flags.goalId !== undefined) return { ...withAction, error: "Unknown /peer factory automate flag '--goalId'" };
     const automationId = rest[0];
     const goalId = stringFlag(flags.goal, undefined);
     if (rest.length > 1) return { ...withAction, automationId, goalId, error: "/peer factory automate run requires exactly <automation-id> --goal <goal-id>" };
@@ -526,8 +526,6 @@ function parsePeerFactoryAutomateCommand(parsed, flags, positionals) {
       dryRun: flagEnabled(flags.dryRun),
     });
   }
-  if (flags.goal !== undefined) return { ...withAction, error: "Unknown /peer factory automate record flag '--goal'" };
-  if (flags.goalId !== undefined) return { ...withAction, error: "Unknown /peer factory automate record flag '--goalId'" };
   const automationId = rest[0];
   const status = rest[1];
   const evidence = stringFlag(flags.evidence, undefined);
@@ -539,6 +537,29 @@ function parsePeerFactoryAutomateCommand(parsed, flags, positionals) {
     status,
     evidence,
   });
+}
+
+function validatePeerFactoryAutomateFlags(parsed, action) {
+  const allowedFlags = {
+    status: new Set(),
+    init: new Set(),
+    run: new Set(["--goal", "--dry-run"]),
+    record: new Set(["--evidence"]),
+  }[action];
+  const unknownFlag = rawPeerFactoryAutomateFlags(parsed).find((flag) => !allowedFlags.has(flag));
+  if (!unknownFlag) return undefined;
+  if (action === "record") return `Unknown /peer factory automate record flag '${unknownFlag}'`;
+  if (action === "status" || action === "init") return `Unknown /peer factory automate ${action} flag '${unknownFlag}'`;
+  return `Unknown /peer factory automate flag '${unknownFlag}'`;
+}
+
+function rawPeerFactoryAutomateFlags(parsed) {
+  const tokens = splitCommandLine(parsed.rawArgs);
+  const automateIndex = tokens.indexOf("automate");
+  const relevantTokens = automateIndex >= 0 ? tokens.slice(automateIndex + 1) : tokens;
+  return relevantTokens
+    .filter((token) => token.startsWith("--"))
+    .map((token) => token.split("=", 1)[0]);
 }
 
 function parsePeerFactoryPrCommand(parsed, flags, positionals) {

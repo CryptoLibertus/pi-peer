@@ -218,12 +218,17 @@ test("parses peer factory automation commands", () => {
   assert.match(parsePeerCommand("factory automate run").error, /run requires <automation-id> --goal <goal-id>/);
   assert.match(parsePeerCommand("factory automate run bug-fixer").error, /run requires <automation-id> --goal <goal-id>/);
   assert.match(parsePeerCommand("factory automate status extra").error, /status accepts no positional arguments/);
+  assert.match(parsePeerCommand("factory automate status --execute").error, /Unknown \/peer factory automate status flag '--execute'/);
   assert.match(parsePeerCommand("factory automate init extra").error, /init accepts no positional arguments/);
+  assert.match(parsePeerCommand("factory automate init --force").error, /Unknown \/peer factory automate init flag '--force'/);
   assert.match(parsePeerCommand("factory automate run bug-fixer extra --goal goal_123").error, /run requires exactly <automation-id> --goal <goal-id>/);
   assert.match(parsePeerCommand("factory automate record pr-reviewer done extra --evidence nope").error, /record requires exactly <automation-id> <done\|blocked\|error> --evidence <text>/);
   assert.match(parsePeerCommand("factory automate run bug-fixer --goal goal_123 --dry").error, /Unknown \/peer factory automate flag '--dry'/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer --goal goal_123 --dryRun").error, /Unknown \/peer factory automate flag '--dryRun'/);
+  assert.match(parsePeerCommand("factory automate run bug-fixer --goal goal_123 --execute").error, /Unknown \/peer factory automate flag '--execute'/);
   assert.match(parsePeerCommand("factory automate run bug-fixer --goalId goal_123").error, /Unknown \/peer factory automate flag '--goalId'/);
   assert.match(parsePeerCommand("factory automate record bug-fixer done --evidence ok --goal goal_123").error, /Unknown \/peer factory automate record flag '--goal'/);
+  assert.match(parsePeerCommand("factory automate record bug-fixer done --evidence ok --execute").error, /Unknown \/peer factory automate record flag '--execute'/);
   assert.match(parsePeerCommand("factory automate record bug-fixer queued --evidence nope").error, /record requires <automation-id> <done\|blocked\|error> --evidence <text>/);
   assert.match(parsePeerCommand("factory automate record bug-fixer done").error, /record requires <automation-id> <done\|blocked\|error> --evidence <text>/);
 });
