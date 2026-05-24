@@ -87,13 +87,14 @@ Or coordinate through a goal board:
 /peer scout <goal-id>
 ```
 
-## Simplified command center workflow
+## Natural-language mission workflow
 
-For the primary workflow, start with the guided command center:
+For the primary workflow, tell Pi what you want to accomplish:
 
 ```bash
 /peer setup
-/peer setup 1
+/peer setup 6
+/peer do "Ship a verified improvement to peer coordination" --path src/peers --gate test --gate pack
 /peer center
 ```
 
@@ -109,23 +110,24 @@ For the primary workflow, start with the guided command center:
 8. Shepherd PRs
 9. Inspect status only
 
-`/peer center` shows the local role and domain, active peers, goal-board state, subruns, and recommended next commands.
+`/peer do "<objective>"` is the natural-language mission facade. It creates or reuses a peer goal, seeds peer lanes, links a factory run, and prints only the next actions still needing evidence. If setup is missing, it tells you the setup command to run first.
 
-`/peer do <intent>` handles common workflows such as status, review, research, work, resolve-handoffs, and subagents without requiring the full command tree.
+`/peer center` shows the local role and domain, active peers, goal-board state, subruns, and recommended next commands. Use it when you want to inspect or resume a session.
+
+`/peer accomplish "<objective>"` is an alias for the same mission flow. Explicit `/peer do <intent>` commands still exist for status, review, research, work, resolve-handoffs, subagents, metrics, and advanced factory flows.
 
 Private subagent teams are optional. `/peer subrun start <summary>` records compact local subagent work in `.pi/peer-control-ledger.jsonl`; when `pi-subagents` is missing, the command records a blocked/manual state instead of crashing.
 
 ## Verification-first factory workflow
 
-The factory workflow turns peer collaboration into structured, reviewable runs:
+The factory workflow turns peer collaboration into structured, reviewable runs. Most users should start with the mission facade:
 
 1. `/peer setup`
-2. `/peer center`
-3. `/peer do start goal "Objective"`
-4. `/peer do plan <goal-id>`, then run the printed `/peer factory plan-review ...` command
-5. `/peer do verify <goal-id>`, then run the printed `/peer factory run ...` command
-6. `/peer do rework <run-id>` when gates fail, then run the printed `/peer factory rework ...` command
-7. `/peer do metrics`, then run the printed `/peer factory metrics` command
+2. `/peer setup 6`
+3. `/peer do "Objective" --gate test --gate pack`
+4. Run the printed plan-review command
+5. Run verification outside peer, then record the printed gate-result commands
+6. `/peer center`
 
 Factory state is stored locally under `.pi/factory/`. It records run starts, attempts, gate results, rework decisions, plan reviews, and PR lifecycle records; metrics are derived from those local ledgers when requested. The default behavior is record-and-recommend; automatic shell execution and PR operations require explicit future opt-in.
 
@@ -135,22 +137,13 @@ Factory verification smoke test:
 /peer setup id smoke-verifier
 /peer setup 6
 /peer center
-/peer do start goal "Smoke test factory verification"
+/peer do "Smoke test factory verification" --gate test --gate pack
 ```
 
-Copy the created `goal-id`, then ask the command center for the plan and verification commands:
+The mission output includes the created `goal-id`, linked `run-id`, plan-review command, and gate-result commands. Run the printed plan review command, run verification outside peer, then record gates:
 
 ```bash
-/peer do plan <goal-id>
-# Run the printed /peer factory plan-review ... command.
-
-/peer do verify <goal-id>
-# Run the printed /peer factory run ... command and copy the run-id.
-```
-
-Mark the required gates and inspect metrics:
-
-```bash
+# Run the printed /peer factory plan-review ... command first.
 /peer factory gate <run-id> test pass --evidence "npm test passed"
 /peer factory gate <run-id> pack pass --evidence "npm pack --dry-run passed"
 /peer factory metrics

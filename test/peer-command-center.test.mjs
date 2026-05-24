@@ -542,6 +542,96 @@ test("routePeerIntent start goal reports factory linkage failure with recovery",
   assert.match(result.text, new RegExp(`Next: /peer do plan ${result.goalId}`));
 });
 
+test("routePeerIntent mission creates goal, links factory run, and prints next needed actions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+  const factoryRuns = [];
+
+  const result = await routePeerIntent(root, {
+    intent: "mission",
+    objective: "Ship natural language mission UX",
+    intentArgs: ["Ship", "natural", "language", "mission", "UX"],
+    gates: ["test", "pack"],
+    paths: ["src/peers"],
+  }, {
+    setupSession: { exists: true },
+    peerId: "planner-a",
+    runtimeStatus: { localPeerId: "planner-a" },
+    startFactoryRun: async (factoryRoot, input) => {
+      factoryRuns.push({ root: factoryRoot, input });
+      return { runId: "fac_mission_123" };
+    },
+  });
+
+  assert.equal(result.mutated, true);
+  assert.match(result.goalId, /^goal_/);
+  assert.equal(result.factoryRunId, "fac_mission_123");
+  assert.equal(factoryRuns.length, 1);
+  assert.equal(factoryRuns[0].input.objective, "Ship natural language mission UX");
+  assert.equal(factoryRuns[0].input.goalId, result.goalId);
+  assert.equal(factoryRuns[0].input.source, "peer-mission");
+  assert.deepEqual(factoryRuns[0].input.gates, ["test", "pack"]);
+  assert.deepEqual(factoryRuns[0].input.paths, ["src/peers"]);
+
+  const board = await loadPeerGoalBoard(root);
+  assert.equal(board.goals[result.goalId].objective, "Ship natural language mission UX");
+  assert.match(result.text, /Mission started/);
+  assert.match(result.text, new RegExp(`Goal: ${result.goalId}`));
+  assert.match(result.text, /Factory run: fac_mission_123/);
+  assert.match(result.text, new RegExp(`/peer factory plan-review ${result.goalId} --path=src/peers --gate=test --gate=pack`));
+  assert.match(result.text, /\/peer factory gate fac_mission_123 test pass --evidence/);
+  assert.match(result.text, /\/peer factory gate fac_mission_123 pack pass --evidence/);
+  assert.match(result.text, /\/peer center/);
+});
+
+test("routePeerIntent mission asks for setup before mutating when setup is missing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "mission",
+    objective: "Ship setup-free workflow",
+    intentArgs: ["Ship", "setup-free", "workflow"],
+  }, {
+    setupSession: { exists: false },
+  });
+
+  assert.equal(result.mutated, false);
+  assert.match(result.text, /Mission needs a peer role first/);
+  assert.match(result.text, /\/peer setup/);
+  assert.match(result.text, /\/peer setup 6/);
+  assert.match(result.text, /\/peer do "Ship setup-free workflow"/);
+});
+
+test("routePeerIntent mission reuses matching open goals", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+  const existing = await routePeerIntent(root, {
+    intent: "start",
+    intentArgs: ["goal", "Reuse", "mission", "goal"],
+  }, {
+    peerId: "planner-a",
+  });
+  const factoryRuns = [];
+
+  const result = await routePeerIntent(root, {
+    intent: "mission",
+    objective: "Reuse mission goal",
+    intentArgs: ["Reuse", "mission", "goal"],
+  }, {
+    setupSession: { exists: true },
+    peerId: "planner-a",
+    goals: [{ id: existing.goalId, objective: "Reuse mission goal", status: "open" }],
+    startFactoryRun: async (factoryRoot, input) => {
+      factoryRuns.push({ root: factoryRoot, input });
+      return { runId: "fac_reused", reused: true };
+    },
+  });
+
+  assert.equal(result.mutated, true);
+  assert.equal(result.goalId, existing.goalId);
+  assert.match(result.text, /Mission resumed/);
+  assert.match(result.text, /Factory run: fac_reused/);
+  assert.equal(factoryRuns[0].input.goalId, existing.goalId);
+});
+
 test("routePeerIntent work without explicit paths is conservative", async () => {
   const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
 

@@ -125,6 +125,25 @@ test("parses peer do facade intents", () => {
   assert.deepEqual(review.intentArgs, ["goal_123"]);
 });
 
+test("parses natural-language mission intents", () => {
+  const implicit = parsePeerCommand("do Ship a verified coordination improvement --gate test --gate pack");
+  assert.equal(implicit.subcommand, "do");
+  assert.equal(implicit.intent, "mission");
+  assert.equal(implicit.objective, "Ship a verified coordination improvement");
+  assert.deepEqual(implicit.intentArgs, ["Ship", "a", "verified", "coordination", "improvement"]);
+  assert.deepEqual(implicit.gates, ["test", "pack"]);
+
+  const explicit = parsePeerCommand("do mission Improve peer setup UX --path src/peers");
+  assert.equal(explicit.intent, "mission");
+  assert.equal(explicit.objective, "Improve peer setup UX");
+  assert.deepEqual(explicit.paths, ["src/peers"]);
+
+  const alias = parsePeerCommand("accomplish Improve factory onboarding");
+  assert.equal(alias.subcommand, "do");
+  assert.equal(alias.intent, "mission");
+  assert.equal(alias.objective, "Improve factory onboarding");
+});
+
 test("parses peer do factory facade intents", () => {
   const verify = parsePeerCommand("do verify goal_123 --gate test --gate pack");
   assert.equal(verify.subcommand, "do");

@@ -4,24 +4,29 @@
 
 Use `/peer factory status` and `/peer do metrics` before closing substantial peer work. Failed gates should become `/peer factory rework <run-id>` records, not blind retries. Repeated failures should become `/peer context patch --trigger <trigger> --change <change> --metric <metric> --eval <eval-name> --owner <peer-id> --review-date YYYY-MM-DD` proposals followed by `/peer context eval <patch-id> <pass|fail> --eval <eval-name> --evidence <text>`.
 
+Prefer the mission facade for new substantial work:
+
+```bash
+/peer do "Ship a verified improvement to peer coordination" --path src/peers --gate test --gate pack
+```
+
+This creates or reuses a peer goal, seeds peer lanes, links a factory run, and prints only the next actions that still need external evidence. If setup is missing, run `/peer setup` and `/peer setup 6`, then repeat the mission command. `/peer accomplish <objective>` is an alias.
+
 Factory workflow quickstart:
 
 ```bash
 /peer setup id smoke-verifier
 /peer setup 6
 /peer center
-/peer do start goal "Smoke test factory verification"
-/peer do plan <goal-id>
-# run the printed /peer factory plan-review ... command
-/peer do verify <goal-id>
-# run the printed /peer factory run ... command and copy the run-id
+/peer do "Smoke test factory verification" --gate test --gate pack
+# run the printed /peer factory plan-review ... command, then run external verification
 /peer factory gate <run-id> test pass --evidence "npm test passed"
 /peer factory gate <run-id> pack pass --evidence "npm pack --dry-run passed"
 /peer factory metrics
 /peer center
 ```
 
-Expected result: the run is `verified`, metrics show one verified run, and `/peer center` stops recommending rework for that run. `/peer do` commands recommend or create peer/factory records; they do not automatically run shell verification or publish artifacts.
+Expected result: the run is `verified`, metrics show one verified run, and `/peer center` stops recommending rework for that run. `/peer do` mission commands create peer/factory records; they do not automatically run shell verification, publish artifacts, or perform remote writes.
 
 ## Bounded recursive self-improvement
 

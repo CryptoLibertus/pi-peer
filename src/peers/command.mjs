@@ -1,6 +1,6 @@
 import { flagEnabled, parseFlags, splitCommandLine } from "../utils.mjs";
 
-export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "center", "init", "setup", "do", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics"]);
+export const PEER_COMMANDS = Object.freeze(["help", "status", "context", "list", "center", "init", "setup", "do", "mission", "accomplish", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics"]);
 
 const PEER_GOAL_ALIASES = Object.freeze({
   goals: ["list"],
@@ -90,6 +90,9 @@ export function parsePeerCommand(rawArgs = "") {
   if (subcommand === "do") {
     return parsePeerDoCommand(parsed, flags, positionals);
   }
+  if (subcommand === "mission" || subcommand === "accomplish") {
+    return parsePeerDoCommand({ ...parsed, subcommand: "do", facadeCommand: subcommand }, flags, ["mission", ...positionals]);
+  }
   if (subcommand === "subrun") {
     return parsePeerSubrunCommand(parsed, flags, positionals);
   }
@@ -146,7 +149,8 @@ export function formatPeerHelp() {
     "",
     "- `/peer setup` — open the wizard; use `/peer setup 1`, `/peer setup subagents`, `/peer setup reset`, or legacy setup flags",
     "- `/peer center` — open the peer command center facade",
-    "- `/peer do <intent> [args...] [--constraint <a,b>] [--path <a,b>] [--lane <a,b>]` — run a high-level peer workflow intent",
+    "- `/peer do <intent> [args...]` or `/peer do <objective>` `[--constraint <a,b>] [--path <a,b>] [--lane <a,b>]` — run a high-level peer workflow intent or start a natural-language mission",
+    "- `/peer accomplish <objective>` — alias for `/peer do mission <objective>`",
     "- `/peer subrun status|start|progress|complete|cancel ...` — coordinate subagent run status and evidence",
     "- `/peer factory init|status|run|gate|attempt|rework|plan-review|metrics ...` — coordinate factory control-plane runs, gates, attempts, and metrics",
     "- `/peer factory automate status|init|run|record ...` — inspect and record optional automation recommendations without executing them",
@@ -385,7 +389,23 @@ function parsePeerSetupCommand(parsed, flags, positionals) {
 
 function parsePeerDoCommand(parsed, flags, positionals) {
   const intent = positionals[0] || "status";
-  const validIntents = ["setup", "status", "start", "coordinate", "review", "research", "work", "plan", "verify", "rework", "metrics", "ship", "automate", "resolve-handoffs", "subagents"];
+  const validIntents = ["setup", "status", "start", "coordinate", "review", "research", "work", "plan", "verify", "rework", "metrics", "ship", "automate", "resolve-handoffs", "subagents", "mission", "accomplish"];
+  const missionAlias = intent === "mission" || intent === "accomplish";
+  const missionArgs = missionAlias ? positionals.slice(1) : positionals;
+  if (missionAlias || !validIntents.includes(intent)) {
+    const objective = missionArgs.join(" ").trim();
+    if (!objective) return { ...parsed, intent: "mission", intentArgs: [], error: "/peer do mission requires <objective>" };
+    return {
+      ...parsed,
+      intent: "mission",
+      objective,
+      intentArgs: missionArgs,
+      constraints: listFlag(flags.constraint || flags.constraints),
+      paths: listFlag(flags.path || flags.paths),
+      gates: listFlag(flags.gate || flags.gates),
+      lanes: listFlag(flags.lane || flags.lanes),
+    };
+  }
   const withIntent = { ...parsed, intent, intentArgs: positionals.slice(1) };
   if (!validIntents.includes(intent)) return { ...withIntent, error: `Unknown /peer do intent '${intent}'` };
   return {

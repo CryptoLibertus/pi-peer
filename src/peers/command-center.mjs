@@ -189,6 +189,10 @@ export async function routePeerIntent(root, parsed = {}, context = {}) {
     return { mutated: true, goalId: goal.id, factoryRunId: factoryRun?.runId, text: lines.join("\n") };
   }
 
+  if (intent === "mission") {
+    return routePeerMission(root, parsed, context, peerId);
+  }
+
   if (intent === "coordinate") {
     const goal = resolveRouteGoal(args[0], context);
     return { mutated: false, text: formatPeerIntentResult({ commands: coordinateCommands(goal) }) || "No coordination cleanup commands available." };
@@ -309,11 +313,102 @@ async function startPeerDoFactoryRun(root, parsed, context, input) {
       peerId: input.peerId,
       paths: parsed.paths,
       gates: parsed.gates,
-      source: "peer-do",
+      source: input.source || "peer-do",
     });
   } catch (error) {
     return { error: errorMessage(error) };
   }
+}
+
+async function routePeerMission(root, parsed = {}, context = {}, peerId = "unknown") {
+  const objective = text(parsed.objective || array(parsed.intentArgs).join(" "), "");
+  if (!objective) return { mutated: false, text: "/peer do mission <objective>" };
+
+  const centerState = buildPeerCommandCenterState({ ...context, setup: context.setup || context.setupSession, objective });
+  if (centerState.setup?.exists === false) {
+    return {
+      mutated: false,
+      text: [
+        "Mission needs a peer role first.",
+        "1. /peer setup",
+        "2. /peer setup 6",
+        `3. /peer do ${commandArg(objective)}`,
+      ].join("\n"),
+    };
+  }
+
+  const gates = array(parsed.gates).length ? array(parsed.gates) : ["test", "pack"];
+  const missionParsed = { ...parsed, gates };
+  let goal = findReusableMissionGoal(objective, centerState);
+  const created = !goal?.id;
+
+  if (created) {
+    goal = await createPeerGoal(root, {
+      objective,
+      constraints: parsed.constraints,
+      peerId,
+    });
+    await seedPeerGoalProposals(root, goal.id, peerId);
+  }
+
+  const factoryRun = await startPeerDoFactoryRun(root, missionParsed, context, {
+    goalId: goal.id,
+    objective,
+    peerId,
+    source: "peer-mission",
+  });
+
+  const factoryRunId = factoryRun?.runId;
+  const planCommand = planReviewCommand(goal.id, missionParsed);
+  const gateCommands = gates.map((gate) => `/peer factory gate ${commandArg(factoryRunId || "<run-id>")} ${commandArg(gate)} pass --evidence ${commandArg(`${gate} gate passed`)}`);
+  const lines = [
+    `${created ? "Mission started" : "Mission resumed"}: ${objective}`,
+    `Goal: ${goal.id}`,
+  ];
+
+  if (factoryRun?.error) {
+    lines.push(`Factory run failed: ${factoryRun.error}`);
+    lines.push(`Retry: /peer factory run ${commandArg(objective)} --goal ${commandArg(goal.id)} --source peer-mission`);
+  } else if (factoryRunId) {
+    lines.push(`Factory run: ${factoryRunId}${factoryRun.reused ? " (reused)" : ""}`);
+  } else {
+    lines.push("Factory run: not linked; run the factory command below when ready.");
+  }
+
+  lines.push(
+    "",
+    "Handled:",
+    created ? "- created peer goal and seeded peer lanes" : "- reused matching open peer goal",
+    factoryRunId ? "- linked or reused a factory run" : "- prepared factory next steps",
+    "",
+    "Next needed:",
+    `1. ${planCommand}`,
+    "2. Run verification outside peer, then record gate evidence:",
+    ...gateCommands.map((command) => `   - ${command}`),
+    "3. /peer factory metrics",
+    "4. /peer center",
+  );
+
+  return { mutated: true, goalId: goal.id, factoryRunId, text: lines.join("\n") };
+}
+
+function findReusableMissionGoal(objective, state = {}) {
+  const normalizedObjective = normalizeMissionText(objective);
+  const current = state.currentGoal;
+  if (isOpenGoal(current) && (isContinueObjective(normalizedObjective) || normalizeMissionText(current.objective) === normalizedObjective)) return current;
+  return array(state.goals).find((goal) => isOpenGoal(goal) && normalizeMissionText(goal.objective) === normalizedObjective);
+}
+
+function isContinueObjective(value) {
+  return ["continue", "next", "resume"].includes(value);
+}
+
+function isOpenGoal(goal) {
+  return Boolean(goal?.id && goal.status !== "closed");
+}
+
+function normalizeMissionText(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function coordinateCommands(goal) {

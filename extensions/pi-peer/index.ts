@@ -105,7 +105,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("peer", {
     description: "Pi-to-Pi peers: setup, center, do, subrun, org, doctor, status, list, send, get, await, progress, goal, hive, self-improve, factory, metrics",
-    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "init", "setup", "do", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
+    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "init", "setup", "do", "mission", "accomplish", "subrun", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (rawArgs, ctx) => {
