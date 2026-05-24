@@ -8,6 +8,7 @@ import {
   appendContextPatch,
   CONTEXT_DIR,
   CONTEXT_PATCHES_FILE,
+  contextPatchHasPassingEval,
   deriveContextLifecycleState,
   formatContextLifecycleStatus,
   loadContextLifecycle,
@@ -126,6 +127,37 @@ test("context lifecycle uses latest matching eval result status", async (t) => {
     assert.equal(state.patchEvalStatus[passThenFail.patchId], "fail");
     assert.deepEqual(state.openPatches.map((patch) => patch.patchId), [passThenFail.patchId]);
     assert.deepEqual(state.failingEvalResults.map((result) => result.patchId), [passThenFail.patchId]);
+  });
+});
+
+test("context patch pass check requires existing patch and latest matching eval pass", async (t) => {
+  await withRoot(t, async (root) => {
+    const closed = await appendContextPatch(root, {
+      trigger: "review misses",
+      change: "Add review checklist",
+      metric: "review miss rate",
+      evalName: "review-checklist",
+      owner: "reviewer-a",
+      reviewDate: "2026-06-24",
+    });
+    const reopened = await appendContextPatch(root, {
+      trigger: "handoff misses",
+      change: "Add handoff checklist",
+      metric: "handoff miss rate",
+      evalName: "handoff-checklist",
+      owner: "planner-a",
+      reviewDate: "2026-06-24",
+    });
+
+    await recordContextEvalResult(root, { patchId: closed.patchId, evalName: "review-checklist", status: "fail", evidence: "first run failed" });
+    await recordContextEvalResult(root, { patchId: closed.patchId, evalName: "review-checklist", status: "pass", evidence: "second run passed" });
+    await recordContextEvalResult(root, { patchId: reopened.patchId, evalName: "handoff-checklist", status: "pass", evidence: "first run passed" });
+    await recordContextEvalResult(root, { patchId: reopened.patchId, evalName: "handoff-checklist", status: "fail", evidence: "second run failed" });
+
+    const state = deriveContextLifecycleState(await loadContextLifecycle(root));
+    assert.equal(contextPatchHasPassingEval(state, closed.patchId), true);
+    assert.equal(contextPatchHasPassingEval(state, reopened.patchId), false);
+    assert.equal(contextPatchHasPassingEval(state, "ctx_missing"), false);
   });
 });
 

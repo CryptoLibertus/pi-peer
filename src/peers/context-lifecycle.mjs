@@ -92,6 +92,15 @@ export function deriveContextLifecycleState(loaded = {}) {
   };
 }
 
+export function contextPatchHasPassingEval(state, patchId) {
+  const id = cleanText(patchId);
+  if (!id) return false;
+  const patches = Array.isArray(state?.patches) ? state.patches : [];
+  const patch = patches.find((item) => item.patchId === id);
+  if (!patch) return false;
+  return state?.patchEvalStatus?.[id] === "pass";
+}
+
 export function formatContextLifecycleStatus(state = {}) {
   const patches = Array.isArray(state.patches) ? state.patches : [];
   const retros = Array.isArray(state.retros) ? state.retros : [];
