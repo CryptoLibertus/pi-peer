@@ -410,7 +410,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       const root = ctx.cwd || process.cwd();
       if (runtime.enabled) await runtime.refreshLocalPeers();
       const input = await collectPeerCommandCenterInput(ctx, runtime);
-      const result = await routePeerIntent(root, parsed, { ...input, peerId: runtime.localPeerId || runtime.summary?.localPeerId || "unknown" });
+      const result = await routePeerIntent(root, parsed, { ...input, peerId: runtime.localPeerId || runtime.summary?.localPeerId || "unknown", startFactoryRun });
       await refresh();
       return sendPeerMessage(pi, result.text);
     }
@@ -703,7 +703,19 @@ async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any)
     durationMs: parsed.durationMs,
     autoCommit: parsed.autoCommit,
     peerId,
+    factory: true,
   });
+  const factoryRun = await startFactoryRun(root, {
+    objective: parsed.objective,
+    goalId: result.goalId,
+    peerId,
+    paths: result.paths,
+    gates: result.evals,
+    source: "self-improve",
+    metadata: { selfImprove: { runId: result.runId } },
+  });
+  result.factory = { ...(result.factory || {}), runId: factoryRun.runId };
+  result.factoryRunId = factoryRun.runId;
   result.dispatchRequested = parsed.dispatch === true;
 
   if (parsed.dispatch && result.peers?.length && result.durationMs) {

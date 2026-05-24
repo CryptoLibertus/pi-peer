@@ -73,6 +73,20 @@ test("self-improve run creates bounded goal-board work and experiment record", a
   });
 });
 
+test("self-improve run can emit factory metadata", async (t) => {
+  await withRoot(t, async (root) => {
+    const result = await startSelfImproveRun(root, {
+      objective: "Improve verification",
+      loops: 1,
+      peerId: "planner",
+      factory: true,
+    });
+
+    assert.equal(result.factory?.source, "self-improve");
+    assert.equal(result.factory?.objective, "Improve verification");
+  });
+});
+
 test("self-improve loop count is bounded", async (t) => {
   await withRoot(t, async (root) => {
     await assert.rejects(

@@ -151,7 +151,27 @@ export async function startSelfImproveRun(root, input = {}) {
   });
 
   const board = await loadPeerGoalBoard(root);
-  return { runId, goalId: goal.id, goal: board.goals[goal.id], loops, lanes, paths, evals, peers, durationMs, autoCommit };
+  return {
+    runId,
+    goalId: goal.id,
+    goal: board.goals[goal.id],
+    loops,
+    lanes,
+    paths,
+    evals,
+    peers,
+    durationMs,
+    autoCommit,
+    factory: input.factory === true
+      ? {
+        source: "self-improve",
+        objective,
+        gates: evals,
+        paths,
+        runId: undefined,
+      }
+      : undefined,
+  };
 }
 
 export async function appendExperimentRecord(root, record = {}) {
@@ -175,6 +195,7 @@ export function formatSelfImproveRunResult(result = {}) {
   return [
     `# Self-improvement run ${result.runId}`,
     `goal: ${result.goalId}`,
+    result.factoryRunId || result.factory?.runId ? `factoryRunId: ${result.factoryRunId || result.factory.runId}` : undefined,
     `loops: ${result.loops}`,
     `lanes: ${(result.lanes || []).join(", ")}`,
     `evals: ${(result.evals || []).join("; ")}`,
@@ -191,7 +212,7 @@ export function formatSelfImproveRunResult(result = {}) {
         : result.dispatchRequested && !result.peers?.length
           ? "Dispatch requested but skipped: no active compatible peers were resolved. Start compatible peers or pass --peer <id[,id]> explicitly; the run was created in safe planning mode."
           : "No peers dispatched. Add --dispatch with --duration (and optionally --peer <id[,id]>), use `/peer hive run <objective> --duration <time>`, or let peers self-select from the goal board.",
-  ].join("\n");
+  ].filter((line) => line !== undefined).join("\n");
 }
 
 export function formatSelfImproveStatus(state = {}) {

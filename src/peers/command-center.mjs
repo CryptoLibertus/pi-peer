@@ -159,16 +159,16 @@ export async function routePeerIntent(root, parsed = {}, context = {}) {
       peerId,
     });
     await seedPeerGoalProposals(root, goal.id, peerId);
+    const factoryRun = await startPeerDoFactoryRun(root, parsed, context, { goalId: goal.id, objective, peerId });
 
-    return {
-      mutated: true,
-      goalId: goal.id,
-      text: [
-        `Created peer goal ${goal.id}: ${goal.objective}`,
-        `Next: /peer scout ${goal.id}`,
-        "Then: /peer center",
-      ].join("\n"),
-    };
+    const lines = [`Created peer goal ${goal.id}: ${goal.objective}`];
+    if (factoryRun?.runId) {
+      lines.push(`Factory run: ${factoryRun.runId}`, `Next: /peer do plan ${goal.id}`, "Then: /peer center");
+    } else {
+      lines.push(`Next: /peer scout ${goal.id}`, "Then: /peer center");
+    }
+
+    return { mutated: true, goalId: goal.id, factoryRunId: factoryRun?.runId, text: lines.join("\n") };
   }
 
   if (intent === "coordinate") {
@@ -249,6 +249,18 @@ async function seedPeerGoalProposals(root, goalId, peerId) {
       metadata: { readOnlySeed: true },
     });
   }
+}
+
+async function startPeerDoFactoryRun(root, parsed, context, input) {
+  if (typeof context.startFactoryRun !== "function") return undefined;
+  return context.startFactoryRun(root, {
+    objective: input.objective,
+    goalId: input.goalId,
+    peerId: input.peerId,
+    paths: parsed.paths,
+    gates: parsed.gates,
+    source: "peer-do",
+  });
 }
 
 function coordinateCommands(goal) {

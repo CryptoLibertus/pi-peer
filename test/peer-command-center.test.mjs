@@ -409,6 +409,32 @@ test("routePeerIntent start goal creates a goal and seed proposals", async () =>
   assert.ok(current.events.filter((event) => event.type === "proposal").length >= 3);
 });
 
+test("routePeerIntent start goal can link a factory run", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+  const factoryRuns = [];
+
+  const result = await routePeerIntent(root, {
+    intent: "start",
+    intentArgs: ["goal", "Ship", "factory", "workflow"],
+  }, {
+    peerId: "planner-a",
+    runtimeStatus: { localPeerId: "planner-a" },
+    startFactoryRun: async (factoryRoot, input) => {
+      factoryRuns.push({ root: factoryRoot, input });
+      return { runId: "fac_test_123" };
+    },
+  });
+
+  assert.equal(result.mutated, true);
+  assert.equal(factoryRuns.length, 1);
+  assert.equal(factoryRuns[0].root, root);
+  assert.equal(factoryRuns[0].input.objective, "Ship factory workflow");
+  assert.equal(factoryRuns[0].input.goalId, result.goalId);
+  assert.equal(factoryRuns[0].input.source, "peer-do");
+  assert.match(result.text, /Factory run: fac_test_123/);
+  assert.match(result.text, new RegExp(`Next: /peer do plan ${result.goalId}`));
+});
+
 test("routePeerIntent work without explicit paths is conservative", async () => {
   const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
 
