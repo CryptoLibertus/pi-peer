@@ -30,6 +30,9 @@ export function normalizePrRecord(input = {}) {
 export async function appendPrRecord(root, input = {}) {
   if (!root) throw new Error("pr shepherd ledger requires root");
   await mkdir(join(root, dirname(PR_SHEPHERD_FILE)), { recursive: true });
+  const loaded = await loadPrRecords(root);
+  const trailingWarning = loaded.warnings.find((warning) => warning.type === "trailing-corrupt-record");
+  if (trailingWarning) throw new Error(`cannot append pr shepherd record after trailing corrupt ledger record at line ${trailingWarning.line}: ${trailingWarning.message}`);
   const record = normalizePrRecord(input);
   await appendFile(join(root, PR_SHEPHERD_FILE), `${JSON.stringify(record)}\n`, "utf8");
   return record;
@@ -113,8 +116,8 @@ export function derivePrShepherdState(records = []) {
 }
 
 export function derivePrShepherdCommands(input = {}) {
-  const remote = validateGitCommandValue(cleanText(input.remote) || "origin", "remote");
-  const branch = validateGitCommandValue(cleanText(input.branch) || "HEAD", "branch");
+  const remote = validateGitCommandValue(input.remote ?? "origin", "remote");
+  const branch = validateGitCommandValue(input.branch ?? "HEAD", "branch");
   const title = cleanText(input.title) || "<title>";
   const body = cleanText(input.body) || "<body>";
   return [
@@ -231,11 +234,12 @@ function formatDisplayStatus({ status, ciStatus, stale }) {
 }
 
 function validateGitCommandValue(value, label) {
+  if (typeof value !== "string") throw new Error(`unsafe ${label}: non-string value`);
+  if (/\s/.test(value)) throw new Error(`unsafe ${label}: whitespace is not allowed`);
   const text = cleanText(value);
   if (!text) throw new Error(`unsafe ${label}: empty value`);
   const unsafe = text.startsWith("-")
     || text.includes(":")
-    || /\s/.test(text)
     || /['"`;$(){}[\]<>|&\\]/.test(text)
     || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(text)
     || text.includes("..")

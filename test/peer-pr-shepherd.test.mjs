@@ -47,6 +47,9 @@ test("pr shepherd refuses unsafe remote and branch command values", () => {
     "feature;rm",
     "feature$(touch bad)",
     "feature\nmain",
+    " feature",
+    "feature ",
+    "feature\tmain",
   ];
 
   for (const value of unsafeValues) {
@@ -192,6 +195,22 @@ test("pr shepherd ledger throws on corrupt middle records and warns on trailing 
   await writeFile(trailingLedgerPath, `${JSON.stringify(normalizePrRecord({ runId: "fac_1", action: "created" }))}\n{bad json`, "utf8");
 
   const loaded = await loadPrRecords(trailingRoot);
+  assert.equal(loaded.records.length, 1);
+  assert.equal(loaded.warnings.length, 1);
+});
+
+test("pr shepherd append refuses to append after trailing partial ledger record", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-pr-shepherd-"));
+  const ledgerPath = join(root, PR_SHEPHERD_FILE);
+  await mkdir(join(root, ".pi/factory"), { recursive: true });
+  await writeFile(ledgerPath, `${JSON.stringify(normalizePrRecord({ runId: "fac_1", action: "created" }))}\n{bad json`, "utf8");
+
+  await assert.rejects(
+    appendPrRecord(root, { runId: "fac_2", action: "created" }),
+    /trailing corrupt/i,
+  );
+
+  const loaded = await loadPrRecords(root);
   assert.equal(loaded.records.length, 1);
   assert.equal(loaded.warnings.length, 1);
 });
