@@ -130,21 +130,55 @@ test("peer footer status prioritizes coordination activations and protocol offer
       },
     },
   }, { peers: [], messages: [] });
-  assert.equal(formatPeerFooterStatusLine(coordinationStatus).text, "🔗 needs handoff review · goal_noise");
+  assert.equal(formatPeerFooterStatusLine(coordinationStatus).text, "🔗 needs handoff review · goal_noise · no peers online");
 
   const offerStatus = derivePeerRuntimeStatus({
     enabled: true,
     localPeerId: "self",
     source: "test",
     __peerIdleOfferLastSweep: { reason: "agent_end", sent: 1, duplicate: 0, errors: 0, skipped: 2 },
-  }, { peers: [], messages: [] });
-  assert.match(formatPeerFooterStatusLine(offerStatus).text, /peer offers · 1 sent · 2 skipped/);
+  }, { peers: [{ peerId: "worker2", status: "active" }], messages: [] });
+  assert.equal(formatPeerFooterStatusLine(offerStatus).text, "🔗 offers · 1 sent · 2 skipped · online worker2");
 
   const workStatus = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test" }, {
-    peers: [],
+    peers: [
+      { peerId: "self", status: "active", current: true },
+      { peerId: "worker3", status: "active" },
+      { peerId: "worker4", status: "active" },
+    ],
     messages: [{ messageId: "msg_1", peerId: "worker2", status: "running", request: { body: { intent: "task", metadata: {} } } }],
   });
-  assert.equal(formatPeerFooterStatusLine(workStatus).text, "🔗 peer busy · 1 task · worker2 · work");
+  assert.equal(formatPeerFooterStatusLine(workStatus).text, "🔗 busy · 1 task: worker2 work · online worker3, worker4");
+});
+
+test("peer footer lists online peers and useful recovery commands", () => {
+  const onlineStatus = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test" }, {
+    peers: [
+      { peerId: "self", status: "active", current: true },
+      { peerId: "worker2", status: "active" },
+      { peerId: "worker3", status: "active" },
+      { peerId: "worker4", status: "active" },
+      { peerId: "coordinator", status: "configured" },
+    ],
+    messages: [],
+  });
+  assert.equal(formatPeerFooterStatusLine(onlineStatus).text, "🔗 3 peers online: worker2, worker3, worker4 · 1 offline");
+
+  const truncatedStatus = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test" }, {
+    peers: ["worker2", "worker3", "worker4", "reviewer-a"].map((peerId) => ({ peerId, status: "active" })),
+    messages: [],
+  });
+  assert.equal(formatPeerFooterStatusLine(truncatedStatus).text, "🔗 4 peers online: worker2, worker3, worker4 +1");
+
+  const noPeersStatus = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test" }, { peers: [], messages: [] });
+  const noPeersFooter = formatPeerFooterStatusLine(noPeersStatus);
+  assert.equal(noPeersFooter.text, "🔗 no peers online · /peer reconnect");
+  assert.equal(noPeersFooter.color, "warning");
+
+  const disabledStatus = derivePeerRuntimeStatus({ enabled: false, localPeerId: "self", source: "test" }, { peers: [], messages: [] });
+  const disabledFooter = formatPeerFooterStatusLine(disabledStatus);
+  assert.equal(disabledFooter.text, "🔗 peer messaging off · /peer setup");
+  assert.equal(disabledFooter.color, "muted");
 });
 
 test("peer status can show visible unknown context after compaction", () => {
