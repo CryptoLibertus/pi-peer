@@ -439,6 +439,7 @@ function parsePeerFactoryCommand(parsed, flags, positionals) {
       ...withAction,
       runId,
       reason: stringFlag(flags.reason, undefined),
+      evidence: stringFlag(flags.evidence, undefined),
       failureType: stringFlag(flags.failure || flags.failureType, undefined),
       owner: stringFlag(flags.owner, undefined),
     });

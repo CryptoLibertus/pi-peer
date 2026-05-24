@@ -150,10 +150,11 @@ test("parses peer factory commands", () => {
   assert.equal(gate.evidence, "unit failure");
   assert.equal(gate.failureType, "test");
 
-  const rework = parsePeerCommand("factory rework fac_123 --reason 'test failed' --owner reviewer-a");
+  const rework = parsePeerCommand("factory rework fac_123 --reason 'test failed' --evidence 'AssertionError' --owner reviewer-a");
   assert.equal(rework.factoryAction, "rework");
   assert.equal(rework.runId, "fac_123");
   assert.equal(rework.reason, "test failed");
+  assert.equal(rework.evidence, "AssertionError");
   assert.equal(rework.owner, "reviewer-a");
 
   const metrics = parsePeerCommand("factory metrics");

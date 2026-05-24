@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   DEFAULT_REWORK_POLICY,
+  buildReworkDecisionRun,
   deriveReworkDecision,
   normalizeFailureReport,
 } from "../src/peers/rework.mjs";
@@ -35,6 +36,20 @@ test("rework decision escalates after configured max attempts", () => {
   assert.match(decision.reason, /maximum rework attempts/i);
 });
 
+test("rework decision escalates from highest explicit attempt number", () => {
+  const decision = deriveReworkDecision({
+    policy: DEFAULT_REWORK_POLICY,
+    run: {
+      runId: "fac_1",
+      attempts: [{ attempt: 5 }],
+      failures: [{ failureType: "test", summary: "still failing" }],
+    },
+  });
+
+  assert.equal(decision.action, "escalate-human");
+  assert.match(decision.reason, /maximum rework attempts/i);
+});
+
 test("rework decision asks for context patch on repeated same failure", () => {
   const decision = deriveReworkDecision({
     policy: DEFAULT_REWORK_POLICY,
@@ -50,4 +65,25 @@ test("rework decision asks for context patch on repeated same failure", () => {
   });
 
   assert.equal(decision.action, "context-patch");
+});
+
+test("blank rework details do not append unknown failure context", () => {
+  const run = buildReworkDecisionRun({
+    run: {
+      runId: "fac_1",
+      failures: [{ failureType: "test", summary: "gate failed" }],
+    },
+    failure: {
+      runId: "fac_1",
+    },
+  });
+
+  const decision = deriveReworkDecision({
+    policy: DEFAULT_REWORK_POLICY,
+    run,
+  });
+
+  assert.equal(run.failures.length, 1);
+  assert.equal(run.failures[0].failureType, "test");
+  assert.equal(decision.failureType, "test");
 });

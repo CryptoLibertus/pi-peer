@@ -51,7 +51,7 @@ export function deriveReworkDecision(input = {}) {
   const run = plainObject(input.run) ? input.run : {};
   const failures = Array.isArray(run.failures) ? run.failures.map(normalizeFailureReport) : [];
   const latestFailure = failures.at(-1) || normalizeFailureReport(input.failure || {});
-  const currentAttempts = Array.isArray(run.attempts) ? run.attempts.length : 0;
+  const currentAttempts = currentAttemptCount(run.attempts);
   const nextAttempt = currentAttempts + 1;
   const failureType = latestFailure.failureType || "unknown";
   const runId = cleanText(run.runId || latestFailure.runId || input.runId);
@@ -91,6 +91,16 @@ export function deriveReworkDecision(input = {}) {
   });
 }
 
+export function buildReworkDecisionRun(input = {}) {
+  const run = plainObject(input.run) ? input.run : {};
+  const failure = plainObject(input.failure) ? input.failure : {};
+  const failures = Array.isArray(run.failures) ? [...run.failures] : [];
+  return {
+    ...run,
+    failures: hasFailureReportDetails(failure) ? [...failures, failure] : failures,
+  };
+}
+
 export function formatReworkDecision(decision = {}) {
   const parts = [
     `Rework decision: ${cleanText(decision.action) || "unknown"}`,
@@ -101,6 +111,21 @@ export function formatReworkDecision(decision = {}) {
     cleanText(decision.reason),
   ].filter(Boolean);
   return parts.join(" · ");
+}
+
+function hasFailureReportDetails(input = {}) {
+  return Boolean(
+    cleanText(input.failureType || input.type || input.metadata?.failureType)
+    || cleanText(input.summary || input.reason || input.metadata?.reason)
+    || cleanText(input.evidence)
+    || cleanText(input.owner || input.metadata?.owner),
+  );
+}
+
+function currentAttemptCount(attempts) {
+  if (!Array.isArray(attempts)) return 0;
+  const explicitAttempts = attempts.map((attempt) => positiveInteger(attempt?.attempt)).filter(Boolean);
+  return explicitAttempts.length ? Math.max(...explicitAttempts) : attempts.length;
 }
 
 function normalizePolicy(policy = DEFAULT_REWORK_POLICY) {

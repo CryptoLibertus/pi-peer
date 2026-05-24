@@ -35,7 +35,7 @@ import {
   startFactoryRun,
   deriveFactoryState,
 } from "../../src/peers/factory.mjs";
-import { deriveReworkDecision, formatReworkDecision } from "../../src/peers/rework.mjs";
+import { buildReworkDecisionRun, deriveReworkDecision, formatReworkDecision } from "../../src/peers/rework.mjs";
 import { formatPeerOrgInitResult, formatPeerOrgStatus, initPeerOrg, loadPeerOrg, resolvePeerOrgInitPeerId, setPeerOrgRole } from "../../src/peers/org.mjs";
 import { applyPeerSetupChoice, formatPeerSetupPrompt, formatPeerSetupResult, loadPeerSetupSession, resetPeerSetupSession, savePeerSetupSession } from "../../src/peers/setup-wizard.mjs";
 import { buildPeerCommandCenterState, formatPeerCommandCenter, routePeerIntent } from "../../src/peers/command-center.mjs";
@@ -757,25 +757,16 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
     const state = deriveFactoryState((await loadFactoryRuns(root)).records);
     const run = state.runs.find((item: any) => item.runId === parsed.runId);
     if (!run) return `No factory run found for ${parsed.runId}.`;
+    const failure = {
+      runId: parsed.runId,
+      failureType: parsed.failureType,
+      summary: parsed.reason,
+      evidence: parsed.evidence,
+      owner: parsed.owner,
+    };
     const decision = deriveReworkDecision({
-      run: {
-        ...run,
-        failures: [
-          ...(Array.isArray(run.failures) ? run.failures : []),
-          {
-            runId: parsed.runId,
-            failureType: parsed.failureType,
-            summary: parsed.reason,
-            owner: parsed.owner,
-          },
-        ],
-      },
-      failure: {
-        runId: parsed.runId,
-        failureType: parsed.failureType,
-        summary: parsed.reason,
-        owner: parsed.owner,
-      },
+      run: buildReworkDecisionRun({ run, failure }),
+      failure,
     });
     const recordType = decision.action === "context-patch"
       ? "context-patch-requested"
@@ -787,11 +778,13 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
       runId: parsed.runId,
       peerId,
       summary: parsed.reason,
+      evidence: parsed.evidence,
       metadata: {
         action: decision.action,
-        failureType: parsed.failureType,
-        owner: parsed.owner,
-        reason: parsed.reason,
+        failureType: parsed.failureType || decision.failureType,
+        owner: parsed.owner || decision.owner,
+        reason: parsed.reason || decision.reason,
+        evidence: parsed.evidence,
         nextAttempt: decision.nextAttempt,
       },
     });
