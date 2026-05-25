@@ -13,7 +13,7 @@ import { formatPeerCommandError, formatPeerHelp, formatPeerInitResult, parsePeer
 import { capturePeerContextBudget, derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement } from "../../src/peers/context-budget.mjs";
 import { appendContextPatch, appendContextRetro, deriveContextLifecycleState, formatContextLifecycleStatus, loadContextLifecycle, recordContextEvalResult } from "../../src/peers/context-lifecycle.mjs";
 import { createPeerRuntime, getPeerRuntimeValue } from "../../src/peers/runtime.mjs";
-import { appendPeerGoalEvent, closePeerGoal, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard } from "../../src/peers/goal-board.mjs";
+import { appendPeerGoalEvent, closePeerGoal, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, formatPeerGoal, formatPeerGoalList, formatPeerGoalPlanVerification, formatPeerGoalScout, formatPeerGoalSynthesis, loadPeerGoalBoard } from "../../src/peers/goal-board.mjs";
 import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerFooterStatusLine, formatPeerGoalDashboard, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
 import {
   peerAwaitToolResult,
@@ -188,6 +188,9 @@ export default function piPeerExtension(pi: ExtensionAPI) {
       duplicatePolicy: Type.Optional(Type.String({ description: "Duplicate work policy: reuse (default), error, or allow-parallel" })),
       goalStaleAfterMs: Type.Optional(Type.Number({ description: "Milliseconds before this goal claim is considered stale without heartbeat" })),
       isolationMode: Type.Optional(Type.String({ description: "Optional execution isolation hint, e.g. worktree" })),
+      maxAttempts: Type.Optional(Type.Number({ description: "Optional peer transport retry attempts before terminal failure" })),
+      retryBackoffMs: Type.Optional(Type.Number({ description: "Optional delay between peer transport retry attempts" })),
+      deadLetterOnError: Type.Optional(Type.Boolean({ description: "Move exhausted retried peer tasks to dead-letter instead of plain error" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const runtime = await runtimeFor(pi, ctx?.cwd);
@@ -195,6 +198,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
       ensureEnabled(runtime);
       await runtime.refreshLocalPeers();
       const metadata = mergePeerMetadata(params.metadata, params.claimedPaths, params.goalId, { workKey: params.workKey, workLane: params.workLane, duplicatePolicy: params.duplicatePolicy, isolationMode: params.isolationMode, goalClaimMode: params.goalClaimMode });
+      attachPeerTraceMetadata(metadata);
       const goalLink = await beginPeerSendGoalLink(ctx?.cwd, runtime, {
         goalId: params.goalId,
         targetPeerId: params.peer,
@@ -224,6 +228,9 @@ export default function piPeerExtension(pi: ExtensionAPI) {
           conversationId: params.conversationId,
           maxHopCount: Number.isInteger(params.maxHopCount) ? params.maxHopCount : undefined,
           allowSelf: params.allowSelf === true,
+          maxAttempts: Number.isInteger(params.maxAttempts) ? params.maxAttempts : undefined,
+          retryBackoffMs: Number.isInteger(params.retryBackoffMs) ? params.retryBackoffMs : undefined,
+          deadLetterOnError: params.deadLetterOnError === true,
         });
       } catch (error: any) {
         await recordPeerSendGoalFailure(ctx?.cwd, goalLink, {
@@ -238,11 +245,13 @@ export default function piPeerExtension(pi: ExtensionAPI) {
         targetPeerId: params.peer,
         prompt: params.prompt,
         claimedPaths: metadata.claimedPaths,
+        metadata,
       });
       trackPeerSendGoalCompletion(ctx?.cwd, goalLink, handle, {
         targetPeerId: params.peer,
         prompt: params.prompt,
         claimedPaths: metadata.claimedPaths,
+        metadata,
       });
 
       await refreshPeerUi(ctx, runtime);
@@ -679,6 +688,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
     if (parsed.subcommand === "send") {
       await runtime.refreshLocalPeers();
       const metadata = mergePeerMetadata(parsed.metadata, parsed.claimedPaths, parsed.goalId, { workKey: parsed.workKey, workLane: parsed.workLane, duplicatePolicy: parsed.duplicatePolicy, isolationMode: parsed.isolationMode, goalClaimMode: parsed.goalClaimMode });
+      attachPeerTraceMetadata(metadata);
       const goalLink = await beginPeerSendGoalLink(ctx?.cwd, runtime, {
         goalId: parsed.goalId,
         targetPeerId: parsed.peerId,
@@ -699,7 +709,7 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
       if (goalLink?.workKey) metadata.workKey = goalLink.workKey;
       let handle: any;
       try {
-        handle = await runtime.comms.sendMessage(parsed.peerId, { prompt: withPeerGoalInstructions(withPeerIsolationInstructions(parsed.prompt, metadata), goalLink), intent: parsed.intent, metadata }, { maxHopCount: parsed.maxHopCount, allowSelf: parsed.allowSelf });
+        handle = await runtime.comms.sendMessage(parsed.peerId, { prompt: withPeerGoalInstructions(withPeerIsolationInstructions(parsed.prompt, metadata), goalLink), intent: parsed.intent, metadata }, { maxHopCount: parsed.maxHopCount, allowSelf: parsed.allowSelf, maxAttempts: parsed.maxAttempts, retryBackoffMs: parsed.retryBackoffMs, deadLetterOnError: parsed.deadLetterOnError === true });
       } catch (error: any) {
         await recordPeerSendGoalFailure(ctx?.cwd, goalLink, {
           targetPeerId: parsed.peerId,
@@ -713,11 +723,13 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
         targetPeerId: parsed.peerId,
         prompt: parsed.prompt,
         claimedPaths: parsed.claimedPaths,
+        metadata,
       });
       trackPeerSendGoalCompletion(ctx?.cwd, goalLink, handle, {
         targetPeerId: parsed.peerId,
         prompt: parsed.prompt,
         claimedPaths: parsed.claimedPaths,
+        metadata,
       });
       await refresh();
       if (!parsed.awaitResponse) return sendPeerMessage(pi, peerSendQueuedToolResult(handle).content[0].text);
@@ -1291,6 +1303,20 @@ async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
   }
   if (parsed.goalAction === "scout") return formatPeerGoalScout(await loadPeerGoalBoard(root), { goalId: parsed.goalId, limit: parsed.limit, includeClosed: parsed.includeClosed });
   if (parsed.goalAction === "plan" || parsed.goalAction === "schedule") return createPeerGoalPlan(root, parsed, peerId);
+  if (parsed.goalAction === "synthesize") {
+    const board = await loadPeerGoalBoard(root);
+    const goalId = parsed.goalId || board.currentGoalId;
+    const goal = goalId ? board.goals[goalId] : undefined;
+    if (!goal) throw new Error(goalId ? `peer goal ${goalId} not found` : "no current peer goal");
+    return formatPeerGoalSynthesis(goal, { limit: parsed.limit });
+  }
+  if (parsed.goalAction === "verify") {
+    const board = await loadPeerGoalBoard(root);
+    const goalId = parsed.goalId || board.currentGoalId;
+    const goal = goalId ? board.goals[goalId] : undefined;
+    if (!goal) throw new Error(goalId ? `peer goal ${goalId} not found` : "no current peer goal");
+    return formatPeerGoalPlanVerification(goal);
+  }
   if (parsed.goalAction === "dashboard") {
     const board = await loadPeerGoalBoard(root);
     const goalId = parsed.goalId || board.currentGoalId;
@@ -1722,6 +1748,17 @@ function mergePeerMetadata(metadata: any, claimedPaths: unknown, goalId?: unknow
     if (typeof value === "string" && value.trim()) base[key] = value.trim();
   }
   return base;
+}
+
+function attachPeerTraceMetadata(metadata: any) {
+  if (!metadata || typeof metadata !== "object") return metadata;
+  if (typeof metadata.traceId !== "string" || !metadata.traceId.trim()) metadata.traceId = createPeerTraceId("trace");
+  if (typeof metadata.spanId !== "string" || !metadata.spanId.trim()) metadata.spanId = createPeerTraceId("span");
+  return metadata;
+}
+
+function createPeerTraceId(prefix: string) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function peerGetViewFromFlags(flags: any = {}) {

@@ -1,6 +1,6 @@
 import { appendPeerControlRecord } from "./control-ledger.mjs";
 import { appendPeerGoalEvent, beginPeerGoalTask, completePeerGoalTask, recordPeerGoalTaskDispatch } from "./goal-board.mjs";
-import { normalizePeerHandoffEvidence, parsePeerHandoffEvidence } from "./tool-results.mjs";
+import { normalizePeerHandoffEvidence, parsePeerHandoffEvidence, peerHandoffContract } from "./tool-results.mjs";
 
 export function duplicatePeerSendToolResult(goalLink) {
   return {
@@ -55,7 +55,7 @@ export async function recordPeerSendGoalDispatch(root, runtime, goalLink, handle
     peerId: options.targetPeerId,
     workKey: goalLink?.workKey,
     summary: options.prompt,
-    metadata: { claimEventId: goalLink?.claimEvent?.id, paths: options.claimedPaths, lane: goalLink?.claimEvent?.lane },
+    metadata: { claimEventId: goalLink?.claimEvent?.id, paths: options.claimedPaths, lane: goalLink?.claimEvent?.lane, traceId: options.metadata?.traceId },
   }).catch(() => {});
   if (!goalLink?.goalId) return;
   await recordPeerGoalTaskDispatch(ledgerRoot, goalLink.goalId, {
@@ -70,6 +70,7 @@ export async function recordPeerSendGoalDispatch(root, runtime, goalLink, handle
     mode: goalLink.claimEvent?.mode,
     lane: goalLink.claimEvent?.lane,
     duplicatePolicy: goalLink.duplicatePolicy,
+    metadata: { traceId: options.metadata?.traceId },
   });
 }
 
@@ -110,14 +111,14 @@ export function trackPeerSendGoalCompletion(root, goalLink, handle, options) {
     await appendPeerControlRecord(boardRoot, {
       kind: "task",
       action: "completed",
-      status: response?.status === "OK" || response?.status === "OK_WITH_NOTES" ? "done" : "blocked",
+      status: peerResponseGoalStatus(response),
       goalId: goalLink.goalId,
       messageId: handle.messageId,
       conversationId: handle.conversationId,
       peerId: options.targetPeerId,
       workKey: goalLink.workKey,
       summary: summarizePeerGoalResponse(response),
-      metadata: { responseStatus: response?.status, claimEventId: goalLink.claimEvent?.id },
+      metadata: { responseStatus: response?.status, claimEventId: goalLink.claimEvent?.id, traceId: response?.traceId },
     }).catch(() => {});
     await completePeerGoalTask(boardRoot, goalLink.goalId, {
       targetPeerId: options.targetPeerId,
@@ -126,7 +127,7 @@ export function trackPeerSendGoalCompletion(root, goalLink, handle, options) {
       messageId: handle.messageId,
       conversationId: handle.conversationId,
       claimEventId: goalLink.claimEvent?.id,
-      status: response?.status === "OK" || response?.status === "OK_WITH_NOTES" ? "done" : "blocked",
+      status: peerResponseGoalStatus(response),
       responseStatus: response?.status,
       summary: summarizePeerGoalResponse(response),
       handoffEvidence: peerResponseHandoffEvidence(response),
@@ -144,7 +145,7 @@ export function trackPeerSendGoalCompletion(root, goalLink, handle, options) {
         summary: `Incomplete final handoff for ${handle.messageId}; missing ${missing.join(", ")}`,
         severity: "blocking",
         taskId: handle.messageId,
-        metadata: { messageId: handle.messageId, conversationId: handle.conversationId, missingHandoffFields: missing },
+        metadata: { messageId: handle.messageId, conversationId: handle.conversationId, traceId: response?.traceId, missingHandoffFields: missing },
       });
     }
   }).catch(() => {}).finally(() => {
@@ -207,7 +208,8 @@ export function withPeerGoalInstructions(prompt, goalLink) {
     ...(goalLink.workKey ? [`- workKey: ${goalLink.workKey}`] : []),
     ...(goalLink.claimEvent?.id ? [`- claimEventId: ${goalLink.claimEvent.id}`, `- If this takes a while, send heartbeats with /peer goal heartbeat ${goalLink.goalId} ${goalLink.claimEvent.id} "still working".`] : []),
     `- Before starting, inspect the goal board and stop if another active claim already owns the same work key.`,
-    `- End with a concise handoff: status, files changed, verification, blockers.`,
+    `- Before finalizing, preflight your answer against the required handoff contract: ${peerHandoffContract().requiredFields.join("; ")}.`,
+    `- End with a concise handoff: Status, Files changed, Verification, Blockers/risks, Safe for review.`,
     `- For research/documentation work, include optional quality headings when relevant or requested: Citations/Sources, Fact-checks, Limitations, Confidence.`,
     ``,
     `Original prompt:`,
@@ -233,6 +235,13 @@ export function buildFanoutPrompt(objective, peerId, mode, lane, duplicatePolicy
   const role = mode === "write" ? `${lane} implementation lane` : `read-only ${lane} lane`;
   const parallel = duplicatePolicy === "allow-parallel" ? "\nThis is an intentional independent parallel lane/second opinion. Do not rely on sibling peer conclusions unless the prompt explicitly asks you to compare them; record your own evidence and caveats." : "";
   return `${objective}\n\nFan-out role for ${peerId}: ${role}. Stay within that lane.${parallel} Report progress with peer_progress when work is long-running, and end with the required final handoff.`;
+}
+
+export function peerResponseGoalStatus(response) {
+  if (response?.status === "OK" || response?.status === "OK_WITH_NOTES") return "done";
+  if (response?.retry?.deadLetter === true) return "dead-letter";
+  if (response?.status === "CANCELLED") return "cancelled";
+  return "blocked";
 }
 
 export function peerResponseHandoffEvidence(response) {

@@ -11,6 +11,9 @@ const PEER_GOAL_ALIASES = Object.freeze({
   fanout: ["fanout"],
   scout: ["scout"],
   dashboard: ["dashboard"],
+  synthesize: ["synthesize"],
+  synthesis: ["synthesize"],
+  verify: ["verify"],
   proposal: ["proposal"],
   propose: ["propose"],
   item: ["item"],
@@ -76,6 +79,9 @@ export function parsePeerCommand(rawArgs = "") {
       workLane: stringFlag(flags.workLane || flags.lane, undefined),
       duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined),
       isolationMode: isolationModeFromFlags(flags),
+      maxAttempts: positiveIntegerFlag(flags.maxAttempts || flags.attempts || flags.retryAttempts),
+      retryBackoffMs: positiveIntegerFlag(flags.retryBackoffMs || flags.backoffMs),
+      deadLetterOnError: flagEnabled(flags.deadLetterOnError || flags.deadLetter),
       claimedPaths,
       metadata: metadataFromFlags(flags, { goalId, claimedPaths, workKey: stringFlag(flags.workKey || flags.key, undefined), workLane: stringFlag(flags.workLane || flags.lane, undefined), duplicatePolicy: stringFlag(flags.duplicatePolicy, undefined), isolationMode: isolationModeFromFlags(flags) }),
     };
@@ -609,6 +615,8 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
   }
   if (action === "show") return { ...withAction, goalId: rest[0] };
   if (action === "dashboard") return { ...withAction, goalId: rest[0] };
+  if (action === "synthesize" || action === "synthesis") return { ...withAction, goalAction: "synthesize", goalId: rest[0], limit: positiveIntegerFlag(flags.limit) };
+  if (action === "verify") return { ...withAction, goalId: rest[0] };
   if (action === "scout") return { ...withAction, goalId: rest[0], limit: positiveIntegerFlag(flags.limit), includeClosed: flagEnabled(flags.includeClosed) };
   if (action === "fanout") {
     const goalId = rest[0];

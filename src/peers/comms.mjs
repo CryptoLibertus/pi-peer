@@ -1,3 +1,5 @@
+import { setTimeout as sleep } from "node:timers/promises";
+
 import {
   PEER_VERSION,
   assertValidPeerEnvelope,
@@ -16,7 +18,7 @@ export const UNSUPPORTED_TRANSPORT_ERROR_CODE = "PI_PEER_UNSUPPORTED_TRANSPORT";
 export const PEER_CAPABILITY_DENIED_ERROR_CODE = "PI_PEER_CAPABILITY_DENIED";
 
 const ACTIVE_MESSAGE_STATUSES = new Set(["queued", "running", "cancelling"]);
-const TERMINAL_MESSAGE_STATUSES = new Set(["responded", "cancelled", "error"]);
+const TERMINAL_MESSAGE_STATUSES = new Set(["responded", "cancelled", "error", "dead-letter"]);
 
 export class PeerCommsError extends Error {
   constructor(message, code, details = {}) {
@@ -181,6 +183,19 @@ class PeerComms {
       ...message,
       ...(options.priority !== undefined && message.priority === undefined ? { priority: options.priority } : {}),
     });
+    const trace = normalizePeerTraceMetadata(body.metadata, options);
+    const retryPolicy = normalizePeerRetryPolicy(options.retryPolicy || body.metadata?.peerRetry || body.metadata?.retry || {
+      maxAttempts: options.maxAttempts,
+      backoffMs: options.retryBackoffMs,
+      deadLetter: options.deadLetterOnError,
+    });
+    body.metadata = {
+      ...(body.metadata && typeof body.metadata === "object" ? body.metadata : {}),
+      traceId: trace.traceId,
+      spanId: trace.spanId,
+      ...(trace.parentSpanId ? { parentSpanId: trace.parentSpanId } : {}),
+      ...(retryPolicy.enabled ? { peerRetry: retryPolicy } : {}),
+    };
     const capabilityDenial = validatePeerMessageCapabilities(peer, body, options);
     if (capabilityDenial) {
       const error = new PeerCommsError(capabilityDenial.message, PEER_CAPABILITY_DENIED_ERROR_CODE, capabilityDenial.details);
@@ -212,6 +227,9 @@ class PeerComms {
       createdAt: request.timestamp,
       updatedAt: request.timestamp,
       priority: normalizeMessagePriority(body.priority || body.metadata?.priority),
+      traceId: body.metadata.traceId,
+      spanId: body.metadata.spanId,
+      retryPolicy: retryPolicy.enabled ? retryPolicy : undefined,
     };
     this.#appendMessageEvent(snapshot, { type: "queued", status: "queued", summary: `Queued for ${peer.peerId}` }, { updateTimestamp: false });
     this.#messages.set(snapshot.messageId, snapshot);
@@ -401,36 +419,67 @@ class PeerComms {
     this.#emit({ type: "message.running", message: this.#cloneMessage(snapshot) });
     this.#persistMessageState();
 
+    const retryPolicy = normalizePeerRetryPolicy(snapshot.retryPolicy || snapshot.request?.body?.metadata?.peerRetry);
+    let attempt = 0;
     try {
-      const responseEnvelope = await this.#transport.send(snapshot.request, peer, { comms: this, cancelSignal: cancelController.signal });
-      if (snapshot.status === "cancelled" && snapshot.response) return clone(snapshot.response);
-      const validation = validatePeerEnvelope(responseEnvelope);
-      if (!validation.ok) throw new PeerCommsError(`Invalid peer response envelope: ${validation.errors.join("; ")}`, "PI_PEER_INVALID_RESPONSE", { errors: validation.errors });
-      if (responseEnvelope.type !== "message.response" || responseEnvelope.correlationId !== snapshot.request.id) {
-        throw new PeerCommsError("Peer response did not correlate to the request", "PI_PEER_RESPONSE_MISMATCH", { messageId });
+      while (attempt < retryPolicy.maxAttempts) {
+        attempt += 1;
+        if (attempt > 1) {
+          this.#appendMessageEvent(snapshot, { type: "retry.attempt", status: "running", summary: `Retrying peer message attempt ${attempt}/${retryPolicy.maxAttempts}`, attempt, maxAttempts: retryPolicy.maxAttempts });
+          this.#persistMessageState();
+        }
+        try {
+          const responseEnvelope = await this.#transport.send(snapshot.request, peer, { comms: this, cancelSignal: cancelController.signal, attempt });
+          if (snapshot.status === "cancelled" && snapshot.response) return clone(snapshot.response);
+          const validation = validatePeerEnvelope(responseEnvelope);
+          if (!validation.ok) throw new PeerCommsError(`Invalid peer response envelope: ${validation.errors.join("; ")}`, "PI_PEER_INVALID_RESPONSE", { errors: validation.errors });
+          if (responseEnvelope.type !== "message.response" || responseEnvelope.correlationId !== snapshot.request.id) {
+            throw new PeerCommsError("Peer response did not correlate to the request", "PI_PEER_RESPONSE_MISMATCH", { messageId });
+          }
+          const responseBody = attachPeerResponseIdentity(normalizePeerMessageResponseBody(responseEnvelope.body), peer, { homeDir: this.#homeDir });
+          snapshot.status = responseBody.status === "CANCELLED" ? "cancelled" : "responded";
+          snapshot.response = { ...responseBody, traceId: snapshot.traceId, spanId: snapshot.spanId, retry: { attempts: attempt, maxAttempts: retryPolicy.maxAttempts } };
+          snapshot.responseEnvelope = responseEnvelope;
+          snapshot.updatedAt = new Date().toISOString();
+          this.#appendMessageEvent(snapshot, { type: responseBody.status === "CANCELLED" ? "cancel.acknowledged" : "responded", status: snapshot.status, summary: snapshot.response.summary || snapshot.response.status, attempt, maxAttempts: retryPolicy.maxAttempts }, { updateTimestamp: false });
+          this.#upsertConversation(snapshot);
+          this.#recordAudit({ kind: responseBody.status === "CANCELLED" ? "message.cancel.acknowledged" : "message.response", peerId: peer.peerId, transport: peer.transport, status: snapshot.response.status, messageId, conversationId: snapshot.conversationId, traceId: snapshot.traceId, body: snapshot.response });
+          this.#emit({ type: responseBody.status === "CANCELLED" ? "message.cancelled" : "message.responded", message: this.#cloneMessage(snapshot) });
+          this.#persistMessageState();
+          return clone(snapshot.response);
+        } catch (error) {
+          const canRetry = attempt < retryPolicy.maxAttempts && snapshot.status !== "cancelled";
+          if (canRetry) {
+            this.#appendMessageEvent(snapshot, { type: "retry.scheduled", status: "running", summary: `Peer transport failed on attempt ${attempt}/${retryPolicy.maxAttempts}; retrying`, code: error.code || "PI_PEER_TRANSPORT_ERROR", attempt, maxAttempts: retryPolicy.maxAttempts });
+            this.#recordAudit({ kind: "message.retry", peerId: peer.peerId, transport: peer.transport, status: "running", messageId, conversationId: snapshot.conversationId, traceId: snapshot.traceId, error: { message: error.message, code: error.code || "PI_PEER_TRANSPORT_ERROR" }, attempt, maxAttempts: retryPolicy.maxAttempts });
+            this.#persistMessageState();
+            const cancelled = await sleepDuringRetryBackoff(retryPolicy.backoffMs, cancelController.signal);
+            if (cancelled) {
+              snapshot.status = "cancelled";
+              snapshot.response = { status: "CANCELLED", summary: cancelReason(cancelController.signal.reason) };
+              snapshot.updatedAt = new Date().toISOString();
+              this.#appendMessageEvent(snapshot, { type: "cancel.acknowledged", status: "cancelled", summary: snapshot.response.summary, attempt, maxAttempts: retryPolicy.maxAttempts }, { updateTimestamp: false });
+              this.#upsertConversation(snapshot);
+              this.#recordAudit({ kind: "message.cancel.acknowledged", peerId: peer.peerId, transport: peer.transport, status: "cancelled", messageId, conversationId: snapshot.conversationId, traceId: snapshot.traceId });
+              this.#emit({ type: "message.cancelled", message: this.#cloneMessage(snapshot) });
+              this.#persistMessageState();
+              return clone(snapshot.response);
+            }
+            continue;
+          }
+          snapshot.status = retryPolicy.deadLetter ? "dead-letter" : "error";
+          snapshot.error = { message: error.message, code: error.code || "PI_PEER_TRANSPORT_ERROR", attempts: attempt, maxAttempts: retryPolicy.maxAttempts };
+          snapshot.response = { status: "ERROR", summary: error.message, traceId: snapshot.traceId, spanId: snapshot.spanId, retry: { attempts: attempt, maxAttempts: retryPolicy.maxAttempts, deadLetter: snapshot.status === "dead-letter" } };
+          snapshot.updatedAt = new Date().toISOString();
+          this.#appendMessageEvent(snapshot, { type: snapshot.status === "dead-letter" ? "dead-letter" : "error", status: snapshot.status, summary: error.message, code: snapshot.error.code, attempt, maxAttempts: retryPolicy.maxAttempts }, { updateTimestamp: false });
+          this.#upsertConversation(snapshot);
+          this.#recordAudit({ kind: snapshot.status === "dead-letter" ? "message.dead-letter" : "message.error", peerId: peer.peerId, transport: peer.transport, status: snapshot.status, messageId, conversationId: snapshot.conversationId, traceId: snapshot.traceId, error: snapshot.error });
+          this.#emit({ type: snapshot.status === "dead-letter" ? "message.dead-letter" : "message.error", message: this.#cloneMessage(snapshot) });
+          this.#persistMessageState();
+          return clone(snapshot.response);
+        }
       }
-      const responseBody = attachPeerResponseIdentity(normalizePeerMessageResponseBody(responseEnvelope.body), peer, { homeDir: this.#homeDir });
-      snapshot.status = responseBody.status === "CANCELLED" ? "cancelled" : "responded";
-      snapshot.response = responseBody;
-      snapshot.responseEnvelope = responseEnvelope;
-      snapshot.updatedAt = new Date().toISOString();
-      this.#appendMessageEvent(snapshot, { type: responseBody.status === "CANCELLED" ? "cancel.acknowledged" : "responded", status: snapshot.status, summary: snapshot.response.summary || snapshot.response.status }, { updateTimestamp: false });
-      this.#upsertConversation(snapshot);
-      this.#recordAudit({ kind: responseBody.status === "CANCELLED" ? "message.cancel.acknowledged" : "message.response", peerId: peer.peerId, transport: peer.transport, status: snapshot.response.status, messageId, conversationId: snapshot.conversationId, body: snapshot.response });
-      this.#emit({ type: responseBody.status === "CANCELLED" ? "message.cancelled" : "message.responded", message: this.#cloneMessage(snapshot) });
-      this.#persistMessageState();
-      return clone(snapshot.response);
-    } catch (error) {
-      snapshot.status = "error";
-      snapshot.error = { message: error.message, code: error.code || "PI_PEER_TRANSPORT_ERROR" };
-      snapshot.response = { status: "ERROR", summary: error.message };
-      snapshot.updatedAt = new Date().toISOString();
-      this.#appendMessageEvent(snapshot, { type: "error", status: "error", summary: error.message, code: snapshot.error.code }, { updateTimestamp: false });
-      this.#upsertConversation(snapshot);
-      this.#recordAudit({ kind: "message.error", peerId: peer.peerId, transport: peer.transport, status: "error", messageId, conversationId: snapshot.conversationId, error: snapshot.error });
-      this.#emit({ type: "message.error", message: this.#cloneMessage(snapshot) });
-      this.#persistMessageState();
-      return clone(snapshot.response);
+      return clone(snapshot.response || { status: "ERROR", summary: "peer retry loop exited without response" });
     } finally {
       this.#pending.delete(messageId);
       this.#cancelHandlers.delete(messageId);
@@ -518,6 +567,10 @@ class PeerComms {
       ...(typeof event.summary === "string" && event.summary.trim() ? { summary: event.summary.trim() } : {}),
       ...(event.code !== undefined ? { code: event.code } : {}),
       ...(event.timeoutMs !== undefined ? { timeoutMs: event.timeoutMs } : {}),
+      ...(event.attempt !== undefined ? { attempt: event.attempt } : {}),
+      ...(event.maxAttempts !== undefined ? { maxAttempts: event.maxAttempts } : {}),
+      ...(snapshot.traceId ? { traceId: snapshot.traceId } : {}),
+      ...(event.traceId !== undefined ? { traceId: event.traceId } : {}),
       ...(event.queuedPosition !== undefined ? { queuedPosition: event.queuedPosition } : {}),
       ...(event.queueLength !== undefined ? { queueLength: event.queueLength } : {}),
       ...(event.priority !== undefined ? { priority: event.priority } : {}),
@@ -586,6 +639,8 @@ class PeerComms {
       updatedAt: message.updatedAt,
       lastHeartbeatAt: message.lastHeartbeatAt,
       lastEvent: message.lastEvent,
+      traceId: message.traceId || metadata.traceId,
+      retry: message.retryPolicy,
     };
   }
 
@@ -727,6 +782,49 @@ function defaultPromptResponder(envelope, peer) {
     finalAssistantMessage: `Peer '${peer.peerId}' received your prompt: ${envelope.body.prompt}`,
     summary: "Local in-memory coms prototype response. Configure a real local Pi transport before relying on peer work.",
   };
+}
+
+function normalizePeerTraceMetadata(metadata = {}, options = {}) {
+  const source = metadata && typeof metadata === "object" ? metadata : {};
+  const explicitTrace = source.trace && typeof source.trace === "object" ? source.trace : {};
+  return {
+    traceId: nonEmptyString(options.traceId) ? options.traceId.trim() : nonEmptyString(source.traceId) ? source.traceId.trim() : nonEmptyString(explicitTrace.traceId) ? explicitTrace.traceId.trim() : createTraceId(),
+    spanId: nonEmptyString(options.spanId) ? options.spanId.trim() : nonEmptyString(source.spanId) ? source.spanId.trim() : nonEmptyString(explicitTrace.spanId) ? explicitTrace.spanId.trim() : createTraceId("span"),
+    parentSpanId: nonEmptyString(options.parentSpanId) ? options.parentSpanId.trim() : nonEmptyString(source.parentSpanId) ? source.parentSpanId.trim() : nonEmptyString(explicitTrace.parentSpanId) ? explicitTrace.parentSpanId.trim() : undefined,
+  };
+}
+
+function normalizePeerRetryPolicy(input = {}) {
+  const policy = input && typeof input === "object" ? input : {};
+  const maxAttempts = boundedInteger(policy.maxAttempts ?? policy.attempts, 1, 10) || 1;
+  const backoffMs = boundedInteger(policy.backoffMs ?? policy.retryBackoffMs, 0, 60_000) ?? 0;
+  const deadLetter = policy.deadLetter === true || policy.deadLetterOnError === true;
+  return { enabled: maxAttempts > 1 || deadLetter, maxAttempts, backoffMs, deadLetter };
+}
+
+async function sleepDuringRetryBackoff(backoffMs, signal) {
+  if (signal?.aborted) return true;
+  try {
+    await sleep(backoffMs, undefined, signal ? { signal } : undefined);
+    return signal?.aborted === true;
+  } catch (error) {
+    if (error?.name === "AbortError" || signal?.aborted) return true;
+    throw error;
+  }
+}
+
+function cancelReason(reason) {
+  return typeof reason === "string" && reason.trim() ? reason.trim() : "cancelled by sender";
+}
+
+function boundedInteger(value, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return undefined;
+  return Math.min(max, Math.max(min, Math.floor(number)));
+}
+
+function createTraceId(prefix = "trace") {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function clone(value) {

@@ -182,6 +182,8 @@ export function compactPeerMessage(message = {}) {
     claimedPaths: body.metadata?.claimedPaths,
     promptPreview: truncateText(body.prompt, 300),
     responseStatus: response.status,
+    traceId: message.traceId || body.metadata?.traceId,
+    retry: message.retryPolicy || response.retry,
     finalAssistantPreview: truncateText(response.finalAssistantMessage, 500),
     eventCount: Array.isArray(message.events) ? message.events.length : 0,
     recentEvents: compactEvents(message.events?.slice(-8), 8),
@@ -355,6 +357,40 @@ export function peerAwaitToolResult(results) {
   };
 }
 
+export const PEER_HANDOFF_REQUIRED_FIELDS = Object.freeze(["Status", "Files changed", "Verification", "Blockers/risks", "Safe for review"]);
+
+export function peerHandoffContract(options = {}) {
+  return {
+    requiredFields: [...PEER_HANDOFF_REQUIRED_FIELDS],
+    optionalQualityFields: ["Citations/Sources", "Fact-checks", "Limitations", "Confidence"],
+    statuses: ["done", "blocked", "partial", "cancelled"],
+    safeForReviewValues: ["yes", "no"],
+    ...(options.intent ? { intent: options.intent } : {}),
+  };
+}
+
+export function lintPeerHandoff(text, options = {}) {
+  const evidence = normalizePeerHandoffEvidence(options.evidence || parsePeerHandoffEvidence(text, options));
+  return {
+    ok: evidence.complete === true,
+    contract: peerHandoffContract(options),
+    evidence,
+    missingFields: evidence.missingFields || [],
+    message: evidence.complete ? "Peer handoff satisfies required contract." : `Peer handoff is missing ${evidence.missingFields.join(", ")}`,
+  };
+}
+
+export function formatPeerHandoffPreflight(text = "", options = {}) {
+  const lint = lintPeerHandoff(text, options);
+  if (lint.ok) return "Handoff preflight: pass";
+  return [
+    "Handoff preflight: fail",
+    `Missing: ${lint.missingFields.join(", ")}`,
+    "Required headings:",
+    ...lint.contract.requiredFields.map((field) => `- ${field}`),
+  ].join("\n");
+}
+
 export function parsePeerHandoffEvidence(text, options = {}) {
   const source = typeof text === "string" ? text : "";
   const sections = extractHandoffSections(source);
@@ -397,7 +433,7 @@ export function normalizePeerHandoffEvidence(input = {}) {
   return {
     present,
     complete: present && missingFields.length === 0,
-    missingFields: present ? missingFields : ["Status", "Files changed", "Verification", "Blockers/risks", "Safe for review"],
+    missingFields: present ? missingFields : [...PEER_HANDOFF_REQUIRED_FIELDS],
     ...(input.status ? { status: String(input.status).trim().toLowerCase() } : {}),
     filesChanged: normalizeEvidenceList(input.filesChanged),
     verification: normalizeVerificationEvidence(input.verification),

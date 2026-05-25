@@ -6,7 +6,7 @@ import { redactPeerAuditValue } from "./protocol.mjs";
 
 export const PEER_MESSAGE_STORE_RELATIVE_PATH = ".pi/peer-messages.json";
 
-const TERMINAL_MESSAGE_STATUSES = new Set(["responded", "cancelled", "error"]);
+const TERMINAL_MESSAGE_STATUSES = new Set(["responded", "cancelled", "error", "dead-letter"]);
 const MESSAGE_STORE_LOCK_STALE_MS = 30_000;
 const MESSAGE_STORE_LOCK_RETRY_MS = 10;
 const MESSAGE_STORE_LOCK_TIMEOUT_MS = 5_000;
@@ -107,6 +107,9 @@ function normalizeMessageSnapshot(message) {
     lastEvent: isPlainObject(message.lastEvent) ? message.lastEvent : undefined,
     lastHeartbeatAt: cleanText(message.lastHeartbeatAt),
     recoveredAt: cleanText(message.recoveredAt),
+    traceId: cleanText(message.traceId || message.request?.body?.metadata?.traceId),
+    spanId: cleanText(message.spanId || message.request?.body?.metadata?.spanId),
+    retryPolicy: isPlainObject(message.retryPolicy) ? message.retryPolicy : undefined,
   });
 }
 

@@ -54,6 +54,19 @@ If a gate fails, record the failed gate first and create a rework record instead
 
 Before closing substantial peer work, inspect `/peer factory status` and `/peer do metrics` output.
 
+## Goal synthesis, verification, and retries
+
+Use these read-only helpers before closing or redispatching complex goals:
+
+```bash
+/peer goal synthesize <goal-id> --limit 8
+/peer goal verify <goal-id>
+```
+
+`synthesize` summarizes key evidence, blockers, votes, verification, citations, and next actions. `verify` checks work-item dependency structure, duplicate active work keys, all-blocked plans, and closure-policy warnings.
+
+For flaky peer transport work, `peer_send` supports optional `maxAttempts`, `retryBackoffMs`, and `deadLetterOnError` parameters. Retried messages carry trace/span IDs in message metadata and terminal exhausted retries can be inspected as `dead-letter` tasks.
+
 ## Handoffs and closure
 
 Final peer handoffs must include these headings:

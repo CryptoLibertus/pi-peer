@@ -23,6 +23,7 @@ Without coordination, parallel agents step on files, duplicate the same task, lo
 - **Write collision control:** write claims conflict on overlapping paths before work starts.
 - **Semantic dedupe:** read/review/research lanes use stable work keys so the same review is not dispatched twice.
 - **Long-running task tracking:** goal-linked peer sends create tasks, claims, heartbeats, handoffs, and releases.
+- **Traceable retry lifecycle:** peer sends carry trace/span IDs and can opt into bounded retry attempts with dead-letter terminal state for exhausted transport failures.
 - **Durable control-plane ledger:** peer task, hive supervisor, and private subagent run summaries are appended to `.pi/peer-control-ledger.jsonl` so restarted coordinators can reconcile disconnected work instead of trusting process memory alone.
 - **Compact peer context views:** `peer_get` and `/peer get` default to bounded summaries for goals, tasks, messages, runtime, and audit data, with `view: full` / `--full` / `--raw` for exact JSON when needed.
 - **Flat goal-board coordination:** peers can propose, claim, post findings, object, resolve, vote, and close without a central planner micromanaging every step.
@@ -219,7 +220,7 @@ Subagent teams are optional. A peer advertises support with `capabilities.orches
 
 ## Flat goal board
 
-`/peer goal` provides a local blackboard for flat peer collaboration. Peers can create a shared goal, post findings/tasks/proposals/handoffs, claim read or write leases, object, resolve objections, scout for proactive next steps, and vote without a planner assigning every step.
+`/peer goal` provides a local blackboard for flat peer collaboration. Peers can create a shared goal, post findings/tasks/proposals/handoffs, claim read or write leases, object, resolve objections, scout for proactive next steps, synthesize closure evidence, verify work-item structure, and vote without a planner assigning every step.
 
 The goal board is deliberately flat. There is no hidden project manager. Peers coordinate by posting events to `.pi/peer-goals.json`; scout suggestions are derived from those events.
 
@@ -233,6 +234,8 @@ Useful commands (long form and short aliases):
 /peer goal fanout <goal-id> "Independent second-opinion review" --peer reviewer-a,reviewer-b --duplicate-policy allow-parallel --send --no-await
 /peer send worker "Fix PR waiting path" --goal <goal-id> --claim extensions/symphony/index.ts,test/pr-watcher-runtime.test.mjs --no-await
 /peer progress "tests are running" --phase verification
+/peer goal synthesize <goal-id> --limit 8
+/peer goal verify <goal-id>
 /peer goal finding <goal-id> "PR auto-close can close before merge" --path extensions/symphony/index.ts
 /peer scout <goal-id> --limit 5
 /peer goal propose <goal-id> "Add a read-only reviewer before closing" --path extensions/symphony/index.ts
@@ -285,6 +288,8 @@ The board is stored locally at `.pi/peer-goals.json`; outbound message snapshots
 Normal goal closure requires at least one current passing vote, no current failed votes, no unresolved blocking objections or unsuccessful peer handoffs, no active or stale claims, no running tasks, and no unresolved open proposals. Proposals let peers show initiative, then must be resolved or explicitly deferred before normal closure so the final handoff reflects human intent; use `--force` only when intentionally overriding that readiness gate. Stale claims no longer block new overlapping claims, but they do block normal closure until explicitly released, completed, or closed with an explicit `--force`; use `/peer goal heartbeat` to revive work after a reconnect before finishing and releasing it. Goal-linked tasks validate final handoff headings (`Status`, `Files changed`, `Verification`, `Blockers/risks`, `Safe for review`); missing sections create a blocking objection while still releasing the write claim. Research/documentation handoffs can also include optional quality headings (`Citations`/`Sources`, `Fact-checks`, `Limitations`, `Confidence`). Closure policies can require judgment-quality evidence on matching `finding` or `handoff` events with fields such as `minCitations`, `minFactChecks`, `requireLimitations`, and `minConfidence`; `requiredVotes`/`requiredEvidence` entries can also set `minDistinctPeers` (alias `distinctPeers`/`minPeers`) so one peer cannot satisfy an independent-judgment requirement by posting repeated evidence. Goal creation exposes common gates directly with `--min-votes <n>` and `--min-independent-votes <n>`; independent passing votes exclude peers that produced implementation/write evidence on the goal. When a closure policy still needs additional votes or evidence and no blocking work remains, scout/idle suggestions now emit separate read-only review lanes for each missing slot, enabling intentional redundant review without weakening duplicate work-key safety. Slash events can attach quality evidence with repeated `--citation`, `--fact-check`, `--limitation`, and `--confidence` flags. For multi-part work, use the fan-out gate: list peers, create/reuse a goal, delegate research/review/worker lanes, and include `Fan-out used: yes/no` plus peer handles in the final answer.
 
 ## Compact peer inspection
+
+`/peer goal synthesize <goal-id>` prints a deterministic closure brief: key findings/handoffs/notes, blockers, open proposals/work-items, votes, verification evidence, citations, and suggested next actions. `/peer goal verify <goal-id>` performs static checks over the goal plan/work-item graph, including missing dependencies, dependency cycles, duplicate active work keys, all-blocked work, and unmet closure policy warnings.
 
 `/peer get <id>` and the `peer_get` tool default to compact output. Large goals show counts, active/stale lanes, unresolved handoffs, votes, and recent events instead of dumping every raw event and metadata blob into the model context. Large messages show prompt/final-answer previews instead of full bodies.
 

@@ -181,6 +181,7 @@ export async function recordPeerGoalTaskDispatch(root, goalId, input = {}) {
       targetPeerId: cleanText(input.targetPeerId),
       claimEventId: cleanText(input.claimEventId),
       workKey,
+      ...(plainObject(input.metadata) ? input.metadata : {}),
     }),
   });
   return { goalId: id, goal: result.goal, taskEvent: result.event };
@@ -569,6 +570,198 @@ export function formatPeerGoal(goal) {
   }
   lines.push("", state.status === "closed" ? "Ready to close: already closed" : state.readyToClose ? "Ready to close: yes" : "Ready to close: no");
   return lines.join("\n");
+}
+
+export function synthesizePeerGoal(goal, options = {}) {
+  const state = goal && Array.isArray(goal.activeClaims) ? goal : deriveGoalState(goal || {});
+  const events = Array.isArray(state.events) ? state.events : [];
+  const findings = events.filter((event) => event.type === "finding").map(projectEventSummary);
+  const handoffs = events.filter((event) => event.type === "handoff").map(projectEventSummary);
+  const notes = events.filter((event) => event.type === "note").map(projectEventSummary);
+  const verification = collectGoalVerification(events);
+  const citations = collectGoalQualityList(events, "citations", "sources");
+  const blockers = [...(state.blockingObjections || []), ...(state.unresolvedTaskHandoffs || [])];
+  const topEvents = [...findings, ...handoffs, ...notes]
+    .filter((event) => event.summary)
+    .sort((a, b) => eventSynthesisWeight(b) - eventSynthesisWeight(a) || String(b.at || "").localeCompare(String(a.at || "")))
+    .slice(0, positiveNumber(options.limit) || 8);
+  return stripEmpty({
+    goalId: state.id,
+    objective: state.objective,
+    status: state.status || "open",
+    readyToClose: state.readyToClose === true,
+    counts: {
+      events: events.length,
+      findings: findings.length,
+      handoffs: handoffs.length,
+      blockers: blockers.length,
+      openProposals: state.openProposals?.length || 0,
+      openWorkItems: state.openWorkItems?.length || 0,
+      passingVotes: state.passingVotes?.length || 0,
+      failedVotes: state.failedVotes?.length || 0,
+    },
+    topEvents,
+    blockers: blockers.map((item) => projectEventSummary(item)).slice(0, 10),
+    openProposals: state.openProposals?.slice(0, 10),
+    openWorkItems: state.openWorkItems?.slice(0, 10),
+    votes: state.currentVotes?.slice(0, 10),
+    verification,
+    citations,
+    nextActions: deriveGoalSynthesisNextActions(state),
+  });
+}
+
+export function formatPeerGoalSynthesis(goal, options = {}) {
+  const synthesis = synthesizePeerGoal(goal, options);
+  const lines = [
+    `# Peer Goal Synthesis ${synthesis.goalId || "unknown"}`,
+    `status: ${synthesis.status || "open"}`,
+    `objective: ${synthesis.objective || ""}`,
+    `readyToClose: ${synthesis.readyToClose ? "yes" : "no"}`,
+    `counts: events ${synthesis.counts?.events || 0}, findings ${synthesis.counts?.findings || 0}, handoffs ${synthesis.counts?.handoffs || 0}, blockers ${synthesis.counts?.blockers || 0}, votes ${synthesis.counts?.passingVotes || 0}/${synthesis.counts?.failedVotes || 0}`,
+  ];
+  if (synthesis.topEvents?.length) {
+    lines.push("", "Key evidence:");
+    for (const event of synthesis.topEvents) lines.push(`- ${event.type} · ${event.peerId || "unknown"} · ${truncate(event.summary, 180)}`);
+  }
+  if (synthesis.verification?.length) {
+    lines.push("", "Verification evidence:");
+    for (const item of synthesis.verification.slice(0, 8)) lines.push(`- ${item}`);
+  }
+  if (synthesis.blockers?.length) {
+    lines.push("", "Blockers:");
+    for (const item of synthesis.blockers) lines.push(`- ${item.id || item.taskId || "blocker"} · ${truncate(item.summary || item.handoffSummary || "", 180)}`);
+  }
+  if (synthesis.nextActions?.length) {
+    lines.push("", "Next actions:");
+    for (const action of synthesis.nextActions) lines.push(`- ${action}`);
+  }
+  return lines.join("\n");
+}
+
+export function verifyPeerGoalPlan(goal) {
+  const state = goal && Array.isArray(goal.activeClaims) ? goal : deriveGoalState(goal || {});
+  const errors = [];
+  const warnings = [];
+  const workItems = Array.isArray(state.workItems) ? state.workItems : [];
+  const byItemId = new Map(workItems.map((item) => [item.itemId, item]));
+  for (const item of workItems) {
+    for (const dependency of item.dependsOn || []) {
+      if (!byItemId.has(dependency)) errors.push(`work item ${item.itemId} depends on missing item ${dependency}`);
+      if (dependency === item.itemId) errors.push(`work item ${item.itemId} depends on itself`);
+    }
+    if (item.parentId && !byItemId.has(item.parentId)) warnings.push(`work item ${item.itemId} references missing parent ${item.parentId}`);
+  }
+  for (const cycle of findWorkItemCycles(workItems)) errors.push(`work item dependency cycle: ${cycle.join(" -> ")}`);
+  const activeClaimsByKey = groupByWorkKey(state.activeClaims || []);
+  const activeTasksByKey = groupByWorkKey(state.activeTasks || []);
+  for (const [workKey, claims] of activeClaimsByKey) {
+    if (claims.length > 1 && !allParallelDuplicates(claims)) errors.push(`duplicate active work key ${workKey}: ${claims.map((item) => item.id || "claim").join(", ")}`);
+  }
+  for (const [workKey, tasks] of activeTasksByKey) {
+    const claims = activeClaimsByKey.get(workKey) || [];
+    const unlinkedTasks = tasks.filter((task) => !task.claimEventId || !claims.some((claim) => claim.id === task.claimEventId));
+    const duplicateItems = [...claims, ...tasks];
+    if ((tasks.length > 1 || (claims.length && unlinkedTasks.length)) && !allParallelDuplicates(duplicateItems)) errors.push(`duplicate active work key ${workKey}: ${[...claims.map((item) => item.id || "claim"), ...tasks.map((item) => item.taskId || item.id || "task")].join(", ")}`);
+  }
+  if ((state.openWorkItems || []).length && !(state.openWorkItems || []).some((item) => !item.blockedBy?.length)) warnings.push("all open work items are dependency-blocked");
+  if ((state.openProposals || []).length && !(state.activeClaims || []).length && !(state.activeTasks || []).length) warnings.push("goal has open proposals but no active owner");
+  if (!state.currentVotes?.length && !state.openWorkItems?.length && !state.openProposals?.length) warnings.push("goal has no current votes; closure will require a passing vote");
+  if (state.closurePolicyStatus && !state.closurePolicyStatus.satisfied) warnings.push(...state.closurePolicyStatus.missing.map((item) => `closure policy unmet: ${item.summary}`));
+  return { ok: errors.length === 0, goalId: state.id, errors, warnings };
+}
+
+export function formatPeerGoalPlanVerification(goal) {
+  const result = verifyPeerGoalPlan(goal);
+  const lines = [`# Peer Goal Plan Verification ${result.goalId || "unknown"}`, `status: ${result.ok ? "pass" : "fail"}`];
+  if (result.errors.length) {
+    lines.push("", "Errors:");
+    for (const error of result.errors) lines.push(`- ${error}`);
+  }
+  if (result.warnings.length) {
+    lines.push("", "Warnings:");
+    for (const warning of result.warnings) lines.push(`- ${warning}`);
+  }
+  if (!result.errors.length && !result.warnings.length) lines.push("", "No structural plan issues detected.");
+  return lines.join("\n");
+}
+
+function deriveGoalSynthesisNextActions(state = {}) {
+  const actions = [];
+  if (state.blockingObjections?.length) actions.push(`Resolve ${state.blockingObjections.length} blocking objection(s).`);
+  if (state.unresolvedTaskHandoffs?.length) actions.push(`Triage ${state.unresolvedTaskHandoffs.length} unsuccessful peer handoff(s).`);
+  if (state.openProposals?.length) actions.push(`Resolve or defer ${state.openProposals.length} open proposal(s).`);
+  if (state.openWorkItems?.length) actions.push(`Complete or cancel ${state.openWorkItems.length} open work item(s).`);
+  if (!state.currentVotes?.length) actions.push("Record at least one current pass/fail vote.");
+  if (!actions.length && state.readyToClose) actions.push("Close the goal or record the final handoff.");
+  return actions;
+}
+
+function collectGoalVerification(events = []) {
+  const values = [];
+  for (const event of events) {
+    const verification = event.metadata?.handoffEvidence?.verification || event.metadata?.verification;
+    const items = Array.isArray(verification) ? verification : [];
+    for (const item of items) {
+      if (typeof item === "string") values.push(item);
+      else if (item?.command || item?.raw) values.push(`${item.command || item.raw}${Number.isInteger(item.exitStatus) ? ` exit ${item.exitStatus}` : ""}`);
+    }
+  }
+  return [...new Set(values)].slice(0, 20);
+}
+
+function collectGoalQualityList(events = [], ...keys) {
+  const values = [];
+  for (const event of events) {
+    for (const key of keys) {
+      const value = event.metadata?.handoffEvidence?.[key] || event.metadata?.[key];
+      if (Array.isArray(value)) values.push(...value.filter((item) => typeof item === "string"));
+    }
+  }
+  return [...new Set(values)].slice(0, 20);
+}
+
+function eventSynthesisWeight(event = {}) {
+  if (event.type === "handoff" && SUCCESSFUL_TASK_HANDOFF_STATUSES.has(String(event.status || "").toLowerCase())) return 40;
+  if (event.type === "finding") return 30;
+  if (event.type === "vote") return 25;
+  if (event.type === "handoff") return 20;
+  return 10;
+}
+
+function allParallelDuplicates(items = []) {
+  return items.length > 1 && items.every((item) => item.duplicatePolicy === "allow-parallel");
+}
+
+function groupByWorkKey(items = []) {
+  const grouped = new Map();
+  for (const item of items) {
+    if (!item.workKey) continue;
+    const existing = grouped.get(item.workKey) || [];
+    existing.push(item);
+    grouped.set(item.workKey, existing);
+  }
+  return grouped;
+}
+
+function findWorkItemCycles(workItems = []) {
+  const deps = new Map(workItems.map((item) => [item.itemId, item.dependsOn || []]));
+  const cycles = [];
+  const visiting = new Set();
+  const visited = new Set();
+  const visit = (id, stack = []) => {
+    if (visiting.has(id)) {
+      cycles.push([...stack.slice(stack.indexOf(id)), id]);
+      return;
+    }
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const dependency of deps.get(id) || []) if (deps.has(dependency)) visit(dependency, [...stack, id]);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const id of deps.keys()) visit(id, []);
+  return cycles;
 }
 
 function validateClaim(goal, event) {
@@ -966,6 +1159,7 @@ function projectEventSummary(event) {
     confidence: event.confidence,
     status: event.status,
     staleAfterMs: event.staleAfterMs,
+    claimEventId: cleanText(event.metadata?.claimEventId),
     subagentEvidence: projectSubagentEvidence(event.metadata?.subagentEvidence),
     at: event.at,
     expiresAt: event.expiresAt,
