@@ -1,4 +1,4 @@
-import { redactPeerAuditValue } from "./protocol.mjs";
+import { finalAssistantTextMetadata, redactPeerAuditValue } from "./protocol.mjs";
 
 export function peerListToolResult(runtime, peers) {
   const enabled = runtime.enabled === true;
@@ -33,6 +33,7 @@ export function peerSendQueuedToolResult(handle) {
 
 export function peerSendResponseToolResult(handle, response) {
   const handoffEvidence = normalizePeerHandoffEvidence(response?.handoffEvidence || parsePeerHandoffEvidence(response?.finalAssistantMessage));
+  const finalAssistant = finalAssistantTextMetadata(response?.finalAssistantMessage);
   return {
     content: [{ type: "text", text: responseText(response) }],
     details: {
@@ -43,6 +44,8 @@ export function peerSendResponseToolResult(handle, response) {
       messageId: handle.messageId,
       conversationId: handle.conversationId,
       peerId: handle.peerId,
+      finalAssistantTextPresent: finalAssistant.finalAssistantTextPresent,
+      finalAssistantTextLength: finalAssistant.finalAssistantTextLength,
       response,
       ...(handoffEvidence.present ? { handoffEvidence } : {}),
     },
@@ -167,6 +170,8 @@ export function compactPeerGoalState(goal = {}) {
 export function compactPeerMessage(message = {}) {
   const body = message?.request?.body || {};
   const response = message?.response || {};
+  const finalAssistant = finalAssistantTextMetadata(response.finalAssistantMessage);
+  const responseCode = response.code || response.error?.code;
   return stripEmpty({
     messageId: message.messageId,
     conversationId: message.conversationId,
@@ -182,6 +187,9 @@ export function compactPeerMessage(message = {}) {
     claimedPaths: body.metadata?.claimedPaths,
     promptPreview: truncateText(body.prompt, 300),
     responseStatus: response.status,
+    responseCode,
+    finalAssistantTextPresent: response.finalAssistantTextPresent ?? finalAssistant.finalAssistantTextPresent,
+    finalAssistantTextLength: response.finalAssistantTextLength ?? finalAssistant.finalAssistantTextLength,
     traceId: message.traceId || body.metadata?.traceId,
     retry: message.retryPolicy || response.retry,
     finalAssistantPreview: truncateText(response.finalAssistantMessage, 500),
@@ -625,5 +633,6 @@ function formatAwaitTimeoutLine(item) {
 }
 
 function responseText(response) {
-  return response?.finalAssistantMessage || response?.summary || response?.status || "No peer response body returned";
+  const text = response?.finalAssistantMessage || response?.summary || response?.status || "No peer response body returned";
+  return response?.code ? `${text} [${response.code}]` : text;
 }

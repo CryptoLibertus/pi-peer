@@ -1,9 +1,10 @@
 import { appendPeerGoalEvent } from "./goal-board.mjs";
-import { normalizePeerMessageResponseBody, redactPeerAuditValue } from "./protocol.mjs";
+import { finalAssistantTextMetadata, normalizePeerMessageResponseBody, redactPeerAuditValue } from "./protocol.mjs";
 import { renderPeerCommunicationGuidance } from "./guidance.mjs";
 import { parsePeerHandoffEvidence } from "./tool-results.mjs";
 
 export const PI_PEER_INBOUND_CUSTOM_TYPE = "pi-peer-inbound";
+export const PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT = "PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT";
 
 export function createInboundPromptBridge(options = {}) {
   const pi = options.pi;
@@ -142,15 +143,26 @@ export function createInboundPromptBridge(options = {}) {
 
       if (!entry.settled) {
         const finalAssistantMessage = extractFinalAssistantText(event);
+        const finalAssistant = finalAssistantTextMetadata(finalAssistantMessage);
         const cancelled = entry.cancelRequested === true;
-        const handoffEvidence = finalAssistantMessage ? parsePeerHandoffEvidence(finalAssistantMessage, { homeDir: options.homeDir }) : undefined;
-        const diagnostics = !cancelled && !finalAssistantMessage ? summarizeAgentEndForDiagnostics(event) : undefined;
+        const handoffEvidence = finalAssistant.finalAssistantTextPresent ? parsePeerHandoffEvidence(finalAssistantMessage, { homeDir: options.homeDir }) : undefined;
+        const diagnostics = !cancelled && !finalAssistant.finalAssistantTextPresent ? summarizeAgentEndForDiagnostics(event) : undefined;
+        const missingFinalAssistantTextError = !cancelled && !finalAssistant.finalAssistantTextPresent
+          ? {
+              code: PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT,
+              message: "agent_end did not include final assistant text",
+            }
+          : undefined;
         settleEntry(entry, normalizePeerMessageResponseBody({
-          status: cancelled ? "CANCELLED" : finalAssistantMessage ? "OK" : "ERROR",
+          status: cancelled ? "CANCELLED" : finalAssistant.finalAssistantTextPresent ? "OK" : "ERROR",
           finalAssistantMessage,
           ...(handoffEvidence?.present ? { handoffEvidence } : {}),
           ...(diagnostics ? { diagnostics } : {}),
-          summary: cancelled ? entry.cancelReason || "cancelled by sender" : finalAssistantMessage ? "Peer turn completed" : "agent_end did not include final assistant text",
+          ...(missingFinalAssistantTextError ? {
+            code: missingFinalAssistantTextError.code,
+            error: missingFinalAssistantTextError,
+          } : {}),
+          summary: cancelled ? entry.cancelReason || "cancelled by sender" : finalAssistant.finalAssistantTextPresent ? "Peer turn completed" : "agent_end did not include final assistant text",
         }));
       }
       activateNext();

@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parsePeerHandoffEvidence, peerGetToolResult } from "../src/peers/tool-results.mjs";
+import {
+  parsePeerHandoffEvidence,
+  peerGetToolResult,
+  peerSendResponseToolResult,
+} from "../src/peers/tool-results.mjs";
 
 test("peer_get defaults to compact goal output without raw event dump", () => {
   const goal = {
@@ -57,9 +61,59 @@ test("peer_get compact message omits full prompt and final assistant body", () =
   const result = peerGetToolResult("msg_1", "message", message);
   assert.equal(result.details.value.prompt, undefined);
   assert.equal(result.details.value.response, undefined);
+  assert.equal(result.details.value.finalAssistantTextPresent, true);
+  assert.equal(result.details.value.finalAssistantTextLength, longFinal.trim().length);
   assert.match(result.details.value.promptPreview, /^prompt prompt/);
   assert.ok(result.details.value.promptPreview.length < longPrompt.length);
   assert.ok(result.details.value.finalAssistantPreview.length < longFinal.length);
+});
+
+test("peer_get compact message exposes missing final assistant text code without raw body", () => {
+  const message = {
+    messageId: "msg_empty",
+    conversationId: "conv_1",
+    peerId: "worker",
+    status: "responded",
+    request: { body: { intent: "review", prompt: "private prompt body" } },
+    response: {
+      status: "ERROR",
+      summary: "agent_end did not include final assistant text",
+      code: "PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT",
+      error: {
+        code: "PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT",
+        message: "agent_end did not include final assistant text",
+      },
+      finalAssistantTextPresent: false,
+      finalAssistantTextLength: 0,
+    },
+    events: [],
+  };
+
+  const result = peerGetToolResult("msg_empty", "message", message);
+  assert.equal(result.details.value.responseStatus, "ERROR");
+  assert.equal(result.details.value.responseCode, "PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT");
+  assert.equal(result.details.value.finalAssistantTextPresent, false);
+  assert.equal(result.details.value.finalAssistantTextLength, 0);
+  assert.equal(result.details.value.finalAssistantPreview, undefined);
+  assert.equal(result.details.value.response, undefined);
+});
+
+test("peer_send awaited result surfaces final assistant text validity metadata", () => {
+  const handle = { messageId: "msg_empty", conversationId: "conv_1", peerId: "worker" };
+  const response = {
+    status: "ERROR",
+    summary: "agent_end did not include final assistant text",
+    code: "PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT",
+    finalAssistantTextPresent: false,
+    finalAssistantTextLength: 0,
+  };
+
+  const result = peerSendResponseToolResult(handle, response);
+  assert.equal(result.details.ok, false);
+  assert.equal(result.details.finalAssistantTextPresent, false);
+  assert.equal(result.details.finalAssistantTextLength, 0);
+  assert.equal(result.details.response.code, "PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT");
+  assert.match(result.content[0].text, /PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT/);
 });
 
 test("peer_get compact control output preserves active subrun fields", () => {

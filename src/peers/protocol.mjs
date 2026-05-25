@@ -165,10 +165,22 @@ export function normalizePeerMessageSendBody(body) {
 
 export function normalizePeerMessageResponseBody(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return { status: "ERROR", summary: "Peer transport returned an invalid response body" };
+    return {
+      status: "ERROR",
+      summary: "Peer transport returned an invalid response body",
+      ...finalAssistantTextMetadata(),
+    };
   }
   const status = ["OK", "OK_WITH_NOTES", "NEEDS_CONTEXT", "BLOCKED", "CANCELLED", "ERROR"].includes(body.status) ? body.status : "OK";
-  return { ...body, status };
+  return { ...body, status, ...finalAssistantTextMetadata(body.finalAssistantMessage) };
+}
+
+export function finalAssistantTextMetadata(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return {
+    finalAssistantTextPresent: text.length > 0,
+    finalAssistantTextLength: text.length,
+  };
 }
 
 export function redactPeerAuditValue(value, options = {}) {

@@ -291,7 +291,7 @@ Normal goal closure requires at least one current passing vote, no current faile
 
 `/peer goal synthesize <goal-id>` prints a deterministic closure brief: key findings/handoffs/notes, blockers, open proposals/work-items, votes, verification evidence, citations, and suggested next actions. `/peer goal verify <goal-id>` performs static checks over the goal plan/work-item graph, including missing dependencies, dependency cycles, duplicate active work keys, all-blocked work, and unmet closure policy warnings.
 
-`/peer get <id>` and the `peer_get` tool default to compact output. Large goals show counts, active/stale lanes, unresolved handoffs, votes, and recent events instead of dumping every raw event and metadata blob into the model context. Large messages show prompt/final-answer previews instead of full bodies.
+`/peer get <id>` and the `peer_get` tool default to compact output. Large goals show counts, active/stale lanes, unresolved handoffs, votes, and recent events instead of dumping every raw event and metadata blob into the model context. Large messages show prompt/final-answer previews instead of full bodies. Message responses also expose `finalAssistantTextPresent` and `finalAssistantTextLength`; coordinator gates should treat `PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT` as a terminal failed response, not as an empty-but-valid handoff.
 
 Use the raw escape hatch when you need exact JSON:
 

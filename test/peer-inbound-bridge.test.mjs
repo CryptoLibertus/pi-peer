@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { appendPeerGoalEvent, createPeerGoal, loadPeerGoalBoard } from "../src/peers/goal-board.mjs";
-import { createInboundPromptBridge } from "../src/peers/inbound-bridge.mjs";
+import {
+  PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT,
+  createInboundPromptBridge,
+} from "../src/peers/inbound-bridge.mjs";
 
 function envelope(id = "msg_1", body = {}) {
   return {
@@ -60,6 +63,8 @@ test("inbound bridge initial activation and idle nudge use triggerTurn followUp"
   bridge.handleAgentEnd({ finalAssistantText: "done" });
   const response = await responsePromise;
   assert.equal(response.status, "OK");
+  assert.equal(response.finalAssistantTextPresent, true);
+  assert.equal(response.finalAssistantTextLength, 4);
   assert.equal(bridge.pendingCount(), 0);
 });
 
@@ -129,6 +134,10 @@ test("inbound bridge records redacted diagnostics when agent_end has no final as
 
   assert.equal(response.status, "ERROR");
   assert.equal(response.summary, "agent_end did not include final assistant text");
+  assert.equal(response.code, PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT);
+  assert.equal(response.error.code, PI_PEER_AGENT_END_MISSING_FINAL_ASSISTANT_TEXT);
+  assert.equal(response.finalAssistantTextPresent, false);
+  assert.equal(response.finalAssistantTextLength, 0);
   assert.equal(response.diagnostics.willRetry, false);
   assert.deepEqual(response.diagnostics.messages.roles, ["user", "assistant"]);
   assert.equal(response.diagnostics.messages.lastAssistant.stopReason, "tool_use");
