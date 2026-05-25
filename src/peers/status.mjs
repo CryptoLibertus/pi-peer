@@ -30,6 +30,7 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
   const contextBudget = normalizePeerContextBudget(options.contextBudget || runtime.contextBudget);
   const contextJudgement = derivePeerContextJudgement(contextBudget);
   const idleWatcher = summarizePeerRuntimeIdleWatcher(runtime);
+  const gitStatus = normalizeGitStatus(options.gitStatus || options.git || runtime.gitStatus);
 
   return {
     enabled,
@@ -43,6 +44,7 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
     contextBudget,
     contextJudgement,
     idleWatcher,
+    gitStatus,
     localRole: safeStatusText(localProfile.role || endpoint?.role),
     localDomain: safeStatusText(localProfile.domain || endpoint?.domain),
     localPersona: safeStatusText(localProfile.persona || endpoint?.persona),
@@ -64,7 +66,8 @@ export function derivePeerRuntimeStatus(runtime = {}, options = {}) {
   };
 }
 
-export function formatPeerStatusLines(status = {}) {
+export function formatPeerStatusLines(status = {}, options = {}) {
+  if (options.compact) return formatPeerCompactStatusLines(status);
   const enabledText = status.enabled ? "enabled" : "disabled";
   const color = status.enabled ? "success" : "muted";
   const profileText = [status.localRole ? `role ${status.localRole}` : "", status.localDomain ? `domain ${status.localDomain}` : "", status.localPersona ? `persona ${status.localPersona}` : ""].filter(Boolean).join(" · ");
@@ -93,30 +96,65 @@ export function formatPeerStatusText(status = {}) {
   return formatPeerStatusLines(status).map((item) => item.text).join("\n");
 }
 
+function formatPeerCompactStatusLines(status = {}) {
+  const lines = [];
+  const onlineCount = Number.isFinite(status.onlineCount) ? status.onlineCount : (status.activeCount || 0);
+  const summaryParts = [status.enabled ? "🔗 on" : "🔗 off"];
+  if (status.enabled) {
+    if ((status.pendingCount || 0) > 0) summaryParts.push(`⏳ ${status.pendingCount}`);
+    if (onlineCount > 0) summaryParts.push(`🟢 ${onlineCount}`);
+    else summaryParts.push("📴 no peers");
+  } else {
+    summaryParts.push("⚙️ /peer setup");
+  }
+  const git = formatFooterGitSuffix(status.gitStatus, { leadingSeparator: false });
+  if (git) summaryParts.push(git);
+  lines.push(line("summary", status.enabled ? (onlineCount > 0 ? "success" : "warning") : "muted", summaryParts.join(" · ")));
+
+  if ((status.pendingCount || 0) > 0) {
+    const tasks = formatFooterTaskRoster(status.activeTasks || []);
+    lines.push(line("task", "accent", `🛠️ ${status.pendingCount} ${plural(status.pendingCount, "task")}${tasks ? ` · ${tasks}` : ""}`));
+  }
+
+  const pressure = status.contextBudget?.pressure;
+  if (status.contextBudget?.available && ["unknown", "watch", "tight", "critical"].includes(pressure)) {
+    const judgement = status.contextJudgement || derivePeerContextJudgement(status.contextBudget);
+    lines.push(line("context", pressure === "critical" || pressure === "tight" ? "warning" : "accent", formatCompactContextLine(status.contextBudget, judgement)));
+  }
+
+  const idle = status.idleWatcher || {};
+  if (idle.lastCheck?.activated) lines.push(line("idle", "accent", `🚦 ${formatIdleActivationSummary(idle.lastCheck.activation)}`));
+  if (idle.lastProtocolOfferSweep && ((idle.lastProtocolOfferSweep.sent || 0) > 0 || (idle.lastProtocolOfferSweep.duplicate || 0) > 0 || (idle.lastProtocolOfferSweep.errors || 0) > 0)) {
+    lines.push(line("offer", (idle.lastProtocolOfferSweep.errors || 0) > 0 ? "warning" : "accent", `📣 ${formatFooterIdleOfferSweep(idle.lastProtocolOfferSweep)}`));
+  }
+  for (const warning of (status.warnings || []).slice(0, 2)) lines.push(line("warning", "warning", `⚠️ ${warning}`));
+  return lines;
+}
+
 export function formatPeerFooterStatusLine(status = {}) {
   const idle = status.idleWatcher || {};
   if ((status.pendingCount || 0) > 0) {
     const count = status.pendingCount || 0;
     const tasks = formatFooterTaskRoster(status.activeTasks || []);
     const peers = formatFooterOnlineSuffix(status, { maxPeers: 2 });
-    return line("footer", "accent", `🔗 ⏳ ${count} ${plural(count, "task")}${tasks ? ` · 🛠️ ${tasks}` : ""}${peers}`);
+    return line("footer", "accent", `🔗 ⏳ ${count} ${plural(count, "task")}${tasks ? ` · 🛠️ ${tasks}` : ""}${peers}${formatFooterGitSuffix(status.gitStatus)}`);
   }
   const activation = idle.lastCheck?.activated ? idle.lastCheck.activation : undefined;
   if (activation && shouldSurfaceCoordinationInFooter(activation, { coordinationSurface: "footer" })) {
     const kind = footerActivationLabel(activation.kind);
     const goal = activation.goalId ? ` · 🎯 ${truncateStatus(activation.goalId, 24)}` : "";
     const peers = formatFooterOnlineSuffix(status, { maxPeers: 2 });
-    return line("footer", "accent", `🔗 🚦 ${kind}${goal}${peers}`);
+    return line("footer", "accent", `🔗 🚦 ${kind}${goal}${peers}${formatFooterGitSuffix(status.gitStatus)}`);
   }
   const sweep = idle.lastProtocolOfferSweep;
   if (sweep && ((sweep.sent || 0) > 0 || (sweep.duplicate || 0) > 0 || (sweep.errors || 0) > 0)) {
     const color = (sweep.errors || 0) > 0 ? "warning" : "accent";
     const peers = formatFooterOnlineSuffix(status, { maxPeers: 2 });
-    return line("footer", color, `🔗 📣 ${formatFooterIdleOfferSweep(sweep)}${peers}`);
+    return line("footer", color, `🔗 📣 ${formatFooterIdleOfferSweep(sweep)}${peers}${formatFooterGitSuffix(status.gitStatus)}`);
   }
   const onlineCount = Number.isFinite(status.onlineCount) ? status.onlineCount : (status.activeCount || 0);
   const availabilityColor = status.enabled ? (onlineCount > 0 ? "success" : "warning") : "muted";
-  return line("footer", availabilityColor, formatFooterAvailability(status));
+  return line("footer", availabilityColor, `${formatFooterAvailability(status)}${formatFooterGitSuffix(status.gitStatus)}`);
 }
 
 export function shouldShowPeerWidget(status = {}) {
@@ -360,6 +398,43 @@ function peerContributionRows(state = {}) {
     if (event.type === "vote") ensure(event.peerId).votes += 1;
   }
   return [...rows.values()].sort((a, b) => (b.activeClaims + b.activeTasks + b.handoffs + b.findings + b.votes) - (a.activeClaims + a.activeTasks + a.handoffs + a.findings + a.votes) || a.peerId.localeCompare(b.peerId));
+}
+
+function formatCompactContextLine(budget = {}, judgement = {}) {
+  const parts = [`🧠 ${budget.pressure || "unknown"}`];
+  if (Number.isFinite(budget.remainingTokens)) parts.push(`${formatCompactTokenCount(budget.remainingTokens)} left`);
+  else if (Number.isFinite(budget.percent)) parts.push(`${Math.round(budget.percent * 100)}%`);
+  if (judgement.recommendedAction && judgement.recommendedAction !== "continue") parts.push(judgement.recommendedAction);
+  if (judgement.requiresUserApproval) parts.push("approval needed");
+  return parts.join(" · ");
+}
+
+function formatCompactTokenCount(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "unknown";
+  if (number < 1000) return `${Math.round(number)}`;
+  if (number < 10000) return `${(number / 1000).toFixed(1)}k`;
+  if (number < 1_000_000) return `${Math.round(number / 1000)}k`;
+  return `${(number / 1_000_000).toFixed(1)}M`;
+}
+
+function formatFooterGitSuffix(gitStatus = {}, options = {}) {
+  const git = normalizeGitStatus(gitStatus);
+  if (!git) return "";
+  const parts = [];
+  if (git.branch) parts.push(`🌿 ${truncateStatus(git.branch, 24)}`);
+  if ((git.changedFiles || 0) > 0) parts.push(`📝 ${git.changedFiles}`);
+  if (!parts.length) return "";
+  return `${options.leadingSeparator === false ? "" : " · "}${parts.join(" · ")}`;
+}
+
+function normalizeGitStatus(gitStatus = {}) {
+  if (!gitStatus || typeof gitStatus !== "object") return undefined;
+  const branch = safeStatusText(gitStatus.branch || gitStatus.currentBranch || gitStatus.ref);
+  const rawChanged = gitStatus.changedFiles ?? gitStatus.modifiedFiles ?? gitStatus.diffFiles ?? gitStatus.fileCount;
+  const changedFiles = Number.isFinite(rawChanged) ? Math.max(0, Math.floor(rawChanged)) : 0;
+  if (!branch && changedFiles <= 0) return undefined;
+  return { branch, changedFiles };
 }
 
 function formatFooterAvailability(status = {}) {

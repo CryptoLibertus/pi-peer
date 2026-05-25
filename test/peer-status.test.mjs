@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { derivePeerGoalWorkKey } from "../src/peers/goal-board.mjs";
 import { parsePeerCommand } from "../src/peers/command.mjs";
-import { deriveFanoutSuggestion, derivePeerRuntimeStatus, formatPeerFooterStatusLine, formatPeerGoalDashboard, formatPeerStatusText } from "../src/peers/status.mjs";
+import { deriveFanoutSuggestion, derivePeerRuntimeStatus, formatPeerFooterStatusLine, formatPeerGoalDashboard, formatPeerStatusLines, formatPeerStatusText } from "../src/peers/status.mjs";
 
 test("fanout suggestion groups available peers by persona-aware lanes", () => {
   const suggestion = deriveFanoutSuggestion([
@@ -201,6 +201,40 @@ test("peer footer lists online peers and useful recovery commands", () => {
   const disabledFooter = formatPeerFooterStatusLine(disabledStatus);
   assert.equal(disabledFooter.text, "🔗 ⚪ off · ⚙️ /peer setup");
   assert.equal(disabledFooter.color, "muted");
+});
+
+test("peer footer shows git branch and changed file count when available", () => {
+  const dirtyStatus = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test" }, {
+    peers: [{ peerId: "worker2", status: "active" }],
+    messages: [],
+    gitStatus: { branch: "feature/footer", changedFiles: 3 },
+  });
+  assert.equal(formatPeerFooterStatusLine(dirtyStatus).text, "🔗 🟢 1 online · 👥 worker2 · 🌿 feature/footer · 📝 3");
+
+  const cleanStatus = derivePeerRuntimeStatus({ enabled: true, localPeerId: "self", source: "test" }, {
+    peers: [],
+    messages: [],
+    gitStatus: { branch: "main", changedFiles: 0 },
+  });
+  assert.equal(formatPeerFooterStatusLine(cleanStatus).text, "🔗 📴 no peers · ↻ /peer reconnect · 🌿 main");
+});
+
+test("compact peer status hides routine diagnostics and keeps contextual rows", () => {
+  const status = derivePeerRuntimeStatus({
+    enabled: true,
+    localPeerId: "self",
+    source: "test",
+    contextBudget: { tokens: 95_000, contextWindow: 100_000 },
+  }, {
+    peers: [{ peerId: "worker2", status: "active" }],
+    messages: [],
+    gitStatus: { branch: "main", changedFiles: 2 },
+  });
+  const lines = formatPeerStatusLines(status, { compact: true }).map((item) => item.text);
+  assert.equal(lines[0], "🔗 on · 🟢 1 · 🌿 main · 📝 2");
+  assert.equal(lines[1], "🧠 critical · 5.0k left · compact_or_delegate · approval needed");
+  assert.match(lines[2], /^⚠️ fan-out available/);
+  assert.equal(lines.length, 3);
 });
 
 test("peer status can show visible unknown context after compaction", () => {

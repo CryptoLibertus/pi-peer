@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import { execFile } from "node:child_process";
 import { watch } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -54,6 +55,36 @@ import { beginPeerSendGoalLink, buildFanoutPrompt, duplicatePeerSendToolResult, 
 const MESSAGE_TYPE = "pi-peer";
 const DEFAULT_PEER_IDLE_OFFER_TIMEOUT_MS = 2 * 60 * 1000;
 const runtimeByCwd = new Map<string, Promise<any>>();
+
+async function collectGitStatus(cwd?: string) {
+  if (!cwd) return undefined;
+  try {
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1", "--branch"], { cwd, timeout: 750, maxBuffer: 64 * 1024 });
+    const lines = String(stdout || "").trimEnd().split(/\r?\n/).filter(Boolean);
+    const branchLine = lines[0]?.startsWith("## ") ? lines.shift() : "";
+    const branch = parseGitBranch(branchLine);
+    const changedFiles = lines.length;
+    return branch || changedFiles > 0 ? { branch, changedFiles } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function execFileAsync(file: string, args: string[], options: any): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) reject(error);
+      else resolve({ stdout: String(stdout || ""), stderr: String(stderr || "") });
+    });
+  });
+}
+
+function parseGitBranch(branchLine = "") {
+  const text = branchLine.replace(/^##\s*/, "").trim();
+  if (!text) return undefined;
+  if (text.startsWith("HEAD ")) return "detached";
+  return text.split("...")[0]?.split(" [")[0]?.trim() || undefined;
+}
 
 export default function piPeerExtension(pi: ExtensionAPI) {
   let activeContext: any;
@@ -334,8 +365,8 @@ export default function piPeerExtension(pi: ExtensionAPI) {
       const resolved = runtime || await runtimeFor(pi, ctx.cwd);
       maybeUpdatePeerContextBudget(resolved, ctx);
       if (resolved.enabled) await resolved.refreshLocalPeers().catch(() => []);
-      const status = await collectPeerRuntimeStatus(resolved);
-      const lines = formatPeerStatusLines(status);
+      const status = await collectPeerRuntimeStatus(resolved, { gitStatus: await collectGitStatus(ctx.cwd) });
+      const lines = formatPeerStatusLines(status, { compact: true });
       const footer = formatPeerFooterStatusLine(status);
       const theme = ctx.ui.theme;
       const color = (line: any) => theme?.fg ? theme.fg(line.color, line.text) : line.text;
