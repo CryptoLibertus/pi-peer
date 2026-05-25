@@ -891,6 +891,52 @@ test("empty proposal summaries reject", async (t) => {
   });
 });
 
+test("scout suggestions include explainable pressure scores with temporal decay", () => {
+  const nowMs = Date.parse("2026-01-01T03:00:00.000Z");
+  const board = {
+    goals: {
+      goal_old: {
+        id: "goal_old",
+        objective: "old proposal",
+        status: "open",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        events: [
+          { id: "proposal_old", type: "proposal", at: "2026-01-01T00:00:00.000Z", peerId: "planner", lane: "research", workKey: "research:old", summary: "Old research lane" },
+        ],
+      },
+      goal_fresh: {
+        id: "goal_fresh",
+        objective: "fresh proposal",
+        status: "open",
+        updatedAt: "2026-01-01T02:55:00.000Z",
+        events: [
+          { id: "proposal_fresh", type: "proposal", at: "2026-01-01T02:55:00.000Z", peerId: "planner", lane: "research", workKey: "research:fresh", summary: "Fresh research lane" },
+        ],
+      },
+      goal_blocked: {
+        id: "goal_blocked",
+        objective: "blocked goal",
+        status: "open",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        events: [
+          { id: "blocker_1", type: "objection", at: "2026-01-01T00:00:00.000Z", peerId: "reviewer", severity: "blocking", summary: "Must resolve" },
+        ],
+      },
+    },
+  };
+
+  const suggestions = derivePeerGoalScoutSuggestions(board, { nowMs });
+  assert.equal(suggestions[0].kind, "blocker");
+  assert.equal(suggestions[0].pressureScore, 100);
+  assert.equal(suggestions[0].pressureDecay, 0);
+  const fresh = suggestions.find((item) => item.workKey === "research:fresh");
+  const old = suggestions.find((item) => item.workKey === "research:old");
+  assert.ok(fresh.pressureScore > old.pressureScore);
+  assert.ok(old.pressureDecay > 0);
+  assert.deepEqual(old.pressureReasons, ["open-proposal", "temporal-decay"]);
+  assert.match(formatPeerGoalScout(board, { nowMs }), /pressure: \d+/);
+});
+
 test("scout suggestions are read-only and prioritize proactive next steps", async (t) => {
   await withGoal(t, async (root, goalId) => {
     const board = { goals: { [goalId]: { id: goalId, objective: "test goal", status: "open", events: [] } } };

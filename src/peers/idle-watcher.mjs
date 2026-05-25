@@ -79,6 +79,7 @@ export function createPeerIdleWatcher(options = {}) {
       if (pendingMessages.length) return finish({ activated: false, reason: "peer messages pending" });
 
       const board = await loadBoard(runtime.cwd || ctx?.cwd || process.cwd());
+      refreshPeerIdleActivationUsefulness(state, board, { nowMs: now() });
       const activation = derivePeerIdleActivation(board, {
         localPeerId: runtime.localPeerId,
         localRole: runtime.config?.localPeerProfile?.role || runtime.localEndpoint?.role,
@@ -282,6 +283,19 @@ export function markPeerIdleActivation(state, activation, nowMs = Date.now()) {
     kind: activation.kind,
     workKey: activation.workKey,
   });
+  if (!Array.isArray(state.activationHistory)) state.activationHistory = [];
+  state.activationHistory.push(stripEmpty({
+    at: new Date(nowMs).toISOString(),
+    key: peerIdleActivationKey(activation),
+    goalId: activation.goalId,
+    kind: activation.kind,
+    priority: activation.priority || "P2",
+    workKey: activation.workKey,
+    recommendedLane: activation.recommendedLane,
+    claimMode: activation.claimMode,
+    useful: false,
+  }));
+  if (state.activationHistory.length > 100) state.activationHistory.splice(0, state.activationHistory.length - 100);
   return true;
 }
 
@@ -299,14 +313,58 @@ export function recordPeerIdleCheck(state, reason, result = {}, nowMs = Date.now
   return state.lastCheck;
 }
 
+export function refreshPeerIdleActivationUsefulness(state, board = {}, options = {}) {
+  if (!state || !Array.isArray(state.activationHistory) || !state.activationHistory.length) return { useful: 0, total: 0 };
+  const ttlMs = positiveInteger(options.ttlMs) || 45 * 60 * 1000;
+  let useful = 0;
+  for (const activation of state.activationHistory) {
+    const result = evaluateIdleActivationUsefulness(activation, board, { ttlMs });
+    activation.useful = result.useful === true;
+    activation.usefulAt = result.usefulAt;
+    activation.evidenceEventId = result.evidenceEventId;
+    activation.releaseEventId = result.releaseEventId;
+    if (activation.useful) useful += 1;
+  }
+  state.usefulActivationCount = useful;
+  state.usefulActivationRate = ratio(useful, state.activationCount || state.activationHistory.length);
+  return { useful, total: state.activationHistory.length };
+}
+
+function evaluateIdleActivationUsefulness(activation = {}, board = {}, options = {}) {
+  if (!activation.goalId || !activation.workKey || !activation.at) return { useful: false };
+  const goal = board?.goals?.[activation.goalId];
+  if (!goal) return { useful: false };
+  const state = deriveGoalState(goal);
+  const startedAt = Date.parse(activation.at || "");
+  if (!Number.isFinite(startedAt)) return { useful: false };
+  const deadlineAt = startedAt + (positiveInteger(options.ttlMs) || 45 * 60 * 1000);
+  const events = Array.isArray(state.events) ? state.events : [];
+  const claim = events.find((event) => event.type === "claim" && event.workKey === activation.workKey && event.mode === "read" && eventAtMs(event) >= startedAt && eventAtMs(event) <= deadlineAt);
+  if (!claim) return { useful: false };
+  const evidence = events.find((event) => ["finding", "handoff", "note", "vote"].includes(event.type) && event.workKey === activation.workKey && eventAtMs(event) >= eventAtMs(claim) && eventAtMs(event) <= deadlineAt);
+  const release = events.find((event) => event.type === "release" && event.resolves === claim.id && eventAtMs(event) >= eventAtMs(claim) && eventAtMs(event) <= deadlineAt);
+  if (!evidence || !release) return { useful: false };
+  return { useful: true, usefulAt: evidence.at, evidenceEventId: evidence.id, releaseEventId: release.id };
+}
+
+function eventAtMs(event = {}) {
+  const at = Date.parse(event.at || "");
+  return Number.isFinite(at) ? at : Number.POSITIVE_INFINITY;
+}
+
 export function summarizePeerIdleWatcherState(watcher = {}) {
   const state = watcher?.state || {};
   const config = watcher?.config || {};
+  const history = Array.isArray(state.activationHistory) ? state.activationHistory : [];
+  const usefulActivationCount = history.filter((item) => item?.useful === true).length;
   return {
     enabled: config.enabled !== false,
     running: state.running === true,
     checkCount: state.checkCount || 0,
     activationCount: state.activationCount || 0,
+    usefulActivationCount,
+    usefulActivationRate: ratio(usefulActivationCount, state.activationCount || history.length),
+    recentActivations: history.slice(-10),
     maxActivationsPerSession: config.maxActivationsPerSession,
     cooldownMs: config.cooldownMs,
     intervalMs: config.intervalMs,
@@ -582,6 +640,18 @@ function parseBoolean(value) {
 function positiveInteger(value) {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : undefined;
+}
+
+function ratio(numerator, denominator) {
+  return denominator > 0 ? numerator / denominator : 0;
+}
+
+function stripEmpty(object) {
+  return Object.fromEntries(Object.entries(object).filter(([, value]) => {
+    if (value === undefined || value === null || value === "") return false;
+    if (Array.isArray(value) && value.length === 0) return false;
+    return true;
+  }));
 }
 
 function plainObject(value) {

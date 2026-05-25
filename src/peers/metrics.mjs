@@ -21,7 +21,10 @@ export function derivePeerFactoryMetrics(input = {}) {
   const passingContextEvals = evalResults.filter((result) => cleanText(result?.status) === "pass").length;
   const goals = array(input.goals);
   const controlState = plainObject(input.controlState) ? input.controlState : {};
+  const idleWatcher = plainObject(input.idleWatcher) ? input.idleWatcher : plainObject(controlState.idleWatcher) ? controlState.idleWatcher : {};
   const goalActiveTaskCount = goals.reduce((sum, goal) => sum + array(goal?.activeTasks).length, 0);
+  const idleActivationCount = integer(idleWatcher.activationCount);
+  const usefulIdleActivationCount = integer(idleWatcher.usefulActivationCount);
 
   return {
     totalRuns,
@@ -37,6 +40,9 @@ export function derivePeerFactoryMetrics(input = {}) {
     openGoalCount: goals.filter((goal) => goal?.status !== "closed").length,
     activeTaskCount: array(controlState.activeTasks).length || goalActiveTaskCount,
     activeSubrunCount: array(controlState.activeSubruns).length,
+    idleActivationCount,
+    usefulIdleActivationCount,
+    usefulIdleActivationRate: ratio(usefulIdleActivationCount, idleActivationCount),
     escalatedRuns,
   };
 }
@@ -53,6 +59,7 @@ export function formatPeerFactoryMetrics(metrics = {}) {
     `autonomy rate: ${percent(metrics.autonomyRate)} | gate pass rate: ${percent(metrics.gatePassRate)} | rework avg: ${formatNumber(metrics.averageReworkHops)} | escalations: ${escalations} (${percent(metrics.escalationRate)})`,
     `context patches: ${integer(metrics.contextPatchCount)} | context eval pass rate: ${percent(metrics.contextEvalPassRate)}`,
     `goals open: ${integer(metrics.openGoalCount)} | active tasks: ${integer(metrics.activeTaskCount)} | active subruns: ${integer(metrics.activeSubrunCount)}`,
+    `idle useful: ${integer(metrics.usefulIdleActivationCount)}/${integer(metrics.idleActivationCount)} (${percent(metrics.usefulIdleActivationRate)})`,
   ].join("\n");
 }
 

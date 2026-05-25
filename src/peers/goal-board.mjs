@@ -29,6 +29,22 @@ const STARTUP_SCOUT_LANES = Object.freeze([
   { lane: "review", preferredRoles: ["reviewer", "qa", "planner", "coordinator"], summary: "No active work yet; self-select a read-only review/QA lane to validate the plan and risks." },
   { lane: "implementation", preferredRoles: ["worker"], summary: "No active work yet; self-select an implementation-planning lane, then claim write paths only after naming them." },
 ]);
+const SCOUT_PRESSURE_BASE_SCORES = Object.freeze({
+  blocker: 100,
+  "task-handoff": 95,
+  "failed-vote": 90,
+  "stale-claim": 72,
+  "open-proposal": 58,
+  "work-item": 54,
+  review: 38,
+  close: 34,
+  "next-step": 22,
+});
+const SCOUT_PRESSURE_FLOORS = Object.freeze({ P0: 85, P1: 25, P2: 8 });
+const SCOUT_PRESSURE_DECAY_KINDS = new Set(["open-proposal", "work-item", "review", "close", "next-step"]);
+const SCOUT_PRESSURE_DECAY_INTERVAL_MS = 30 * 60 * 1000;
+const SCOUT_PRESSURE_DECAY_POINTS = 2;
+const SCOUT_PRESSURE_MAX_DECAY = 30;
 const GOAL_BOARD_LOCK_STALE_MS = 30_000;
 const GOAL_BOARD_LOCK_RETRY_MS = 10;
 const GOAL_BOARD_LOCK_TIMEOUT_MS = 5_000;
@@ -319,7 +335,8 @@ export function formatPeerGoalScout(board, options = {}) {
     const pathText = suggestion.paths?.length ? ` · paths: ${suggestion.paths.join(", ")}` : "";
     const laneText = suggestion.recommendedLane ? ` · lane: ${suggestion.recommendedLane}${suggestion.preferredRoles?.length ? ` for ${suggestion.preferredRoles.join("/")}` : ""}${suggestion.claimMode ? ` (${suggestion.claimMode})` : ""}` : "";
     const keyText = suggestion.workKey ? ` · key: ${suggestion.workKey}` : "";
-    lines.push(`- ${suggestion.priority} · ${suggestion.goalId} · ${suggestion.kind}: ${suggestion.summary}${laneText}${pathText}${keyText}`);
+    const pressureText = Number.isFinite(suggestion.pressureScore) ? ` · pressure: ${suggestion.pressureScore}${suggestion.pressureDecay ? ` (-${suggestion.pressureDecay} decay)` : ""}` : "";
+    lines.push(`- ${suggestion.priority} · ${suggestion.goalId} · ${suggestion.kind}: ${suggestion.summary}${laneText}${pathText}${keyText}${pressureText}`);
     const claim = formatScoutClaimCommand(suggestion);
     if (claim) lines.push(`  claim: ${claim}`);
     const resolve = formatScoutResolveCommand(suggestion);
@@ -333,14 +350,16 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
   const normalized = normalizeBoard(board);
   const includeClosed = options.includeClosed === true;
   const requestedGoalId = cleanText(options.goalId);
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   const goals = Object.values(normalized.goals)
     .filter((goal) => (!requestedGoalId || goal.id === requestedGoalId) && (includeClosed || goal.status !== "closed"))
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
   const suggestions = [];
+  let sequence = 0;
   for (const goal of goals) {
-    const state = deriveGoalState(goal);
+    const state = deriveGoalState(goal, { now: Number.isFinite(nowMs) ? new Date(nowMs).toISOString() : undefined });
     const push = (priority, kind, summary, extra = {}) => {
-      const suggestion = enrichScoutSuggestion({ goalId: goal.id, priority, kind, summary, ...extra });
+      const suggestion = annotateScoutPressure(enrichScoutSuggestion({ goalId: goal.id, priority, kind, summary, ...extra }), state, goal, { nowMs, sequence: sequence++ });
       if (!hasActiveWorkForScoutSuggestion(state, suggestion)) suggestions.push(suggestion);
     };
     if (state.blockingObjections.length) {
@@ -445,7 +464,7 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
       push("P2", "review", "No current peer vote; ask a peer for read-only review or record a pass/fail vote.");
     }
   }
-  return suggestions;
+  return suggestions.sort(compareScoutSuggestions);
 }
 
 function closurePolicyScoutSuggestions(state = {}, goal = {}) {
@@ -1356,6 +1375,79 @@ function enrichScoutSuggestion(suggestion = {}) {
     ...enriched,
     workKey: normalizeWorkKey(suggestion.workKey) || derivePeerGoalWorkKey({ goalId: enriched.goalId, lane: recommendedLane, objective: enriched.summary, mode: claimMode, paths: enriched.paths }),
   });
+}
+
+function annotateScoutPressure(suggestion = {}, state = {}, goal = {}, options = {}) {
+  const priority = cleanText(suggestion.priority || "P2").toUpperCase();
+  const base = scoutPressureBaseScore(suggestion, state);
+  const ageMs = scoutPressureAgeMs(suggestion, state, goal, options.nowMs);
+  const decay = scoutPressureDecay(suggestion, priority, ageMs);
+  const score = Math.max(SCOUT_PRESSURE_FLOORS[priority] ?? SCOUT_PRESSURE_FLOORS.P2, base - decay);
+  return stripEmpty({
+    ...suggestion,
+    pressureScore: score,
+    pressureBase: base,
+    pressureDecay: decay,
+    pressureAgeMinutes: Number.isFinite(ageMs) ? Math.max(0, Math.floor(ageMs / 60_000)) : undefined,
+    pressureReasons: scoutPressureReasons(suggestion, state, decay),
+    scoutSequence: options.sequence,
+  });
+}
+
+function scoutPressureBaseScore(suggestion = {}, state = {}) {
+  const base = SCOUT_PRESSURE_BASE_SCORES[suggestion.kind] ?? 20;
+  if (suggestion.kind === "open-proposal" && suggestion.relatedEventId) {
+    const proposal = state.openProposals?.find((event) => event.id === suggestion.relatedEventId);
+    if (proposal && proposalLaneWorkCompleted(state, suggestion.goalId, proposal)) return base + 8;
+  }
+  if (suggestion.kind === "work-item" && suggestion.requiresWorkItemResolution) return base + 10;
+  return base;
+}
+
+function scoutPressureAgeMs(suggestion = {}, state = {}, goal = {}, nowMs = Date.now()) {
+  if (!Number.isFinite(nowMs)) return undefined;
+  const relatedAt = suggestion.relatedEventId ? state.events?.find((event) => event.id === suggestion.relatedEventId)?.at : undefined;
+  const sourceAt = relatedAt || goal.updatedAt || goal.createdAt;
+  const sourceMs = Date.parse(sourceAt || "");
+  return Number.isFinite(sourceMs) ? Math.max(0, nowMs - sourceMs) : undefined;
+}
+
+function scoutPressureDecay(suggestion = {}, priority = "P2", ageMs) {
+  if (priority === "P0" || !SCOUT_PRESSURE_DECAY_KINDS.has(suggestion.kind)) return 0;
+  if (!Number.isFinite(ageMs) || ageMs <= SCOUT_PRESSURE_DECAY_INTERVAL_MS) return 0;
+  const intervals = Math.floor(ageMs / SCOUT_PRESSURE_DECAY_INTERVAL_MS) - 1;
+  return Math.min(SCOUT_PRESSURE_MAX_DECAY, Math.max(0, intervals * SCOUT_PRESSURE_DECAY_POINTS));
+}
+
+function scoutPressureReasons(suggestion = {}, state = {}, decay = 0) {
+  const reasons = [];
+  if (suggestion.kind === "blocker") reasons.push("blocking-objection");
+  else if (suggestion.kind === "task-handoff") reasons.push("unsuccessful-handoff");
+  else if (suggestion.kind === "failed-vote") reasons.push("failed-vote");
+  else if (suggestion.kind === "stale-claim") reasons.push("stale-claim");
+  else if (suggestion.kind === "open-proposal" && suggestion.relatedEventId) {
+    const proposal = state.openProposals?.find((event) => event.id === suggestion.relatedEventId);
+    reasons.push(proposal && proposalLaneWorkCompleted(state, suggestion.goalId, proposal) ? "fulfilled-proposal" : "open-proposal");
+  } else reasons.push(suggestion.kind || "scout");
+  if (decay) reasons.push("temporal-decay");
+  return reasons;
+}
+
+function compareScoutSuggestions(a = {}, b = {}) {
+  return prioritySortValue(a.priority) - prioritySortValue(b.priority)
+    || numberOrZero(b.pressureScore) - numberOrZero(a.pressureScore)
+    || numberOrZero(a.scoutSequence) - numberOrZero(b.scoutSequence);
+}
+
+function prioritySortValue(priority) {
+  const normalized = cleanText(priority || "P2").toUpperCase();
+  if (normalized === "P0") return 0;
+  if (normalized === "P1") return 1;
+  return 2;
+}
+
+function numberOrZero(value) {
+  return Number.isFinite(value) ? value : 0;
 }
 
 function formatScoutClaimCommand(suggestion = {}) {

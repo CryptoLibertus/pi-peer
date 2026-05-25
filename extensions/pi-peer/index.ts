@@ -829,7 +829,7 @@ async function collectPeerCommandCenterInput(ctx: any, runtime: any) {
     contextError = error?.message || String(error);
     contextState = { patches: [], retros: [], evalResults: [], warnings: [], error: contextError };
   }
-  const metrics = derivePeerFactoryMetrics({ factoryState, contextState, goals, controlState });
+  const metrics = derivePeerFactoryMetrics({ factoryState, contextState, goals, controlState, idleWatcher: runtimeStatus.idleWatcher });
   return { runtimeStatus, orgState, setupSession, setup: setupSession, goals, currentGoalId: board.currentGoalId, controlState, factoryRecords, factoryState, factoryInitialized, factoryError, contextState, contextError, metrics };
 }
 
@@ -1133,7 +1133,12 @@ async function handlePeerFactoryCommand(parsed: any, ctx: any, runtime: any) {
       contextError = error?.message || String(error);
       contextState = { patches: [], retros: [], evalResults: [], warnings: [], error: contextError };
     }
-    const text = formatPeerFactoryMetrics(derivePeerFactoryMetrics({ factoryState, contextState }));
+    const board = await loadPeerGoalBoard(root).catch(() => ({ goals: {} }));
+    const goals = Object.values(board.goals || {}).map((goal: any) => deriveGoalState(goal));
+    const loadedControl = await loadPeerControlLedger(root).catch(() => ({ records: [] }));
+    const controlState = derivePeerControlState(loadedControl.records || []);
+    const runtimeStatus = await collectPeerRuntimeStatus(runtime).catch(() => ({}));
+    const text = formatPeerFactoryMetrics(derivePeerFactoryMetrics({ factoryState, contextState, goals, controlState, idleWatcher: (runtimeStatus as any).idleWatcher }));
     return contextError ? `${text}\nContext warning: ${contextError}` : text;
   }
 

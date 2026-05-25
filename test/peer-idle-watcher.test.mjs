@@ -8,7 +8,9 @@ import {
   derivePeerIdleActivationOfferPlan,
   markPeerIdleActivation,
   normalizePeerIdleWatcherConfig,
+  refreshPeerIdleActivationUsefulness,
   shouldSurfaceCoordinationInFooter,
+  summarizePeerIdleWatcherState,
 } from "../src/peers/idle-watcher.mjs";
 import { parsePeerCommand } from "../src/peers/command.mjs";
 
@@ -76,6 +78,45 @@ test("derivePeerIdleActivation picks scout suggestions and respects cooldown", (
     nowMs: 12_000,
     config: { cooldownMs: 10_000 },
   }).goalId, "goal_123");
+});
+
+test("idle activation usefulness requires evidence plus claim release within TTL", () => {
+  const state = { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() };
+  markPeerIdleActivation(state, {
+    goalId: "goal_useful",
+    kind: "open-proposal",
+    priority: "P1",
+    workKey: "research:useful",
+    recommendedLane: "research",
+    claimMode: "read",
+    summary: "Self-select research",
+  }, Date.parse("2026-01-01T00:00:00.000Z"));
+
+  const board = {
+    goals: {
+      goal_useful: {
+        id: "goal_useful",
+        objective: "Measure idle usefulness",
+        status: "open",
+        events: [
+          { id: "claim_1", type: "claim", at: "2026-01-01T00:01:00.000Z", peerId: "worker", summary: "Research", mode: "read", lane: "research", workKey: "research:useful" },
+          { id: "finding_1", type: "finding", at: "2026-01-01T00:02:00.000Z", peerId: "worker", summary: "Found useful evidence", lane: "research", workKey: "research:useful" },
+          { id: "release_1", type: "release", at: "2026-01-01T00:03:00.000Z", peerId: "worker", resolves: "claim_1", summary: "Released" },
+        ],
+      },
+    },
+  };
+
+  assert.deepEqual(refreshPeerIdleActivationUsefulness(state, board, { ttlMs: 10 * 60 * 1000 }), { useful: 1, total: 1 });
+  const summary = summarizePeerIdleWatcherState({ state, config: {} });
+  assert.equal(summary.usefulActivationCount, 1);
+  assert.equal(summary.usefulActivationRate, 1);
+  assert.equal(summary.recentActivations[0].evidenceEventId, "finding_1");
+
+  const missingReleaseState = { activationCount: 0, lastActivationAtByKey: new Map(), lastActivationByGoal: new Map() };
+  markPeerIdleActivation(missingReleaseState, { goalId: "goal_useful", kind: "open-proposal", workKey: "research:useful", claimMode: "read" }, Date.parse("2026-01-01T00:00:00.000Z"));
+  const noReleaseBoard = { goals: { goal_useful: { ...board.goals.goal_useful, events: board.goals.goal_useful.events.filter((event) => event.type !== "release") } } };
+  assert.deepEqual(refreshPeerIdleActivationUsefulness(missingReleaseState, noReleaseBoard, { ttlMs: 10 * 60 * 1000 }), { useful: 0, total: 1 });
 });
 
 test("derivePeerIdleActivation goal-cooldowns prevent one generic peer from sweeping every startup lane", () => {

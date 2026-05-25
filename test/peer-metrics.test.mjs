@@ -18,6 +18,10 @@ test("metrics summarize autonomy, gates, rework, escalation, and context patches
       patches: [{ patchId: "ctx_1" }],
       evalResults: [{ status: "pass" }],
     },
+    idleWatcher: {
+      activationCount: 4,
+      usefulActivationCount: 3,
+    },
   });
 
   assert.equal(metrics.totalRuns, 2);
@@ -25,7 +29,10 @@ test("metrics summarize autonomy, gates, rework, escalation, and context patches
   assert.equal(metrics.autonomyRate, 0.5);
   assert.equal(metrics.escalationRate, 0.5);
   assert.equal(metrics.contextPatchCount, 1);
+  assert.equal(metrics.idleActivationCount, 4);
+  assert.equal(metrics.usefulIdleActivationRate, 0.75);
   assert.match(formatPeerFactoryMetrics(metrics), /autonomy rate: 50%/i);
+  assert.match(formatPeerFactoryMetrics(metrics), /idle useful: 3\/4 \(75%\)/i);
 });
 
 test("metrics do not count blocked runs as active when recomputing active runs", () => {
