@@ -1,5 +1,6 @@
 import { appendPeerControlRecord, derivePeerControlState, loadPeerControlLedger, reconcileDisconnectedPeerGoalTasks, reconcilePeerControlLedger } from "./control-ledger.mjs";
-import { appendPeerGoalEvent, createPeerGoal, derivePeerGoalScoutSuggestions, formatPeerGoal, formatPeerGoalScout, loadPeerGoalBoard } from "./goal-board.mjs";
+import { appendPeerGoalEvent, createPeerGoal, derivePeerGoalScoutSuggestions, formatPeerGoal, formatPeerGoalScout, formatPeerGoalSynthesis, loadPeerGoalBoard } from "./goal-board.mjs";
+import { deriveFactoryState, loadFactoryRuns } from "./factory.mjs";
 import { formatHiveRunPeerHealthPauseSummary, summarizeHiveRunPeerHealth } from "./hive-supervisor.mjs";
 import { beginPeerSendGoalLink, recordPeerSendGoalDispatch, recordPeerSendGoalFailure, trackPeerSendGoalCompletion, withPeerGoalInstructions } from "./extension-goal-linking.mjs";
 
@@ -54,7 +55,7 @@ export async function handlePeerHiveCommand(parsed, ctx, runtime) {
       peerId,
       summary: `Hive run started for ${formatDuration(parsed.durationMs)} with ${peers.length} peer${peers.length === 1 ? "" : "s"}; supervisor interval ${intervalMs}ms.`,
       lane: "coordination",
-      metadata: { hiveRun: true, durationMs: parsed.durationMs, intervalMs, peers, coordinatorClaimId: coordinatorClaim.event.id },
+      metadata: { hiveRun: true, durationMs: parsed.durationMs, intervalMs, peers, maxPeers: parsed.maxPeers, coordinatorClaimId: coordinatorClaim.event.id },
     });
     const dispatches = await dispatchPeerHiveRunTick(root, runtime, {
       goalId: goal.id,
@@ -65,7 +66,7 @@ export async function handlePeerHiveCommand(parsed, ctx, runtime) {
       durationMs: parsed.durationMs,
       intervalMs,
     });
-    schedulePeerHiveRun(root, runtime, { goalId: goal.id, peers, lanes, objective: parsed.objective, durationMs: parsed.durationMs, intervalMs, peerId, coordinatorClaimId: coordinatorClaim.event.id });
+    schedulePeerHiveRun(root, runtime, { goalId: goal.id, peers, lanes, objective: parsed.objective, durationMs: parsed.durationMs, intervalMs, peerId, coordinatorClaimId: coordinatorClaim.event.id, maxTicks: parsed.maxTicks, maxPeers: parsed.maxPeers, tickCount: 1 });
     const board = await loadPeerGoalBoard(root);
     const currentGoal = board.goals[goal.id];
     const lines = [
@@ -114,13 +115,15 @@ export function schedulePeerHiveRun(root, runtime, options) {
   const intervalMs = options.intervalMs || defaultHiveRunIntervalMs(options.durationMs);
   const startedAt = Date.now();
   const deadlineAt = options.deadlineAt || new Date(startedAt + (options.durationMs || 0)).toISOString();
+  const maxTicks = positiveInteger(options.maxTicks);
+  let tickCount = Math.max(0, Number.isFinite(Number(options.tickCount)) ? Math.floor(Number(options.tickCount)) : 0);
   void appendPeerControlRecord(root, {
     kind: "hive",
     action: options.recovered ? "resumed" : "started",
     status: options.recovered ? "resumed" : "started",
     goalId: options.goalId,
     summary: options.recovered ? "Hive run supervisor resumed from durable ledger" : "Hive run supervisor started",
-    metadata: { key, deadlineAt, intervalMs, durationMs: options.durationMs, peers: options.peers, lanes: options.lanes, objective: options.objective, coordinatorClaimId: options.coordinatorClaimId },
+    metadata: { key, deadlineAt, intervalMs, durationMs: options.durationMs, peers: options.peers, lanes: options.lanes, objective: options.objective, coordinatorClaimId: options.coordinatorClaimId, maxTicks, maxPeers: options.maxPeers, tickCount },
   }).catch(() => {});
   const stop = async (reason = "deadline") => {
     const current = hiveRunsByKey.get(key);
@@ -135,13 +138,14 @@ export function schedulePeerHiveRun(root, runtime, options) {
         summary: `Hive run coordinator released: ${reason}`,
       }).catch(() => {});
     }
+    const synthesis = await buildHiveRunFinalSynthesis(root, options.goalId).catch(() => undefined);
     await appendPeerGoalEvent(root, options.goalId, {
       type: "handoff",
       peerId: options.peerId || runtime?.localPeerId || "unknown",
-      summary: `Hive run supervisor stopped: ${reason}. Review goal board for final findings, unresolved proposals, active claims, and closure votes.`,
+      summary: synthesis?.summary || `Hive run supervisor stopped: ${reason}. Review goal board for final findings, unresolved proposals, active claims, and closure votes.`,
       lane: "coordination",
       status: "done",
-      metadata: { hiveRun: true, reason, elapsedMs: Date.now() - startedAt },
+      metadata: { hiveRun: true, reason, elapsedMs: Date.now() - startedAt, synthesis: synthesis?.text },
     }).catch(() => {});
     await appendPeerControlRecord(root, {
       kind: "hive",
@@ -149,10 +153,17 @@ export function schedulePeerHiveRun(root, runtime, options) {
       status: reason === "duration elapsed" ? "elapsed" : "stopped",
       goalId: options.goalId,
       summary: `Hive run supervisor stopped: ${reason}`,
-      metadata: { key, reason, elapsedMs: Date.now() - startedAt, deadlineAt },
+      metadata: { key, reason, elapsedMs: Date.now() - startedAt, deadlineAt, maxTicks, maxPeers: options.maxPeers, tickCount },
     }).catch(() => {});
   };
   const timer = setInterval(() => {
+    if (maxTicks && tickCount >= maxTicks) {
+      void stop("max loops reached");
+      return;
+    }
+    tickCount += 1;
+    const current = hiveRunsByKey.get(key);
+    if (current?.options) current.options.tickCount = tickCount;
     if (options.coordinatorClaimId) {
       void appendPeerGoalEvent(root, options.goalId, {
         type: "heartbeat",
@@ -160,7 +171,7 @@ export function schedulePeerHiveRun(root, runtime, options) {
         resolves: options.coordinatorClaimId,
         summary: "Hive run coordinator still supervising",
         staleAfterMs: Math.max(intervalMs * 3, 60_000),
-        metadata: { hiveRun: true },
+        metadata: { hiveRun: true, tickCount, maxTicks, maxPeers: options.maxPeers },
       }).catch(() => {});
     }
     void appendPeerControlRecord(root, {
@@ -169,9 +180,9 @@ export function schedulePeerHiveRun(root, runtime, options) {
       status: "tick",
       goalId: options.goalId,
       summary: "Hive run supervisor interval tick",
-      metadata: { key, deadlineAt, intervalMs },
+      metadata: { key, deadlineAt, intervalMs, tickCount, maxTicks, maxPeers: options.maxPeers },
     }).catch(() => {});
-    void dispatchPeerHiveRunTick(root, runtime, { ...options, reason: "interval" }).catch(async (error) => {
+    void dispatchPeerHiveRunTick(root, runtime, { ...options, reason: "interval", tickCount, maxTicks }).catch(async (error) => {
       await appendPeerGoalEvent(root, options.goalId, {
         type: "note",
         peerId: options.peerId || runtime?.localPeerId || "unknown",
@@ -186,7 +197,7 @@ export function schedulePeerHiveRun(root, runtime, options) {
   const deadlineTimer = setTimeout(() => void stop("duration elapsed"), deadlineDelayMs);
   timer.unref?.();
   deadlineTimer.unref?.();
-  hiveRunsByKey.set(key, { timer, deadlineTimer, startedAt, stop, options: { ...options, intervalMs, deadlineAt, durationMs: Math.max(1, Date.parse(deadlineAt) - startedAt) } });
+  hiveRunsByKey.set(key, { timer, deadlineTimer, startedAt, stop, options: { ...options, intervalMs, deadlineAt, durationMs: Math.max(1, Date.parse(deadlineAt) - startedAt), maxTicks, maxPeers: options.maxPeers, tickCount } });
 }
 
 function hiveRunKey(root, goalId) {
@@ -227,6 +238,9 @@ export async function resumePersistedHiveRuns(root, runtime) {
       peerId: runtime?.localPeerId || "unknown",
       coordinatorClaimId: run.coordinatorClaimId,
       deadlineAt: run.deadlineAt,
+      maxTicks: run.maxTicks,
+      maxPeers: run.maxPeers,
+      tickCount: run.tickCount,
       recovered: true,
     });
     resumed.push(run);
@@ -239,7 +253,7 @@ export function formatPeerHiveRunStatus(root, goalId) {
   if (!run) return `No active in-process hive run for ${goalId}. Inspect persisted board state with /peer goal show ${goalId}.`;
   const elapsedMs = Date.now() - run.startedAt;
   const remainingMs = Math.max(0, (run.options.durationMs || 0) - elapsedMs);
-  return [`Hive run active for ${goalId}`, `elapsed: ${formatDuration(elapsedMs)}`, `remaining: ${formatDuration(remainingMs)}`, `intervalMs: ${run.options.intervalMs}`, `peers: ${(run.options.peers || []).join(", ") || "none"}`, `coordinatorClaimId: ${run.options.coordinatorClaimId || "none"}`].join("\n");
+  return [`Hive run active for ${goalId}`, `elapsed: ${formatDuration(elapsedMs)}`, `remaining: ${formatDuration(remainingMs)}`, `intervalMs: ${run.options.intervalMs}`, `loops: ${run.options.tickCount || 0}${run.options.maxTicks ? `/${run.options.maxTicks}` : ""}`, `maxPeers: ${run.options.maxPeers || "unlimited"}`, `peers: ${(run.options.peers || []).join(", ") || "none"}`, `coordinatorClaimId: ${run.options.coordinatorClaimId || "none"}`].join("\n");
 }
 
 export async function stopPeerHiveRun(root, goalId, reason) {
@@ -264,7 +278,9 @@ export async function dispatchPeerHiveRunTick(root, runtime, options) {
     }).catch(() => {});
     return activeGoalMessages.map((message) => ({ peerId: message.peerId, messageId: message.messageId, skipped: "active-message" }));
   }
-  const board = await loadPeerGoalBoard(root);
+  let board = await loadPeerGoalBoard(root);
+  const reworkSeeded = await ensureHiveRunReworkItems(root, runtime, options, board).catch(() => false);
+  if (reworkSeeded) board = await loadPeerGoalBoard(root);
   const peerHealth = summarizeHiveRunPeerHealth(messages, peers, {
     nowMs: Date.now(),
     windowMs: options.peerFailureWindowMs,
@@ -275,7 +291,9 @@ export async function dispatchPeerHiveRunTick(root, runtime, options) {
     return peerHealth.unhealthyPeers.map((peer) => ({ peerId: peer.peerId, skipped: "unhealthy-peer", failures: peer.failureCount }));
   }
   const dispatchPeers = peerHealth.healthyPeers.length ? peerHealth.healthyPeers : peers;
-  const suggestions = derivePeerGoalScoutSuggestions(board, { goalId: options.goalId }).slice(0, Math.max(1, dispatchPeers.length));
+  const peerProfiles = await listPeerProfiles(runtime);
+  const dispatchLimit = positiveInteger(options.maxPeers) || dispatchPeers.length;
+  const suggestions = derivePeerGoalScoutSuggestions(board, { goalId: options.goalId }).slice(0, Math.max(1, Math.min(dispatchLimit, dispatchPeers.length)));
   if (!suggestions.length) {
     await appendPeerGoalEvent(root, options.goalId, {
       type: "note",
@@ -287,9 +305,11 @@ export async function dispatchPeerHiveRunTick(root, runtime, options) {
     return [];
   }
   const dispatches = [];
-  await Promise.all(suggestions.map(async (suggestion) => {
-    const targetPeerId = dispatchPeers[index % dispatchPeers.length];
+  const assignedPeers = new Set();
+  await Promise.all(suggestions.map(async (suggestion, index) => {
     const lane = suggestion.recommendedLane || "review";
+    const targetPeerId = choosePeerForSuggestion(dispatchPeers, peerProfiles, suggestion, assignedPeers, index);
+    assignedPeers.add(targetPeerId);
     const workKey = suggestion.workKey || `hive-run:${options.goalId}:${lane}:${suggestion.kind}`;
     let goalLink;
     try {
@@ -324,6 +344,68 @@ export async function dispatchPeerHiveRunTick(root, runtime, options) {
     }
   }));
   return dispatches;
+}
+
+async function ensureHiveRunReworkItems(root, runtime, options, board) {
+  const goal = board?.goals?.[options.goalId];
+  if (!goal) return false;
+  const factoryState = deriveFactoryState((await loadFactoryRuns(root)).records);
+  const failedRun = factoryState.runs.find((run) => run.goalId === options.goalId && ["blocked", "failed", "error"].includes(run.status));
+  if (!failedRun) return false;
+  const workKey = `rework:${failedRun.runId}`;
+  const events = Array.isArray(goal.events) ? goal.events : [];
+  if (events.some((event) => event.workKey === workKey && ["work-item", "proposal", "claim", "task", "handoff"].includes(event.type))) return false;
+  const peerId = runtime?.localPeerId || "unknown";
+  await appendPeerGoalEvent(root, options.goalId, {
+    type: "work-item",
+    peerId,
+    summary: `Rework failed factory run ${failedRun.runId}: ${failedRun.objective || options.objective || "autonomous goal"}`,
+    itemId: `rework-${failedRun.runId}`.slice(0, 80),
+    status: "open",
+    lane: "implementation",
+    paths: failedRun.paths || [],
+    workKey,
+    metadata: { hiveRun: true, autonomousRework: true, runId: failedRun.runId, status: failedRun.status, gateResults: failedRun.gateResults },
+  });
+  await appendPeerGoalEvent(root, options.goalId, {
+    type: "proposal",
+    peerId,
+    summary: `Self-select rework lane for failed factory run ${failedRun.runId}`,
+    lane: "implementation",
+    paths: failedRun.paths || [],
+    workKey,
+    metadata: { hiveRun: true, autonomousRework: true, runId: failedRun.runId },
+  });
+  return true;
+}
+
+async function listPeerProfiles(runtime) {
+  const peers = runtime?.comms?.listPeers ? await runtime.comms.listPeers().catch(() => []) : [];
+  const map = new Map();
+  for (const peer of Array.isArray(peers) ? peers : []) {
+    const peerId = peer?.peerId || peer?.id;
+    if (peerId) map.set(peerId, peer);
+  }
+  return map;
+}
+
+function choosePeerForSuggestion(peerIds, peerProfiles, suggestion, assignedPeers, index) {
+  const lane = String(suggestion?.recommendedLane || "review").toLowerCase();
+  const sorted = [...peerIds].sort((a, b) => peerLaneScore(peerProfiles.get(b), lane) - peerLaneScore(peerProfiles.get(a), lane) || String(a).localeCompare(String(b)));
+  const fresh = sorted.find((peerId) => !assignedPeers.has(peerId));
+  return fresh || sorted[index % Math.max(1, sorted.length)] || peerIds[index % peerIds.length];
+}
+
+function peerLaneScore(peer = {}, lane = "") {
+  const role = String(peer.role || peer.persona || "").toLowerCase();
+  const domain = String(peer.domain || "").toLowerCase();
+  const haystack = `${role} ${domain}`;
+  if (lane === "implementation" && /worker|implementation|implementer|engineer/.test(haystack)) return 20;
+  if ((lane === "review" || lane === "qa") && /review|qa|quality|test/.test(haystack)) return 20;
+  if (lane === "research" && /research|analysis|planner/.test(haystack)) return 20;
+  if (lane === "coordination" && /coordination|coordinator|planner/.test(haystack)) return 20;
+  if (/worker/.test(haystack)) return 5;
+  return 0;
 }
 
 async function appendHiveRunPeerHealthBlocker(root, runtime, options, board, peerHealth) {
@@ -373,6 +455,25 @@ export function formatHiveDispatchLines(dispatches= []) {
   return ["Initial dispatch:", ...dispatches.map((item) => `- ${item.peerId}${item.lane ? ` · ${item.lane}` : ""}${item.messageId ? ` · ${item.messageId}` : ""}${item.duplicate ? " · duplicate reused" : ""}${item.error ? ` · error: ${item.error}` : ""}`)];
 }
 
+async function buildHiveRunFinalSynthesis(root, goalId) {
+  const board = await loadPeerGoalBoard(root);
+  const goal = board.goals?.[goalId];
+  if (!goal) return undefined;
+  const text = formatPeerGoalSynthesis(goal, { limit: 8 });
+  const blockers = Array.isArray(goal.events) ? goal.events.filter((event) => event.type === "objection" && !goal.events.some((candidate) => candidate.type === "resolve" && candidate.resolves === event.id)).length : 0;
+  const handoffs = Array.isArray(goal.events) ? goal.events.filter((event) => event.type === "handoff").length : 0;
+  return {
+    text,
+    summary: `Hive run supervisor final synthesis for ${goalId}: ${handoffs} handoff${handoffs === 1 ? "" : "s"}, ${blockers} unresolved blocker${blockers === 1 ? "" : "s"}.`,
+  };
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return undefined;
+  const integer = Math.floor(number);
+  return integer > 0 ? integer : undefined;
+}
 
 function ensureEnabled(runtime) {
   if (!runtime.enabled) throw new Error("Pi-to-Pi peer messaging is disabled for this project. Run /peer init or enable experimental.peerMessaging before using peer send/get/await.");

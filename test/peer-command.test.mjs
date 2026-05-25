@@ -441,13 +441,15 @@ test("parses hive and swarm start as safe self-selection goal starters", () => {
 });
 
 test("parses hive run as a bounded closed-loop supervisor", () => {
-  const parsed = parsePeerCommand("hive run Research swarm loops --duration 5h --peer worker2,worker3 --interval-ms 60000 --lane research,review --await");
+  const parsed = parsePeerCommand("hive run Research swarm loops --duration 5h --peer worker2,worker3 --interval-ms 60000 --lane research,review --max-loops 7 --max-peers 1 --await");
   assert.equal(parsed.subcommand, "hive");
   assert.equal(parsed.hiveAction, "run");
   assert.equal(parsed.objective, "Research swarm loops");
   assert.equal(parsed.durationMs, 18_000_000);
   assert.deepEqual(parsed.peers, ["worker2", "worker3"]);
   assert.equal(parsed.intervalMs, 60_000);
+  assert.equal(parsed.maxTicks, 7);
+  assert.equal(parsed.maxPeers, 1);
   assert.deepEqual(parsed.lanes, ["research", "review"]);
   assert.equal(parsed.send, true);
   assert.equal(parsed.awaitResponse, true);
@@ -462,6 +464,21 @@ test("hive start, run, status, and stop validate required arguments", () => {
   assert.equal(parsePeerCommand("hive status goal_123").goalId, "goal_123");
   assert.equal(parsePeerCommand("swarm stop goal_123").hiveAction, "stop");
   assert.match(parsePeerCommand("swarm review something").error, /Unknown \/peer swarm action 'review'/);
+});
+
+test("parses autonomous peer-do mission controls", () => {
+  const parsed = parsePeerCommand("do Improve idle peer usefulness --autonomous --duration 30m --max-loops 5 --max-peers 2 --peer worker2,worker3 --lane research,implementation,review --path src/peers --gate test");
+  assert.equal(parsed.subcommand, "do");
+  assert.equal(parsed.intent, "mission");
+  assert.equal(parsed.objective, "Improve idle peer usefulness");
+  assert.equal(parsed.autonomous, true);
+  assert.equal(parsed.durationMs, 1_800_000);
+  assert.equal(parsed.maxLoops, 5);
+  assert.equal(parsed.maxPeers, 2);
+  assert.deepEqual(parsed.peers, ["worker2", "worker3"]);
+  assert.deepEqual(parsed.lanes, ["research", "implementation", "review"]);
+  assert.deepEqual(parsed.paths, ["src/peers"]);
+  assert.deepEqual(parsed.gates, ["test"]);
 });
 
 test("parses bounded self-improve commands", () => {

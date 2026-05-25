@@ -168,6 +168,8 @@ function parsePeerHiveCommand(parsed, flags, positionals) {
   if (!objective) return { ...withAction, error: `/peer ${parsed.subcommand} ${action} requires <objective>` };
   const durationMs = durationFlag(flags.duration || flags.for || flags.timebox);
   if (action === "run" && !durationMs) return { ...withAction, error: `/peer ${parsed.subcommand} run requires --duration <5h|30m|300s>` };
+  const maxTicks = positiveIntegerFlag(flags.maxTicks || flags.maxLoops || flags.loops || flags.loop);
+  const maxPeers = positiveIntegerFlag(flags.maxPeers || flags.peerLimit || flags.peerBudget);
   return {
     ...withAction,
     objective,
@@ -177,6 +179,8 @@ function parsePeerHiveCommand(parsed, flags, positionals) {
     proposals: listFlag(flags.proposal || flags.proposals),
     peers: listFlag(flags.peer || flags.peers),
     durationMs,
+    maxTicks,
+    maxPeers,
     intervalMs: positiveIntegerFlag(flags.intervalMs) || positiveIntegerFlag(flags.interval),
     awaitResponse: flagEnabled(flags.await),
     send: action === "run" || flagEnabled(flags.send),
@@ -344,6 +348,7 @@ function parsePeerDoCommand(parsed, flags, positionals) {
   const validIntents = ["setup", "status", "start", "coordinate", "review", "research", "work", "plan", "verify", "rework", "metrics", "ship", "automate", "resolve-handoffs", "subagents", "mission", "accomplish"];
   const missionAlias = intent === "mission" || intent === "accomplish";
   const missionArgs = missionAlias ? positionals.slice(1) : positionals;
+  const common = peerDoCommonFlags(flags);
   if (missionAlias || !validIntents.includes(intent)) {
     const objective = missionArgs.join(" ").trim();
     if (!objective) return { ...parsed, intent: "mission", intentArgs: [], error: "/peer do mission requires <objective>" };
@@ -352,20 +357,29 @@ function parsePeerDoCommand(parsed, flags, positionals) {
       intent: "mission",
       objective,
       intentArgs: missionArgs,
-      constraints: listFlag(flags.constraint || flags.constraints),
-      paths: listFlag(flags.path || flags.paths),
-      gates: listFlag(flags.gate || flags.gates),
-      lanes: listFlag(flags.lane || flags.lanes),
+      ...common,
     };
   }
   const withIntent = { ...parsed, intent, intentArgs: positionals.slice(1) };
   if (!validIntents.includes(intent)) return { ...withIntent, error: `Unknown /peer do intent '${intent}'` };
   return {
     ...withIntent,
+    ...common,
+  };
+}
+
+function peerDoCommonFlags(flags) {
+  return {
     constraints: listFlag(flags.constraint || flags.constraints),
     paths: listFlag(flags.path || flags.paths),
     gates: listFlag(flags.gate || flags.gates),
     lanes: listFlag(flags.lane || flags.lanes),
+    autonomous: flagEnabled(flags.autonomous || flags.auto),
+    durationMs: durationFlag(flags.duration || flags.for || flags.timebox),
+    intervalMs: positiveIntegerFlag(flags.intervalMs) || positiveIntegerFlag(flags.interval),
+    peers: listFlag(flags.peer || flags.peers),
+    maxLoops: positiveIntegerFlag(flags.maxLoops || flags.loops || flags.loop),
+    maxPeers: positiveIntegerFlag(flags.maxPeers || flags.peerLimit || flags.peerBudget),
   };
 }
 

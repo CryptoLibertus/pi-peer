@@ -103,6 +103,19 @@ test("work launcher falls back to setup when peer setup is missing", () => {
   }]);
 });
 
+test("command center renders autonomous ship-readiness state", () => {
+  const state = buildPeerCommandCenterState({
+    runtimeStatus: { enabled: true, localPeerId: "planner", peers: [] },
+    goals: [{ id: "goal_ready", objective: "Ship autonomy", status: "open", readyToClose: true }],
+    currentGoalId: "goal_ready",
+    factoryState: { runs: [{ runId: "fac_ready", goalId: "goal_ready", status: "verified" }], activeRuns: [] },
+    setupSession: { exists: true },
+  });
+
+  assert.equal(state.autonomyReadiness.status, "ready-for-human-approval");
+  assert.match(formatPeerCommandCenter(state), /Readiness: ready-for-human-approval/);
+});
+
 test("command center renders compact factory metrics", () => {
   const state = buildPeerCommandCenterState({
     setupSession: { exists: true },
@@ -617,6 +630,47 @@ test("routePeerIntent mission creates goal, links factory run, and prints next n
   assert.match(result.text, /\/peer factory gate fac_mission_123 test pass --evidence/);
   assert.match(result.text, /\/peer factory gate fac_mission_123 pack pass --evidence/);
   assert.match(result.text, /\/peer center/);
+});
+
+test("routePeerIntent autonomous mission seeds dependency plan and returns supervisor controls", async () => {
+  const root = await mkdtemp(join(tmpdir(), "peer-command-center-"));
+
+  const result = await routePeerIntent(root, {
+    intent: "mission",
+    objective: "Improve idle peer usefulness",
+    intentArgs: ["Improve", "idle", "peer", "usefulness"],
+    autonomous: true,
+    durationMs: 1_800_000,
+    maxLoops: 5,
+    maxPeers: 1,
+    peers: ["worker2", "worker3"],
+    lanes: ["research", "implementation", "review"],
+    paths: ["src/peers"],
+    gates: ["test"],
+  }, {
+    setupSession: { exists: true },
+    peerId: "planner-a",
+    runtimeStatus: { localPeerId: "planner-a" },
+    startFactoryRun: async () => ({ runId: "fac_auto_123" }),
+  });
+
+  assert.equal(result.mutated, true);
+  assert.equal(result.autonomousRun.durationMs, 1_800_000);
+  assert.equal(result.autonomousRun.maxLoops, 5);
+  assert.equal(result.autonomousRun.maxPeers, 1);
+  assert.deepEqual(result.autonomousRun.peers, ["worker2", "worker3"]);
+  assert.match(result.text, /Autonomous controls:/);
+  assert.match(result.text, /supervisor is starting now/);
+  assert.match(result.text, new RegExp(`/peer scout ${result.goalId}`));
+
+  const board = await loadPeerGoalBoard(root);
+  assert.equal(board.goals[result.goalId].closurePolicy.requiredEvidence[0].quality.minConfidence, 0.7);
+  const events = board.goals[result.goalId].events;
+  const workItems = events.filter((event) => event.type === "work-item" && event.metadata?.autonomous);
+  assert.equal(workItems.length, 3);
+  assert.equal(workItems[0].lane, "research");
+  assert.deepEqual(workItems[1].dependsOn, [workItems[0].itemId]);
+  assert.deepEqual(workItems[2].dependsOn, [workItems[1].itemId]);
 });
 
 test("routePeerIntent mission asks for setup before mutating when setup is missing", async () => {

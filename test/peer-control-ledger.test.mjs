@@ -98,11 +98,20 @@ test("control ledger derives active hive supervisors until stopped or deadline e
       kind: "hive",
       action: "started",
       goalId: "goal_hive",
-      metadata: { key: `${root}:goal_hive`, deadlineAt: "2026-01-01T01:00:00.000Z", peers: ["worker2"], lanes: ["review"], intervalMs: 1000 },
+      metadata: { key: `${root}:goal_hive`, deadlineAt: "2026-01-01T01:00:00.000Z", peers: ["worker2"], lanes: ["review"], intervalMs: 1000, maxTicks: 3, maxPeers: 1, tickCount: 1 },
+    });
+    await appendPeerControlRecord(root, {
+      kind: "hive",
+      action: "tick",
+      goalId: "goal_hive",
+      metadata: { key: `${root}:goal_hive`, tickCount: 2, maxTicks: 3 },
     });
     let state = derivePeerControlState((await loadPeerControlLedger(root)).records, { nowMs: Date.parse("2026-01-01T00:00:00.000Z") });
     assert.equal(state.activeHiveRuns.length, 1);
     assert.deepEqual(state.activeHiveRuns[0].peers, ["worker2"]);
+    assert.equal(state.activeHiveRuns[0].maxTicks, 3);
+    assert.equal(state.activeHiveRuns[0].maxPeers, 1);
+    assert.equal(state.activeHiveRuns[0].tickCount, 2);
 
     await appendPeerControlRecord(root, { kind: "hive", action: "stopped", status: "stopped", goalId: "goal_hive", metadata: { key: `${root}:goal_hive` } });
     state = derivePeerControlState((await loadPeerControlLedger(root)).records, { nowMs: Date.parse("2026-01-01T00:00:01.000Z") });

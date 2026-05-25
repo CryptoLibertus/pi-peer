@@ -584,11 +584,35 @@ async function handlePeerCommand(pi: ExtensionAPI, rawArgs: string, ctx: any, re
     }
     if (parsed.subcommand === "do") {
       const root = ctx.cwd || process.cwd();
+      if (parsed.autonomous) {
+        ensureEnabled(runtime);
+        const budget = updatePeerContextBudget(runtime, ctx);
+        const judgement = derivePeerContextJudgement(budget);
+        if (judgement.safeForLongTask === false) {
+          return sendPeerMessage(pi, [
+            "Autonomous mission was not started: context budget is not safe for a long-running task.",
+            formatPeerContextReport(budget, judgement),
+            "No goal, factory run, or peer work was created. Compact/summarize first, then rerun the autonomous mission.",
+          ].join("\n"));
+        }
+        await runtime.refreshLocalPeers();
+        const activePeers = await resolveHiveRunPeers(runtime, []);
+        const activePeerSet = new Set(activePeers);
+        const availablePeers = parsed.peers?.length ? parsed.peers.filter((peerId: string) => activePeerSet.has(peerId)) : activePeers;
+        if (!availablePeers.length) {
+          return sendPeerMessage(pi, [
+            "Autonomous mission was not started: no active compatible peers were discovered.",
+            "No goal, factory run, or peer work was created.",
+            "Next: /peer reconnect, /peer list, then rerun the autonomous mission.",
+          ].join("\n"));
+        }
+      }
       if (runtime.enabled) await runtime.refreshLocalPeers();
       const input = await collectPeerCommandCenterInput(ctx, runtime);
       const result = await routePeerIntent(root, parsed, { ...input, peerId: runtime.localPeerId || runtime.summary?.localPeerId || "unknown", startFactoryRun: startLinkedFactoryRun });
+      const autonomousText = result.autonomousRun ? await startAutonomousMissionSupervisor(root, result.autonomousRun, parsed, runtime) : undefined;
       await refresh();
-      return sendPeerMessage(pi, result.text);
+      return sendPeerMessage(pi, [result.text, autonomousText].filter(Boolean).join("\n\n"));
     }
     if (parsed.subcommand === "subrun") {
       const root = ctx.cwd || process.cwd();
@@ -872,6 +896,80 @@ async function handlePeerOrgCommand(parsed: any, ctx: any, runtime: any) {
   throw new Error(`Unknown peer org action '${parsed.orgAction}'`);
 }
 
+async function startAutonomousMissionSupervisor(root: string, run: any, parsed: any, runtime: any) {
+  ensureEnabled(runtime);
+  await runtime.refreshLocalPeers();
+  const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown";
+  const activePeers = await resolveHiveRunPeers(runtime, []);
+  const activePeerSet = new Set(activePeers);
+  const resolvedPeers = run.peers?.length ? run.peers.filter((peerId: string) => activePeerSet.has(peerId)) : activePeers;
+  const maxPeers = positiveInteger(run.maxPeers || parsed.maxPeers);
+  const peers = resolvedPeers;
+  const durationMs = run.durationMs || parsed.durationMs || 30 * 60 * 1000;
+  const intervalMs = run.intervalMs || parsed.intervalMs || defaultHiveRunIntervalMs(durationMs);
+  const lanes = run.lanes?.length ? run.lanes : ["research", "implementation", "review"];
+  const maxTicks = run.maxLoops || parsed.maxLoops || 5;
+  if (!peers.length) {
+    return [
+      `Autonomous mission supervisor not started for ${run.goalId}: no active compatible peers were discovered.`,
+      `Next: /peer reconnect, /peer list, then rerun /peer do ${JSON.stringify(run.objective || "mission")} --autonomous --duration ${formatDuration(durationMs)} --max-loops ${maxTicks}`,
+    ].join("\n");
+  }
+  const coordinatorClaim = await appendPeerGoalEvent(root, run.goalId, {
+    type: "claim",
+    peerId,
+    summary: `Autonomous mission coordinator for ${formatDuration(durationMs)}`,
+    mode: "read",
+    lane: "coordination",
+    workKey: `peer-do:${run.goalId}:autonomous-coordinator`,
+    staleAfterMs: Math.max(intervalMs * 3, 60_000),
+    metadata: { autonomous: true, durationMs, intervalMs, peers, maxTicks, maxPeers },
+  });
+  await appendPeerGoalEvent(root, run.goalId, {
+    type: "note",
+    peerId,
+    summary: `Autonomous mission supervisor started for ${formatDuration(durationMs)} with ${peers.length} peer${peers.length === 1 ? "" : "s"}; max loops ${maxTicks}; max peers ${maxPeers || "unlimited"}; interval ${intervalMs}ms.`,
+    lane: "coordination",
+    metadata: { autonomous: true, durationMs, intervalMs, peers, maxTicks, maxPeers, coordinatorClaimId: coordinatorClaim.event.id },
+  });
+  const dispatches = await dispatchPeerHiveRunTick(root, runtime, {
+    goalId: run.goalId,
+    peers,
+    lanes,
+    reason: "peer-do-autonomous-initial",
+    objective: run.objective,
+    durationMs,
+    intervalMs,
+    maxTicks,
+    maxPeers,
+    tickCount: 1,
+  });
+  schedulePeerHiveRun(root, runtime, {
+    goalId: run.goalId,
+    peers,
+    lanes,
+    objective: run.objective,
+    durationMs,
+    intervalMs,
+    peerId,
+    coordinatorClaimId: coordinatorClaim.event.id,
+    maxTicks,
+    maxPeers,
+    tickCount: 1,
+  });
+  return [
+    `Autonomous mission supervisor active for ${run.goalId}: ${formatDuration(durationMs)}, max loops ${maxTicks}, max peers ${maxPeers || "unlimited"}.`,
+    formatHiveDispatchLines(dispatches).join("\n"),
+  ].join("\n");
+}
+
+function positiveInteger(value: any) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return undefined;
+  const integer = Math.floor(number);
+  return integer > 0 ? integer : undefined;
+}
+
 async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any) {
   const root = ctx?.cwd || process.cwd();
   const peerId = runtime?.localPeerId || runtime?.summary?.localPeerId || "unknown";
@@ -944,6 +1042,8 @@ async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any)
       objective: `Self-improve: ${parsed.objective}`,
       durationMs: result.durationMs,
       intervalMs,
+      maxTicks: result.loops,
+      tickCount: 1,
     });
     result.dispatched = true;
     schedulePeerHiveRun(root, runtime, {
@@ -955,6 +1055,8 @@ async function handlePeerSelfImproveCommand(parsed: any, ctx: any, runtime: any)
       intervalMs,
       peerId,
       coordinatorClaimId: coordinatorClaim.event.id,
+      maxTicks: result.loops,
+      tickCount: 1,
     });
     return [formatSelfImproveRunResult(result), factoryWarning, formatHiveDispatchLines(dispatches).join("\n")].filter(Boolean).join("\n\n");
   }

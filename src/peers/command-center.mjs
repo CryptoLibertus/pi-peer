@@ -65,6 +65,7 @@ export function buildPeerCommandCenterState(input = {}) {
     metrics,
     objective: input.objective || currentGoal?.objective || "new peer goal",
   };
+  state.autonomyReadiness = deriveAutonomousShipReadiness(currentGoal, factoryState);
   state.recommendations = derivePeerCommandCenterRecommendations(state);
   return state;
 }
@@ -127,6 +128,7 @@ export function formatPeerCommandCenter(state = {}) {
   if (state.factoryError) lines.push(`Factory warning: ${state.factoryError}`);
   if (state.contextError) lines.push(`Context warning: ${state.contextError}`);
   lines.push(formatGoalLine(currentGoal, state.control));
+  if (state.autonomyReadiness) lines.push(`Readiness: ${state.autonomyReadiness.status} — ${state.autonomyReadiness.reason}`);
   lines.push("Recommended:");
   if (recommendations.length) {
     recommendations.forEach((item, index) => lines.push(`${index + 1}. ${item.command}${item.reason ? ` — ${item.reason}` : ""}`));
@@ -376,7 +378,7 @@ async function routePeerMission(root, parsed = {}, context = {}, peerId = "unkno
     };
   }
 
-  const gates = array(parsed.gates).length ? array(parsed.gates) : ["test", "pack"];
+  const gates = inferMissionGates(parsed);
   const missionParsed = { ...parsed, gates };
   let goal = findReusableMissionGoal(objective, centerState);
   const created = !goal?.id;
@@ -386,6 +388,8 @@ async function routePeerMission(root, parsed = {}, context = {}, peerId = "unkno
       objective,
       constraints: parsed.constraints,
       peerId,
+      closurePolicy: parsed.autonomous ? autonomousClosurePolicy() : undefined,
+      metadata: parsed.autonomous ? { autonomy: { state: "planned", gates, maxLoops: parsed.maxLoops || 5, maxPeers: parsed.maxPeers } } : undefined,
     });
     await seedPeerGoalProposals(root, goal.id, peerId);
   }
@@ -400,6 +404,8 @@ async function routePeerMission(root, parsed = {}, context = {}, peerId = "unkno
   const factoryRunId = factoryRun?.runId;
   const planCommand = planReviewCommand(goal.id, missionParsed);
   const gateCommands = gates.map((gate) => `/peer factory gate ${commandArg(factoryRunId || "<run-id>")} ${commandArg(gate)} pass --evidence ${commandArg(`${gate} gate passed`)}`);
+  const autonomousRun = parsed.autonomous ? buildAutonomousMissionRun(goal.id, missionParsed, objective) : undefined;
+  if (autonomousRun && created) await seedAutonomousMissionPlan(root, goal.id, peerId, objective, missionParsed);
   const lines = [
     `${created ? "Mission started" : "Mission resumed"}: ${objective}`,
     `Goal: ${goal.id}`,
@@ -419,16 +425,119 @@ async function routePeerMission(root, parsed = {}, context = {}, peerId = "unkno
     "Handled:",
     created ? "- created peer goal and seeded peer lanes" : "- reused matching open peer goal",
     factoryRunId ? "- linked or reused a factory run" : "- prepared factory next steps",
+  );
+  if (autonomousRun) {
+    lines.push(
+      "- prepared bounded autonomous supervisor controls",
+      "",
+      "Autonomous controls:",
+      `- duration ${formatDurationMs(autonomousRun.durationMs)}; max loops ${autonomousRun.maxLoops}; max peers ${autonomousRun.maxPeers || "unlimited"}; lanes ${autonomousRun.lanes.join(", ")}`,
+      `- peers ${autonomousRun.peers.length ? autonomousRun.peers.join(",") : "auto-discover active peers"}`,
+      "- supervisor dispatches read-only scout lanes, preserves duplicate work keys, and escalates blockers/failures on the goal board",
+    );
+  }
+  lines.push(
     "",
     "Next needed:",
-    `1. ${planCommand}`,
-    "2. Run verification outside peer, then record gate evidence:",
+    autonomousRun ? "1. Autonomous supervisor is starting now when this command runs in Pi; otherwise continue from the same goal manually:" : `1. ${planCommand}`,
+  );
+  if (autonomousRun) lines.push(`   - /peer scout ${commandArg(goal.id)}`, `2. ${planCommand}`);
+  lines.push(
+    `${autonomousRun ? "3" : "2"}. Run verification outside peer, then record gate evidence:`,
     ...gateCommands.map((command) => `   - ${command}`),
-    "3. /peer factory metrics",
-    "4. /peer center",
+    `${autonomousRun ? "4" : "3"}. /peer factory metrics`,
+    `${autonomousRun ? "5" : "4"}. /peer center`,
   );
 
-  return { mutated: true, goalId: goal.id, factoryRunId, text: lines.join("\n") };
+  return { mutated: true, goalId: goal.id, factoryRunId, autonomousRun, text: lines.join("\n") };
+}
+
+async function seedAutonomousMissionPlan(root, goalId, peerId, objective, parsed = {}) {
+  const lanes = autonomousLanes(parsed.lanes);
+  const dependenciesByLane = new Map();
+  let previousItemId;
+  const goalSuffix = sanitizePlanId(goalId).slice(-12) || "goal";
+  for (const lane of lanes) {
+    const itemId = `auto-${lane}-${sanitizePlanId(objective)}-${goalSuffix}`.slice(0, 80);
+    dependenciesByLane.set(lane, previousItemId ? [previousItemId] : []);
+    await appendPeerGoalEvent(root, goalId, {
+      type: "work-item",
+      peerId,
+      summary: `${lane} autonomous lane: ${objective}`,
+      itemId,
+      status: "open",
+      dependsOn: dependenciesByLane.get(lane),
+      lane,
+      paths: parsed.paths,
+      workKey: `autonomous:${goalId}:${lane}`,
+      metadata: { autonomous: true, gates: parsed.gates },
+    });
+    previousItemId = itemId;
+  }
+}
+
+function buildAutonomousMissionRun(goalId, parsed = {}, objective = "") {
+  return {
+    goalId,
+    objective,
+    durationMs: parsed.durationMs || 30 * 60 * 1000,
+    intervalMs: parsed.intervalMs,
+    maxLoops: parsed.maxLoops || 5,
+    maxPeers: parsed.maxPeers,
+    peers: array(parsed.peers).filter(Boolean),
+    lanes: autonomousLanes(parsed.lanes),
+    paths: array(parsed.paths),
+    gates: inferMissionGates(parsed),
+  };
+}
+
+function inferMissionGates(parsed = {}) {
+  const explicit = array(parsed.gates).filter(Boolean);
+  if (explicit.length) return explicit;
+  const paths = array(parsed.paths).map((item) => String(item).toLowerCase());
+  const docsOnly = paths.length > 0 && paths.every((path) => path.endsWith(".md") || path.startsWith("docs/") || path === "readme.md" || path === "agents.md");
+  if (parsed.autonomous && docsOnly) return ["pack", "code-review"];
+  return ["test", "pack"];
+}
+
+function autonomousClosurePolicy() {
+  return {
+    minPassingVotes: 1,
+    requiredEvidence: [{ type: "finding", lane: "review", min: 1, minConfidence: 0.7 }],
+  };
+}
+
+function autonomousLanes(lanes) {
+  const normalized = array(lanes).map((lane) => text(lane, "").toLowerCase()).filter(Boolean);
+  return normalized.length ? normalized : ["research", "implementation", "review"];
+}
+
+function formatDurationMs(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) return "30m";
+  if (value % 3_600_000 === 0) return `${value / 3_600_000}h`;
+  if (value % 60_000 === 0) return `${value / 60_000}m`;
+  if (value % 1_000 === 0) return `${value / 1_000}s`;
+  return `${Math.round(value)}ms`;
+}
+
+function sanitizePlanId(value) {
+  return String(value || "work").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "work";
+}
+
+function deriveAutonomousShipReadiness(goal, factoryState = {}) {
+  if (!goal?.id) return undefined;
+  const runs = array(factoryState.runs).filter((run) => run.goalId === goal.id);
+  const latest = runs[0];
+  if (array(goal.blockingObjections).length || array(goal.unresolvedTaskHandoffs).length) return { status: "blocked", reason: "goal has unresolved blockers or peer handoffs" };
+  if (latest && ["blocked", "failed", "error"].includes(latest.status)) return { status: "rework-needed", reason: `factory run ${latest.runId} is ${latest.status}` };
+  if (array(goal.activeClaims).length || array(goal.activeTasks).length) return { status: "in-progress", reason: "peer claims or tasks are still active" };
+  if (latest?.status === "verified") {
+    if (goal.readyToClose === true) return { status: "ready-for-human-approval", reason: `factory run ${latest.runId} is verified and goal closure gates are satisfied` };
+    return { status: "verified-needs-closure", reason: `factory run ${latest.runId} is verified, but goal closure evidence/proposals/votes are not complete` };
+  }
+  if (latest) return { status: "verifying", reason: `factory run ${latest.runId} is ${latest.status || "pending"}` };
+  return { status: "planned", reason: "goal exists but no linked factory run is verified yet" };
 }
 
 function findReusableMissionGoal(objective, state = {}) {
