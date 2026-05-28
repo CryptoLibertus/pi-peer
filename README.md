@@ -32,6 +32,7 @@ Without coordination, parallel agents step on files, duplicate the same task, lo
 - **Plan-to-board scheduler:** `/peer goal plan` expands an objective into dependency-gated work items plus lane proposals peers can self-select.
 - **Worktree isolation hints:** `/peer send ... --worktree` and `peer_send({ isolationMode: "worktree" })` tell implementation peers to work in an isolated git worktree and report merge/apply instructions.
 - **Idle progress:** idle peers can inspect scout suggestions and take small safe actions without being directly assigned.
+- **Stigmergic signal field:** a decay-weighted read-model derived from each goal's events (attractant from findings/passing votes/completed tasks, repellent from live claims, frustration from stale/abandoned work) that biases scout routing toward complementary work and away from dogpiles. Inspect it with `/peer goal field <goal-id>`.
 
 ## Install
 
