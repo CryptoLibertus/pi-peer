@@ -579,6 +579,10 @@ export function formatPeerGoal(goal) {
     lines.push("", "Votes:");
     for (const vote of state.currentVotes.slice(-8)) lines.push(`- ${vote.peerId}: ${vote.verdict}${vote.confidence !== undefined ? ` (${vote.confidence})` : ""}${vote.summary ? ` — ${vote.summary}` : ""}`);
   }
+  if (state.closurePolicyStatus && state.closurePolicyStatus.satisfied === false && state.closurePolicyStatus.missing?.length) {
+    lines.push("", "Closure policy missing:");
+    for (const item of state.closurePolicyStatus.missing.slice(0, 8)) lines.push(`- ${item.summary}`);
+  }
   const recent = state.events.slice(-10);
   if (recent.length) {
     lines.push("", "Recent events:");

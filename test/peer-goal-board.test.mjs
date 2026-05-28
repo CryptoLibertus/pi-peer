@@ -489,6 +489,8 @@ test("closure policy can require lane and role specific votes and evidence", asy
   assert.equal(state.closurePolicyStatus.satisfied, false);
   assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /2 passing votes required/);
   assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /role=qa/);
+  assert.match(formatPeerGoal(state), /Closure policy missing:\n- 2 passing votes required/);
+  assert.match(formatPeerGoal(state), /role=qa/);
   assert.throws(() => validateGoalReadyToClose(state), /unmet closure policy requirements/);
   await assert.rejects(closePeerGoal(root, created.id, { peerId: "planner" }), /unmet closure policy requirements/);
 
