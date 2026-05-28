@@ -2016,3 +2016,26 @@ test("signal field is empty and non-throwing for a goal with no events", () => {
   assert.equal(field.dominant, null);
   assert.deepEqual(field.channels, { attract: 0, repel: 0, frustration: 0 });
 });
+
+test("formatPeerGoalSignalField renders lanes, dominant, and hot paths", () => {
+  const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
+  const text = formatPeerGoalSignalField(
+    derivePeerGoalSignalField(
+      fieldGoal([
+        { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", paths: ["src/a.mjs"], at: "2026-05-28T00:00:00.000Z", summary: "edit" },
+        { id: "f1", type: "finding", peerId: "r1", lane: "research", at: "2026-05-28T00:05:00.000Z", summary: "found" },
+      ]),
+      { nowMs },
+    ),
+  );
+  assert.match(text, /# Signal field g1/);
+  assert.match(text, /implementation:/);
+  assert.match(text, /research:/);
+  assert.match(text, /Crowded\/stuck paths:/);
+  assert.match(text, /src\/a\.mjs/);
+});
+
+test("formatPeerGoalSignalField reports a quiet field", () => {
+  const text = formatPeerGoalSignalField(derivePeerGoalSignalField(fieldGoal([]), { nowMs: Date.parse("2026-05-28T00:10:00.000Z") }));
+  assert.match(text, /No live signal/);
+});

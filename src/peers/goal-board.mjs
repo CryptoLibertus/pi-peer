@@ -385,7 +385,32 @@ export function derivePeerGoalSignalField(goal, options = {}) {
 }
 
 export function formatPeerGoalSignalField(field = {}) {
-  return `# Signal field ${field.goalId || ""}`.trim();
+  const lanes = field.lanes || {};
+  const laneNames = Object.keys(lanes).sort((a, b) => Math.abs(lanes[b].net) - Math.abs(lanes[a].net));
+  const channels = field.channels || { attract: 0, repel: 0, frustration: 0 };
+  const lines = [
+    `# Signal field ${field.goalId || ""}`.trim(),
+    `half-life: ${Math.round((field.halfLifeMs || 0) / 60000)}m · attract ${channels.attract} · repel ${channels.repel} · frustration ${channels.frustration}`,
+  ];
+  if (!laneNames.length) {
+    lines.push("", "No live signal. The field is quiet — no recent deposits remain after decay.");
+    return lines.join("\n");
+  }
+  if (field.dominant) lines.push(`dominant: ${field.dominant.lane} (${field.dominant.channel})`);
+  lines.push("", "Lanes (↑attract / ↓repel / ⚠frustration · net):");
+  for (const lane of laneNames) {
+    const e = lanes[lane];
+    lines.push(`- ${lane}: ↑${e.attract} ↓${e.repel} ⚠${e.frustration} · net ${e.net} · ${e.deposits} deposit${e.deposits === 1 ? "" : "s"}`);
+  }
+  const hotPaths = Object.entries(field.paths || {})
+    .filter(([, e]) => e.frustration > 0 || e.repel > 0)
+    .sort((a, b) => (b[1].repel + b[1].frustration) - (a[1].repel + a[1].frustration))
+    .slice(0, 5);
+  if (hotPaths.length) {
+    lines.push("", "Crowded/stuck paths:");
+    for (const [path, e] of hotPaths) lines.push(`- ${path} (${e.lane}): ↓${e.repel} ⚠${e.frustration}`);
+  }
+  return lines.join("\n");
 }
 
 export function formatPeerGoalList(board) {
