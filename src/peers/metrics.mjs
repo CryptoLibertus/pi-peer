@@ -1,9 +1,37 @@
+import { derivePeerGoalSignalField } from "./goal-board.mjs";
+
 const VERIFIED_STATUSES = new Set(["verified", "verified-with-risks"]);
 const FAILED_RUN_STATUSES = new Set(["failed", "fail", "error", "blocked", "cancelled"]);
 const TERMINAL_RUN_STATUSES = new Set(["verified", "verified-with-risks", "completed", "failed", "fail", "error", "blocked", "cancelled", "human-escalation"]);
 const PASS_STATUSES = new Set(["pass", "passed", "verified", "ok"]);
 const FAIL_STATUSES = new Set(["fail", "failed", "error", "blocked"]);
 const ESCALATION_STATUSES = new Set(["human-escalation", "escalated"]);
+
+export function derivePeerSignalFieldMetrics(goals = [], options = {}) {
+  const laneTotals = new Map();
+  const repellentLanes = new Set();
+  for (const goal of array(goals)) {
+    if (goal?.status === "closed") continue;
+    const field = derivePeerGoalSignalField(goal, options);
+    for (const [lane, e] of Object.entries(field.lanes || {})) {
+      const total = laneTotals.get(lane) || { attract: 0, repel: 0, frustration: 0 };
+      total.attract += e.attract;
+      total.repel += e.repel;
+      total.frustration += e.frustration;
+      laneTotals.set(lane, total);
+      if (e.repel > 0) repellentLanes.add(lane);
+    }
+  }
+  let focusLane;
+  let focusValue = 0;
+  let frustrationLane;
+  let frustrationValue = 0;
+  for (const [lane, total] of laneTotals) {
+    if (total.attract > focusValue) { focusValue = total.attract; focusLane = lane; }
+    if (total.frustration > frustrationValue) { frustrationValue = total.frustration; frustrationLane = lane; }
+  }
+  return { dispersion: repellentLanes.size, focusLane, hottestFrustrationLane: frustrationLane };
+}
 
 export function derivePeerFactoryMetrics(input = {}) {
   const factoryState = plainObject(input.factoryState) ? input.factoryState : {};
@@ -20,6 +48,7 @@ export function derivePeerFactoryMetrics(input = {}) {
   const evalResults = array(contextState.evalResults);
   const passingContextEvals = evalResults.filter((result) => cleanText(result?.status) === "pass").length;
   const goals = array(input.goals);
+  const signalField = derivePeerSignalFieldMetrics(goals, { nowMs: input.nowMs });
   const controlState = plainObject(input.controlState) ? input.controlState : {};
   const idleWatcher = plainObject(input.idleWatcher) ? input.idleWatcher : plainObject(controlState.idleWatcher) ? controlState.idleWatcher : {};
   const goalActiveTaskCount = goals.reduce((sum, goal) => sum + array(goal?.activeTasks).length, 0);
@@ -44,6 +73,9 @@ export function derivePeerFactoryMetrics(input = {}) {
     usefulIdleActivationCount,
     usefulIdleActivationRate: ratio(usefulIdleActivationCount, idleActivationCount),
     escalatedRuns,
+    signalDispersion: signalField.dispersion,
+    signalFocusLane: signalField.focusLane,
+    signalFrustrationLane: signalField.hottestFrustrationLane,
   };
 }
 
@@ -60,6 +92,7 @@ export function formatPeerFactoryMetrics(metrics = {}) {
     `context patches: ${integer(metrics.contextPatchCount)} | context eval pass rate: ${percent(metrics.contextEvalPassRate)}`,
     `goals open: ${integer(metrics.openGoalCount)} | active tasks: ${integer(metrics.activeTaskCount)} | active subruns: ${integer(metrics.activeSubrunCount)}`,
     `idle useful: ${integer(metrics.usefulIdleActivationCount)}/${integer(metrics.idleActivationCount)} (${percent(metrics.usefulIdleActivationRate)})`,
+    `signal field — dispersion: ${integer(metrics.signalDispersion)} lanes | focus: ${metrics.signalFocusLane || "—"} | hottest frustration: ${metrics.signalFrustrationLane || "—"}`,
   ].join("\n");
 }
 
