@@ -45,6 +45,27 @@ const SCOUT_PRESSURE_DECAY_KINDS = new Set(["open-proposal", "work-item", "revie
 const SCOUT_PRESSURE_DECAY_INTERVAL_MS = 30 * 60 * 1000;
 const SCOUT_PRESSURE_DECAY_POINTS = 2;
 const SCOUT_PRESSURE_MAX_DECAY = 30;
+const SIGNAL_FIELD = Object.freeze({
+  enabled: true,
+  halfLifeMs: 45 * 60 * 1000,
+  weights: Object.freeze({ attract: 1, repel: 1, frustration: 1.2 }),
+  maxAdjust: 18,
+  repelReadDamping: 0.25,
+  typeWeights: Object.freeze({
+    finding: 3,
+    vote: 4,
+    taskComplete: 5,
+    resolve: 2,
+    claimWrite: 5,
+    claimRead: 2,
+    activeTask: 4,
+    staleClaim: 4,
+    expiredClaim: 3,
+    failedVote: 5,
+    blockingObjection: 4,
+    handoff: 5,
+  }),
+});
 const GOAL_BOARD_LOCK_STALE_MS = 30_000;
 const GOAL_BOARD_LOCK_RETRY_MS = 10;
 const GOAL_BOARD_LOCK_TIMEOUT_MS = 5_000;
@@ -1435,6 +1456,22 @@ function scoutPressureReasons(suggestion = {}, state = {}, decay = 0) {
   } else reasons.push(suggestion.kind || "scout");
   if (decay) reasons.push("temporal-decay");
   return reasons;
+}
+
+function resolveSignalFieldConfig(override = {}) {
+  if (!override || typeof override !== "object") return SIGNAL_FIELD;
+  return {
+    enabled: override.enabled === undefined ? SIGNAL_FIELD.enabled : override.enabled !== false,
+    halfLifeMs: positiveNumber(override.halfLifeMs) || SIGNAL_FIELD.halfLifeMs,
+    weights: { ...SIGNAL_FIELD.weights, ...(override.weights || {}) },
+    maxAdjust: positiveNumber(override.maxAdjust) || SIGNAL_FIELD.maxAdjust,
+    repelReadDamping: Number.isFinite(override.repelReadDamping) ? override.repelReadDamping : SIGNAL_FIELD.repelReadDamping,
+    typeWeights: { ...SIGNAL_FIELD.typeWeights, ...(override.typeWeights || {}) },
+  };
+}
+
+function roundSignal(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
 }
 
 function compareScoutSuggestions(a = {}, b = {}) {
