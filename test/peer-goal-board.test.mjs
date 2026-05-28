@@ -2031,6 +2031,7 @@ test("formatPeerGoalSignalField renders lanes, dominant, and hot paths", () => {
   assert.match(text, /# Signal field g1/);
   assert.match(text, /implementation:/);
   assert.match(text, /research:/);
+  assert.match(text, /dominant:/);
   assert.match(text, /Crowded\/stuck paths:/);
   assert.match(text, /src\/a\.mjs/);
 });

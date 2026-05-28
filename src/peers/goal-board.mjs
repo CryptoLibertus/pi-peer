@@ -396,7 +396,7 @@ export function formatPeerGoalSignalField(field = {}) {
     lines.push("", "No live signal. The field is quiet — no recent deposits remain after decay.");
     return lines.join("\n");
   }
-  if (field.dominant) lines.push(`dominant: ${field.dominant.lane} (${field.dominant.channel})`);
+  if (field.dominant) lines.push("", `dominant: ${field.dominant.lane} (${field.dominant.channel})`);
   lines.push("", "Lanes (↑attract / ↓repel / ⚠frustration · net):");
   for (const lane of laneNames) {
     const e = lanes[lane];
