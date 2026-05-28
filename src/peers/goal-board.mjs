@@ -45,6 +45,27 @@ const SCOUT_PRESSURE_DECAY_KINDS = new Set(["open-proposal", "work-item", "revie
 const SCOUT_PRESSURE_DECAY_INTERVAL_MS = 30 * 60 * 1000;
 const SCOUT_PRESSURE_DECAY_POINTS = 2;
 const SCOUT_PRESSURE_MAX_DECAY = 30;
+const SIGNAL_FIELD = Object.freeze({
+  enabled: true,
+  halfLifeMs: 45 * 60 * 1000,
+  weights: Object.freeze({ attract: 1, repel: 1, frustration: 1.2 }),
+  maxAdjust: 18,
+  repelReadDamping: 0.25,
+  typeWeights: Object.freeze({
+    finding: 3,
+    vote: 4,
+    taskComplete: 5,
+    resolve: 2,
+    claimWrite: 5,
+    claimRead: 2,
+    activeTask: 4,
+    staleClaim: 4,
+    expiredClaim: 3,
+    failedVote: 5,
+    blockingObjection: 4,
+    handoff: 5,
+  }),
+});
 const GOAL_BOARD_LOCK_STALE_MS = 30_000;
 const GOAL_BOARD_LOCK_RETRY_MS = 10;
 const GOAL_BOARD_LOCK_TIMEOUT_MS = 5_000;
@@ -310,6 +331,88 @@ export function deriveGoalState(goal, options = {}) {
   };
 }
 
+export function derivePeerGoalSignalField(goal, options = {}) {
+  const nowMs = Number.isFinite(options.nowMs)
+    ? options.nowMs
+    : Number.isFinite(Date.parse(options.now)) ? Date.parse(options.now) : Date.now();
+  const state = goal && Array.isArray(goal.activeClaims) && Array.isArray(goal.staleClaims)
+    ? goal
+    : deriveGoalState(goal, { ...options, now: new Date(nowMs).toISOString() });
+  const config = resolveSignalFieldConfig(options.signalField);
+  const lanes = new Map();
+  const paths = new Map();
+
+  const deposit = (channel, weight, anchorAt, lane, depositPaths) => {
+    if (!(weight > 0)) return;
+    const anchorMs = Date.parse(anchorAt || "");
+    if (!Number.isFinite(anchorMs)) return; // skip unparseable anchors (spec edge case)
+    const ageMs = Math.max(0, nowMs - anchorMs);
+    const value = weight * Math.pow(0.5, ageMs / config.halfLifeMs);
+    if (!(value > 0)) return;
+    const laneKey = normalizeLaneName(lane) || "general";
+    addSignalChannel(lanes, laneKey, channel, value, { isLane: true });
+    for (const path of Array.isArray(depositPaths) ? depositPaths : []) {
+      if (!path) continue;
+      addSignalChannel(paths, path, channel, value, { isLane: false, lane: laneKey });
+    }
+  };
+
+  const events = Array.isArray(state.events) ? state.events : [];
+  for (const event of events) {
+    if (event.type === "finding") deposit("attract", config.typeWeights.finding, event.at, event.lane, event.paths);
+    else if (event.type === "resolve") deposit("attract", config.typeWeights.resolve, event.at, event.lane, event.paths);
+  }
+  for (const vote of state.passingVotes || []) deposit("attract", config.typeWeights.vote, vote.at, vote.lane, vote.paths);
+  for (const task of state.tasks || []) {
+    if (task.completedAt && SUCCESSFUL_TASK_HANDOFF_STATUSES.has(String(task.status || "").toLowerCase())) {
+      deposit("attract", config.typeWeights.taskComplete, task.completedAt, task.lane, task.paths);
+    }
+  }
+
+  for (const claim of state.activeClaims || []) {
+    const weight = claim.mode === "write" ? config.typeWeights.claimWrite : config.typeWeights.claimRead;
+    deposit("repel", weight, claim.lastHeartbeatAt || claim.at, claim.lane, claim.paths);
+  }
+  for (const task of state.activeTasks || []) deposit("repel", config.typeWeights.activeTask, task.at, task.lane, task.paths);
+
+  for (const claim of state.staleClaims || []) deposit("frustration", config.typeWeights.staleClaim, claim.lastHeartbeatAt || claim.at, claim.lane, claim.paths);
+  for (const claim of state.expiredClaims || []) deposit("frustration", config.typeWeights.expiredClaim, claim.expiresAt || claim.at, claim.lane, claim.paths);
+  for (const vote of state.failedVotes || []) deposit("frustration", config.typeWeights.failedVote, vote.at, vote.lane, vote.paths);
+  for (const objection of state.blockingObjections || []) deposit("frustration", config.typeWeights.blockingObjection, objection.at, objection.lane, objection.paths);
+  for (const handoff of state.unresolvedTaskHandoffs || []) deposit("frustration", config.typeWeights.handoff, handoff.completedAt || handoff.at, handoff.lane, handoff.paths);
+
+  return finalizeSignalField(state.id, nowMs, config, lanes, paths);
+}
+
+export function formatPeerGoalSignalField(field = {}) {
+  const lanes = field.lanes || {};
+  const laneNames = Object.keys(lanes).sort((a, b) => Math.abs(lanes[b].net) - Math.abs(lanes[a].net));
+  const channels = field.channels || { attract: 0, repel: 0, frustration: 0 };
+  const lines = [
+    `# Signal field ${field.goalId || ""}`.trim(),
+    `half-life: ${Math.round((field.halfLifeMs || 0) / 60000)}m · attract ${channels.attract} · repel ${channels.repel} · frustration ${channels.frustration}`,
+  ];
+  if (!laneNames.length) {
+    lines.push("", "No live signal. The field is quiet — no recent deposits remain after decay.");
+    return lines.join("\n");
+  }
+  if (field.dominant) lines.push("", `dominant: ${field.dominant.lane} (${field.dominant.channel})`);
+  lines.push("", "Lanes (↑attract / ↓repel / ⚠frustration · net):");
+  for (const lane of laneNames) {
+    const e = lanes[lane];
+    lines.push(`- ${lane}: ↑${e.attract} ↓${e.repel} ⚠${e.frustration} · net ${e.net} · ${e.deposits} deposit${e.deposits === 1 ? "" : "s"}`);
+  }
+  const hotPaths = Object.entries(field.paths || {})
+    .filter(([, e]) => e.frustration > 0 || e.repel > 0)
+    .sort((a, b) => (b[1].repel + b[1].frustration) - (a[1].repel + a[1].frustration))
+    .slice(0, 5);
+  if (hotPaths.length) {
+    lines.push("", "Crowded/stuck paths:");
+    for (const [path, e] of hotPaths) lines.push(`- ${path} (${e.lane}): ↓${e.repel} ⚠${e.frustration}`);
+  }
+  return lines.join("\n");
+}
+
 export function formatPeerGoalList(board) {
   const goals = Object.values(normalizeBoard(board).goals).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
   if (!goals.length) return "No peer goals yet. Start one with `/peer goal create \"<objective>\"`.";
@@ -358,8 +461,9 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
   let sequence = 0;
   for (const goal of goals) {
     const state = deriveGoalState(goal, { now: Number.isFinite(nowMs) ? new Date(nowMs).toISOString() : undefined });
+    const field = derivePeerGoalSignalField(state, { nowMs, signalField: options.signalField });
     const push = (priority, kind, summary, extra = {}) => {
-      const suggestion = annotateScoutPressure(enrichScoutSuggestion({ goalId: goal.id, priority, kind, summary, ...extra }), state, goal, { nowMs, sequence: sequence++ });
+      const suggestion = annotateScoutPressure(enrichScoutSuggestion({ goalId: goal.id, priority, kind, summary, ...extra }), state, goal, { nowMs, sequence: sequence++, field, signalField: options.signalField });
       if (!hasActiveWorkForScoutSuggestion(state, suggestion)) suggestions.push(suggestion);
     };
     if (state.blockingObjections.length) {
@@ -578,6 +682,10 @@ export function formatPeerGoal(goal) {
   if (state.currentVotes.length) {
     lines.push("", "Votes:");
     for (const vote of state.currentVotes.slice(-8)) lines.push(`- ${vote.peerId}: ${vote.verdict}${vote.confidence !== undefined ? ` (${vote.confidence})` : ""}${vote.summary ? ` — ${vote.summary}` : ""}`);
+  }
+  if (state.closurePolicyStatus && state.closurePolicyStatus.satisfied === false && state.closurePolicyStatus.missing?.length) {
+    lines.push("", "Closure policy missing:");
+    for (const item of state.closurePolicyStatus.missing.slice(0, 8)) lines.push(`- ${item.summary}`);
   }
   const recent = state.events.slice(-10);
   if (recent.length) {
@@ -1382,16 +1490,51 @@ function annotateScoutPressure(suggestion = {}, state = {}, goal = {}, options =
   const base = scoutPressureBaseScore(suggestion, state);
   const ageMs = scoutPressureAgeMs(suggestion, state, goal, options.nowMs);
   const decay = scoutPressureDecay(suggestion, priority, ageMs);
-  const score = Math.max(SCOUT_PRESSURE_FLOORS[priority] ?? SCOUT_PRESSURE_FLOORS.P2, base - decay);
+  const fieldConfig = resolveSignalFieldConfig(options.signalField);
+  const fieldResult = scoutFieldAdjust(suggestion, options.field, fieldConfig);
+  const score = Math.max(SCOUT_PRESSURE_FLOORS[priority] ?? SCOUT_PRESSURE_FLOORS.P2, base - decay + fieldResult.adjust);
   return stripEmpty({
     ...suggestion,
     pressureScore: score,
     pressureBase: base,
     pressureDecay: decay,
     pressureAgeMinutes: Number.isFinite(ageMs) ? Math.max(0, Math.floor(ageMs / 60_000)) : undefined,
-    pressureReasons: scoutPressureReasons(suggestion, state, decay),
+    pressureReasons: [...scoutPressureReasons(suggestion, state, decay), ...fieldResult.reasons],
+    fieldAdjust: fieldResult.adjust || undefined,
+    fieldSignal: fieldResult.adjust ? fieldResult.signal : undefined,
     scoutSequence: options.sequence,
   });
+}
+
+function scoutFieldAdjust(suggestion = {}, field, config) {
+  const empty = { adjust: 0, signal: { attract: 0, repel: 0, frustration: 0, net: 0 }, reasons: [] };
+  if (!field || config.enabled === false) return empty;
+  if (cleanText(suggestion.priority || "P2").toUpperCase() === "P0") return empty;
+  const lane = normalizeLaneName(suggestion.recommendedLane) || "general";
+  const laneSig = field.lanes?.[lane] || { attract: 0, repel: 0, frustration: 0 };
+  let attract = laneSig.attract;
+  let repel = laneSig.repel;
+  let frustration = laneSig.frustration;
+  for (const path of Array.isArray(suggestion.paths) ? suggestion.paths : []) {
+    const ps = field.paths?.[path];
+    if (!ps) continue;
+    attract = Math.max(attract, ps.attract);
+    repel = Math.max(repel, ps.repel);
+    frustration = Math.max(frustration, ps.frustration);
+  }
+  const isWrite = suggestion.claimMode === "write" || lane === "implementation"; // implementation lanes are write-like: even read-mode suggestions carry full repellent because implementation implies write-contention risk
+  const repelEffective = repel * (isWrite ? 1 : config.repelReadDamping);
+  const raw = config.weights.attract * attract + config.weights.frustration * frustration - config.weights.repel * repelEffective;
+  const adjust = Math.max(-config.maxAdjust, Math.min(config.maxAdjust, Math.round(raw)));
+  const reasons = [];
+  if (attract > 0) reasons.push("field-attract");
+  if (repelEffective > 0) reasons.push("field-repel");
+  if (frustration > 0) reasons.push("field-frustration");
+  return {
+    adjust,
+    signal: { attract: roundSignal(attract), repel: roundSignal(repel), frustration: roundSignal(frustration), net: roundSignal(attract + frustration - repel) },
+    reasons,
+  };
 }
 
 function scoutPressureBaseScore(suggestion = {}, state = {}) {
@@ -1431,6 +1574,88 @@ function scoutPressureReasons(suggestion = {}, state = {}, decay = 0) {
   } else reasons.push(suggestion.kind || "scout");
   if (decay) reasons.push("temporal-decay");
   return reasons;
+}
+
+function resolveSignalFieldConfig(override = {}) {
+  if (!override || typeof override !== "object") return SIGNAL_FIELD;
+  return {
+    enabled: override.enabled === undefined ? SIGNAL_FIELD.enabled : override.enabled !== false,
+    halfLifeMs: positiveNumber(override.halfLifeMs) || SIGNAL_FIELD.halfLifeMs,
+    weights: { ...SIGNAL_FIELD.weights, ...(override.weights || {}) },
+    maxAdjust: positiveNumber(override.maxAdjust) || SIGNAL_FIELD.maxAdjust,
+    repelReadDamping: Number.isFinite(override.repelReadDamping) ? override.repelReadDamping : SIGNAL_FIELD.repelReadDamping,
+    typeWeights: { ...SIGNAL_FIELD.typeWeights, ...(override.typeWeights || {}) },
+  };
+}
+
+function roundSignal(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function addSignalChannel(map, key, channel, value, { isLane, lane } = {}) {
+  const entry = map.get(key) || (isLane
+    ? { attract: 0, repel: 0, frustration: 0, deposits: 0 }
+    : { lane, attract: 0, repel: 0, frustration: 0 });
+  entry[channel] += value;
+  if (isLane) entry.deposits += 1;
+  else if (lane) entry.lane = lane;
+  map.set(key, entry);
+}
+
+function finalizeSignalField(goalId, nowMs, config, lanes, paths) {
+  // channels accumulate raw (pre-rounded) lane values; per-lane values are rounded for display,
+  // so sum(lanes[k].attract) may differ slightly from channels.attract.
+  const channels = { attract: 0, repel: 0, frustration: 0 };
+  const laneObj = {};
+  for (const [key, e] of lanes) {
+    channels.attract += e.attract;
+    channels.repel += e.repel;
+    channels.frustration += e.frustration;
+    laneObj[key] = {
+      attract: roundSignal(e.attract),
+      repel: roundSignal(e.repel),
+      frustration: roundSignal(e.frustration),
+      net: roundSignal(e.attract + e.frustration - e.repel),
+      deposits: e.deposits,
+    };
+  }
+  const pathObj = {};
+  for (const [key, e] of paths) {
+    pathObj[key] = {
+      lane: e.lane,
+      attract: roundSignal(e.attract),
+      repel: roundSignal(e.repel),
+      frustration: roundSignal(e.frustration),
+      net: roundSignal(e.attract + e.frustration - e.repel),
+    };
+  }
+  return {
+    goalId,
+    now: new Date(nowMs).toISOString(),
+    halfLifeMs: config.halfLifeMs,
+    lanes: laneObj,
+    paths: pathObj,
+    channels: {
+      attract: roundSignal(channels.attract),
+      repel: roundSignal(channels.repel),
+      frustration: roundSignal(channels.frustration),
+    },
+    dominant: deriveDominantSignal(laneObj),
+  };
+}
+
+function deriveDominantSignal(laneObj) {
+  let best = null;
+  let bestValue = 0;
+  for (const [lane, e] of Object.entries(laneObj)) {
+    for (const channel of ["attract", "repel", "frustration"]) {
+      if (e[channel] > bestValue) {
+        bestValue = e[channel];
+        best = { lane, channel };
+      }
+    }
+  }
+  return best;
 }
 
 function compareScoutSuggestions(a = {}, b = {}) {

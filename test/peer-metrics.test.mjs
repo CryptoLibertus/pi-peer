@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   derivePeerFactoryMetrics,
+  derivePeerSignalFieldMetrics,
   formatPeerFactoryMetrics,
 } from "../src/peers/metrics.mjs";
 
@@ -61,4 +62,23 @@ test("metrics treat an empty activeRuns array as authoritative", () => {
 
   assert.equal(metrics.totalRuns, 1);
   assert.equal(metrics.activeRuns, 0);
+});
+
+test("derivePeerSignalFieldMetrics summarizes dispersion, focus, and frustration", () => {
+  const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
+  const goals = [
+    {
+      id: "g1", status: "open",
+      createdAt: "2026-05-28T00:00:00.000Z", updatedAt: "2026-05-28T00:05:00.000Z",
+      events: [
+        { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", at: "2026-05-28T00:05:00.000Z", summary: "edit" },
+        { id: "f1", type: "finding", peerId: "r1", lane: "research", at: "2026-05-28T00:05:00.000Z", summary: "found" },
+      ],
+    },
+    { id: "g2", status: "closed", events: [] },
+  ];
+  const metrics = derivePeerSignalFieldMetrics(goals, { nowMs });
+  assert.equal(metrics.dispersion, 1, "one lane carries live repellent");
+  assert.equal(metrics.focusLane, "research");
+  assert.equal(metrics.hottestFrustrationLane, undefined);
 });

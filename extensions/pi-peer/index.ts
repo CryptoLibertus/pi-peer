@@ -13,7 +13,7 @@ import { formatPeerCommandError, formatPeerHelp, formatPeerInitResult, parsePeer
 import { capturePeerContextBudget, derivePeerContextJudgement, formatPeerContextBudget, formatPeerContextJudgement } from "../../src/peers/context-budget.mjs";
 import { appendContextPatch, appendContextRetro, deriveContextLifecycleState, formatContextLifecycleStatus, loadContextLifecycle, recordContextEvalResult } from "../../src/peers/context-lifecycle.mjs";
 import { createPeerRuntime, getPeerRuntimeValue } from "../../src/peers/runtime.mjs";
-import { appendPeerGoalEvent, closePeerGoal, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, formatPeerGoal, formatPeerGoalList, formatPeerGoalPlanVerification, formatPeerGoalScout, formatPeerGoalSynthesis, loadPeerGoalBoard } from "../../src/peers/goal-board.mjs";
+import { appendPeerGoalEvent, closePeerGoal, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalSignalField, formatPeerGoal, formatPeerGoalList, formatPeerGoalPlanVerification, formatPeerGoalScout, formatPeerGoalSignalField, formatPeerGoalSynthesis, loadPeerGoalBoard } from "../../src/peers/goal-board.mjs";
 import { collectPeerRuntimeStatus, derivePeerDoctorReport, formatPeerDoctorText, formatPeerFooterStatusLine, formatPeerGoalDashboard, formatPeerStatusLines, formatPeerStatusText } from "../../src/peers/status.mjs";
 import {
   peerAwaitToolResult,
@@ -137,7 +137,7 @@ export default function piPeerExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("peer", {
     description: "Pi-to-Pi peers: setup, center, work, do, subrun, spawn, org, doctor, status, list, send, get, await, progress, goal, hive, self-improve, factory, metrics",
-    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "work", "init", "setup", "do", "mission", "accomplish", "subrun", "spawn", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics", "goals", "ls", "current", "scout", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
+    getArgumentCompletions: (prefix: string) => ["help", "status", "list", "center", "work", "init", "setup", "do", "mission", "accomplish", "subrun", "spawn", "org", "doctor", "reconnect", "resume", "cancel", "send", "get", "await", "progress", "goal", "hive", "swarm", "self-improve", "improve", "factory", "metrics", "goals", "ls", "current", "scout", "field", "dashboard", "fanout", "proposal", "propose", "claim", "take", "done", "complete", "block", "objection", "unblock", "pass", "fail"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (rawArgs, ctx) => {
@@ -1409,6 +1409,13 @@ async function handlePeerGoalCommand(parsed: any, ctx: any, runtime: any) {
     return formatPeerGoal(goal);
   }
   if (parsed.goalAction === "scout") return formatPeerGoalScout(await loadPeerGoalBoard(root), { goalId: parsed.goalId, limit: parsed.limit, includeClosed: parsed.includeClosed });
+  if (parsed.goalAction === "field") {
+    const board = await loadPeerGoalBoard(root);
+    const goalId = parsed.goalId || board.currentGoalId;
+    const goal = goalId ? board.goals[goalId] : undefined;
+    if (!goal) throw new Error(goalId ? `peer goal ${goalId} not found` : "no current peer goal");
+    return formatPeerGoalSignalField(derivePeerGoalSignalField(goal));
+  }
   if (parsed.goalAction === "plan" || parsed.goalAction === "schedule") return createPeerGoalPlan(root, parsed, peerId);
   if (parsed.goalAction === "synthesize") {
     const board = await loadPeerGoalBoard(root);

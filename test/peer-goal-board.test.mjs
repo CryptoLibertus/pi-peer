@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, projectSubagentEvidence, recordPeerGoalTaskDispatch, validateGoalReadyToClose } from "../src/peers/goal-board.mjs";
+import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalSignalField, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, formatPeerGoalSignalField, loadPeerGoalBoard, projectSubagentEvidence, recordPeerGoalTaskDispatch, validateGoalReadyToClose } from "../src/peers/goal-board.mjs";
 import { appendGoalJournalRecord, compactGoalJournal, goalJournalPath, replayGoalJournal } from "../src/peers/goal-store.mjs";
 import { parsePeerCommand } from "../src/peers/command.mjs";
 
@@ -489,6 +489,8 @@ test("closure policy can require lane and role specific votes and evidence", asy
   assert.equal(state.closurePolicyStatus.satisfied, false);
   assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /2 passing votes required/);
   assert.match(state.closurePolicyStatus.missing.map((item) => item.summary).join("\n"), /role=qa/);
+  assert.match(formatPeerGoal(state), /Closure policy missing:\n- 2 passing votes required/);
+  assert.match(formatPeerGoal(state), /role=qa/);
   assert.throws(() => validateGoalReadyToClose(state), /unmet closure policy requirements/);
   await assert.rejects(closePeerGoal(root, created.id, { peerId: "planner" }), /unmet closure policy requirements/);
 
@@ -1944,3 +1946,206 @@ test("large epic self-organization flow resolves lanes, gates closure, and close
   assert.equal(closed.status, "closed");
   assert.equal(derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root)).length, 0);
 });
+
+function fieldGoal(events) {
+  return { id: "g1", objective: "field test", status: "open", createdAt: "2026-05-28T00:00:00.000Z", updatedAt: "2026-05-28T00:00:00.000Z", events };
+}
+
+test("signal field deposits attractant from findings and passing votes", () => {
+  const nowMs = Date.parse("2026-05-28T01:00:00.000Z");
+  const at = "2026-05-28T00:30:00.000Z";
+  const field = derivePeerGoalSignalField(
+    fieldGoal([
+      { id: "f1", type: "finding", peerId: "r1", lane: "research", at, summary: "found" },
+      { id: "v1", type: "vote", peerId: "rev1", lane: "review", verdict: "pass", at, summary: "lgtm" },
+    ]),
+    { nowMs },
+  );
+  assert.ok(field.lanes.research.attract > 0, "research lane has attractant");
+  assert.ok(field.lanes.review.attract > 0, "review lane has attractant");
+  assert.equal(field.lanes.research.repel, 0);
+  assert.equal(field.lanes.research.frustration, 0);
+});
+
+test("signal field deposits repellent from active write claims, heavier than read", () => {
+  const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
+  const at = "2026-05-28T00:00:00.000Z";
+  const field = derivePeerGoalSignalField(
+    fieldGoal([
+      { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", paths: ["src/a.mjs"], at, summary: "edit a" },
+      { id: "c2", type: "claim", peerId: "w2", mode: "read", lane: "review", at, summary: "read b" },
+    ]),
+    { nowMs },
+  );
+  assert.ok(field.lanes.implementation.repel > field.lanes.review.repel, "write claim repels more than read");
+  assert.ok(field.paths["src/a.mjs"].repel > 0, "path-level repellent recorded");
+  assert.equal(field.paths["src/a.mjs"].lane, "implementation");
+});
+
+test("signal field deposits frustration from stale claims", () => {
+  // claim made long ago, no heartbeat, default stale = 45m, so it is stale by now
+  const nowMs = Date.parse("2026-05-28T02:00:00.000Z");
+  const field = derivePeerGoalSignalField(
+    fieldGoal([
+      { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", at: "2026-05-28T00:00:00.000Z", summary: "stuck" },
+    ]),
+    { nowMs },
+  );
+  assert.ok(field.lanes.implementation.frustration > 0, "stale claim produces frustration");
+});
+
+test("signal field decays older deposits below identical recent ones", () => {
+  const at = "2026-05-28T00:00:00.000Z";
+  const goal = fieldGoal([{ id: "f1", type: "finding", peerId: "r1", lane: "research", at, summary: "x" }]);
+  const recent = derivePeerGoalSignalField(goal, { nowMs: Date.parse("2026-05-28T00:05:00.000Z") });
+  const old = derivePeerGoalSignalField(goal, { nowMs: Date.parse("2026-05-28T03:00:00.000Z") });
+  assert.ok(recent.lanes.research.attract > old.lanes.research.attract, "older deposit decayed");
+});
+
+test("signal field skips deposits with unparseable anchor timestamps", () => {
+  const field = derivePeerGoalSignalField(
+    fieldGoal([{ id: "f1", type: "finding", peerId: "r1", lane: "research", at: "not-a-date", summary: "x" }]),
+    { nowMs: Date.parse("2026-05-28T01:00:00.000Z") },
+  );
+  assert.equal(Object.keys(field.lanes).length, 0, "no lane recorded for unparseable anchor");
+});
+
+test("signal field is empty and non-throwing for a goal with no events", () => {
+  const field = derivePeerGoalSignalField(fieldGoal([]), { nowMs: Date.parse("2026-05-28T01:00:00.000Z") });
+  assert.deepEqual(field.lanes, {});
+  assert.equal(field.dominant, null);
+  assert.deepEqual(field.channels, { attract: 0, repel: 0, frustration: 0 });
+});
+
+test("formatPeerGoalSignalField renders lanes, dominant, and hot paths", () => {
+  const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
+  const text = formatPeerGoalSignalField(
+    derivePeerGoalSignalField(
+      fieldGoal([
+        { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", paths: ["src/a.mjs"], at: "2026-05-28T00:00:00.000Z", summary: "edit" },
+        { id: "f1", type: "finding", peerId: "r1", lane: "research", at: "2026-05-28T00:05:00.000Z", summary: "found" },
+      ]),
+      { nowMs },
+    ),
+  );
+  assert.match(text, /# Signal field g1/);
+  assert.match(text, /implementation:/);
+  assert.match(text, /research:/);
+  assert.match(text, /dominant:/);
+  assert.match(text, /Crowded\/stuck paths:/);
+  assert.match(text, /src\/a\.mjs/);
+});
+
+test("formatPeerGoalSignalField reports a quiet field", () => {
+  const text = formatPeerGoalSignalField(derivePeerGoalSignalField(fieldGoal([]), { nowMs: Date.parse("2026-05-28T00:10:00.000Z") }));
+  assert.match(text, /No live signal/);
+});
+
+test("scout pressure demotes a crowded write lane", () => {
+  const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
+  // Build a board with one goal whose implementation lane is crowded (active write claim)
+  // plus an open work-item so scout emits an implementation suggestion.
+  // Verify that the implementation suggestion carries negative fieldAdjust from the field-repel.
+  const board = {
+    goals: {
+      g1: {
+        id: "g1",
+        objective: "x",
+        status: "open",
+        createdAt: "2026-05-28T00:00:00.000Z",
+        updatedAt: "2026-05-28T00:05:00.000Z",
+        events: [
+          { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", paths: ["src/a.mjs"], at: "2026-05-28T00:05:00.000Z", summary: "edit" },
+          { id: "w1", type: "work-item", peerId: "p1", itemId: "wi-impl", lane: "implementation", status: "open", summary: "implement feature", at: "2026-05-28T00:01:00.000Z" },
+        ],
+      },
+    },
+  };
+  const suggestions = derivePeerGoalScoutSuggestions(board, { nowMs });
+  const impl = suggestions.find((s) => s.recommendedLane === "implementation");
+  assert.ok(impl, "implementation suggestion exists");
+  assert.ok((impl.fieldAdjust || 0) < 0, "crowded write lane is demoted");
+  assert.ok(impl.pressureReasons.includes("field-repel"));
+});
+
+test("scout pressure leaves read/review lanes largely undemoted by repellent (damping)", () => {
+  const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
+  const board = {
+    goals: {
+      g1: {
+        id: "g1", objective: "x", status: "open",
+        createdAt: "2026-05-28T00:00:00.000Z", updatedAt: "2026-05-28T00:05:00.000Z",
+        events: [
+          { id: "c1", type: "claim", peerId: "w1", mode: "read", lane: "review", at: "2026-05-28T00:05:00.000Z", summary: "review" },
+        ],
+      },
+    },
+  };
+  const suggestions = derivePeerGoalScoutSuggestions(board, { nowMs });
+  const review = suggestions.find((s) => s.recommendedLane === "review");
+  // damped read repellent must not drive a large negative adjust
+  assert.ok(review, "review suggestion exists");
+  assert.ok((review.fieldAdjust || 0) > -3, "review lane only lightly affected");
+});
+
+test("scout field adjust is disabled when signalField.enabled is false", () => {
+  const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
+  const board = {
+    goals: {
+      g1: {
+        id: "g1", objective: "x", status: "open",
+        createdAt: "2026-05-28T00:00:00.000Z", updatedAt: "2026-05-28T00:05:00.000Z",
+        events: [
+          { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", paths: ["src/a.mjs"], at: "2026-05-28T00:05:00.000Z", summary: "edit" },
+          { id: "w1", type: "work-item", peerId: "p1", itemId: "wi-impl", lane: "implementation", status: "open", summary: "implement feature", at: "2026-05-28T00:01:00.000Z" },
+        ],
+      },
+    },
+  };
+  const suggestionsDisabled = derivePeerGoalScoutSuggestions(board, { nowMs, signalField: { enabled: false } });
+  for (const s of suggestionsDisabled) assert.equal(s.fieldAdjust, undefined);
+  // Disabling removes the field demotion: disabled score should equal base - decay (no field term)
+  // and should be strictly greater than the enabled score where repellent demotes it.
+  const implDisabled = suggestionsDisabled.find((s) => s.recommendedLane === "implementation");
+  assert.ok(implDisabled, "implementation suggestion exists when disabled");
+  assert.equal(implDisabled.pressureScore, implDisabled.pressureBase - implDisabled.pressureDecay, "disabled score equals base - decay (no field term)");
+  const suggestionsEnabled = derivePeerGoalScoutSuggestions(board, { nowMs });
+  const implEnabled = suggestionsEnabled.find((s) => s.recommendedLane === "implementation");
+  assert.ok(implEnabled, "implementation suggestion exists when enabled");
+  assert.ok(implDisabled.pressureScore > implEnabled.pressureScore, "disabled score is higher than enabled score (demotion is removed)");
+});
+
+test("frustration raises scout pressure for implementation lane", () => {
+  const nowMs = Date.parse("2026-05-28T02:00:00.000Z");
+  // An expired claim on the implementation lane deposits frustration and no active-claim repellent.
+  // staleAfterMs is set very large so the claim is not stale (only expired via expiresAt).
+  const board = {
+    goals: {
+      g_frust: {
+        id: "g_frust",
+        objective: "frustration routing test",
+        status: "open",
+        createdAt: "2026-05-28T00:00:00.000Z",
+        updatedAt: "2026-05-28T01:00:00.000Z",
+        events: [
+          { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", at: "2026-05-28T00:00:00.000Z", expiresAt: "2026-05-28T00:30:00.000Z", staleAfterMs: 99_999_999, summary: "expired implementation claim" },
+          { id: "wi1", type: "work-item", peerId: "p1", itemId: "wi-impl", lane: "implementation", status: "open", summary: "implement feature", at: "2026-05-28T00:01:00.000Z" },
+        ],
+      },
+    },
+  };
+
+  // With field enabled: frustration from the expired claim should raise the score above base - decay.
+  const suggestionsEnabled = derivePeerGoalScoutSuggestions(board, { nowMs });
+  const implEnabled = suggestionsEnabled.find((s) => s.recommendedLane === "implementation");
+  assert.ok(implEnabled, "implementation work-item suggestion exists with field enabled");
+  assert.ok((implEnabled.fieldAdjust || 0) > 0, "fieldAdjust is positive (frustration raised the score)");
+  assert.ok(implEnabled.pressureReasons.includes("field-frustration"), "pressureReasons includes field-frustration");
+
+  // With field disabled: no field term, so score is lower.
+  const suggestionsDisabled = derivePeerGoalScoutSuggestions(board, { nowMs, signalField: { enabled: false } });
+  const implDisabled = suggestionsDisabled.find((s) => s.recommendedLane === "implementation");
+  assert.ok(implDisabled, "implementation work-item suggestion exists with field disabled");
+  assert.ok(implEnabled.pressureScore > implDisabled.pressureScore, "frustration-raised enabled score is strictly greater than disabled score");
+});
+
