@@ -1522,7 +1522,7 @@ function scoutFieldAdjust(suggestion = {}, field, config) {
     repel = Math.max(repel, ps.repel);
     frustration = Math.max(frustration, ps.frustration);
   }
-  const isWrite = suggestion.claimMode === "write" || lane === "implementation";
+  const isWrite = suggestion.claimMode === "write" || lane === "implementation"; // implementation lanes are write-like: even read-mode suggestions carry full repellent because implementation implies write-contention risk
   const repelEffective = repel * (isWrite ? 1 : config.repelReadDamping);
   const raw = config.weights.attract * attract + config.weights.frustration * frustration - config.weights.repel * repelEffective;
   const adjust = Math.max(-config.maxAdjust, Math.min(config.maxAdjust, Math.round(raw)));

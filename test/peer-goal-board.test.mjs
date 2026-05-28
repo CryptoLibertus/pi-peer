@@ -2041,7 +2041,7 @@ test("formatPeerGoalSignalField reports a quiet field", () => {
   assert.match(text, /No live signal/);
 });
 
-test("scout pressure demotes a crowded write lane and promotes a frustrated one", () => {
+test("scout pressure demotes a crowded write lane", () => {
   const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
   // Build a board with one goal whose implementation lane is crowded (active write claim)
   // plus an open work-item so scout emits an implementation suggestion.
@@ -2084,7 +2084,8 @@ test("scout pressure leaves read/review lanes largely undemoted by repellent (da
   const suggestions = derivePeerGoalScoutSuggestions(board, { nowMs });
   const review = suggestions.find((s) => s.recommendedLane === "review");
   // damped read repellent must not drive a large negative adjust
-  if (review) assert.ok((review.fieldAdjust || 0) > -3, "review lane only lightly affected");
+  assert.ok(review, "review suggestion exists");
+  assert.ok((review.fieldAdjust || 0) > -3, "review lane only lightly affected");
 });
 
 test("scout field adjust is disabled when signalField.enabled is false", () => {
