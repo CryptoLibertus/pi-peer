@@ -80,4 +80,5 @@ test("derivePeerSignalFieldMetrics summarizes dispersion, focus, and frustration
   const metrics = derivePeerSignalFieldMetrics(goals, { nowMs });
   assert.equal(metrics.dispersion, 1, "one lane carries live repellent");
   assert.equal(metrics.focusLane, "research");
+  assert.equal(metrics.hottestFrustrationLane, undefined);
 });
