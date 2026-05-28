@@ -461,8 +461,9 @@ export function derivePeerGoalScoutSuggestions(board, options = {}) {
   let sequence = 0;
   for (const goal of goals) {
     const state = deriveGoalState(goal, { now: Number.isFinite(nowMs) ? new Date(nowMs).toISOString() : undefined });
+    const field = derivePeerGoalSignalField(state, { nowMs, signalField: options.signalField });
     const push = (priority, kind, summary, extra = {}) => {
-      const suggestion = annotateScoutPressure(enrichScoutSuggestion({ goalId: goal.id, priority, kind, summary, ...extra }), state, goal, { nowMs, sequence: sequence++ });
+      const suggestion = annotateScoutPressure(enrichScoutSuggestion({ goalId: goal.id, priority, kind, summary, ...extra }), state, goal, { nowMs, sequence: sequence++, field, signalField: options.signalField });
       if (!hasActiveWorkForScoutSuggestion(state, suggestion)) suggestions.push(suggestion);
     };
     if (state.blockingObjections.length) {
@@ -1489,16 +1490,51 @@ function annotateScoutPressure(suggestion = {}, state = {}, goal = {}, options =
   const base = scoutPressureBaseScore(suggestion, state);
   const ageMs = scoutPressureAgeMs(suggestion, state, goal, options.nowMs);
   const decay = scoutPressureDecay(suggestion, priority, ageMs);
-  const score = Math.max(SCOUT_PRESSURE_FLOORS[priority] ?? SCOUT_PRESSURE_FLOORS.P2, base - decay);
+  const fieldConfig = resolveSignalFieldConfig(options.signalField);
+  const fieldResult = scoutFieldAdjust(suggestion, options.field, fieldConfig);
+  const score = Math.max(SCOUT_PRESSURE_FLOORS[priority] ?? SCOUT_PRESSURE_FLOORS.P2, base - decay + fieldResult.adjust);
   return stripEmpty({
     ...suggestion,
     pressureScore: score,
     pressureBase: base,
     pressureDecay: decay,
     pressureAgeMinutes: Number.isFinite(ageMs) ? Math.max(0, Math.floor(ageMs / 60_000)) : undefined,
-    pressureReasons: scoutPressureReasons(suggestion, state, decay),
+    pressureReasons: [...scoutPressureReasons(suggestion, state, decay), ...fieldResult.reasons],
+    fieldAdjust: fieldResult.adjust || undefined,
+    fieldSignal: fieldResult.adjust ? fieldResult.signal : undefined,
     scoutSequence: options.sequence,
   });
+}
+
+function scoutFieldAdjust(suggestion = {}, field, config) {
+  const empty = { adjust: 0, signal: { attract: 0, repel: 0, frustration: 0, net: 0 }, reasons: [] };
+  if (!field || config.enabled === false) return empty;
+  if (cleanText(suggestion.priority || "P2").toUpperCase() === "P0") return empty;
+  const lane = normalizeLaneName(suggestion.recommendedLane) || "general";
+  const laneSig = field.lanes?.[lane] || { attract: 0, repel: 0, frustration: 0 };
+  let attract = laneSig.attract;
+  let repel = laneSig.repel;
+  let frustration = laneSig.frustration;
+  for (const path of Array.isArray(suggestion.paths) ? suggestion.paths : []) {
+    const ps = field.paths?.[path];
+    if (!ps) continue;
+    attract = Math.max(attract, ps.attract);
+    repel = Math.max(repel, ps.repel);
+    frustration = Math.max(frustration, ps.frustration);
+  }
+  const isWrite = suggestion.claimMode === "write" || lane === "implementation";
+  const repelEffective = repel * (isWrite ? 1 : config.repelReadDamping);
+  const raw = config.weights.attract * attract + config.weights.frustration * frustration - config.weights.repel * repelEffective;
+  const adjust = Math.max(-config.maxAdjust, Math.min(config.maxAdjust, Math.round(raw)));
+  const reasons = [];
+  if (attract > 0) reasons.push("field-attract");
+  if (repelEffective > 0) reasons.push("field-repel");
+  if (frustration > 0) reasons.push("field-frustration");
+  return {
+    adjust,
+    signal: { attract: roundSignal(attract), repel: roundSignal(repel), frustration: roundSignal(frustration), net: roundSignal(attract + frustration - repel) },
+    reasons,
+  };
 }
 
 function scoutPressureBaseScore(suggestion = {}, state = {}) {

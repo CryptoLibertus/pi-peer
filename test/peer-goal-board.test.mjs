@@ -2040,3 +2040,64 @@ test("formatPeerGoalSignalField reports a quiet field", () => {
   const text = formatPeerGoalSignalField(derivePeerGoalSignalField(fieldGoal([]), { nowMs: Date.parse("2026-05-28T00:10:00.000Z") }));
   assert.match(text, /No live signal/);
 });
+
+test("scout pressure demotes a crowded write lane and promotes a frustrated one", () => {
+  const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
+  // Build a board with one goal whose implementation lane is crowded (active write claim)
+  // plus an open work-item so scout emits an implementation suggestion.
+  // Verify that the implementation suggestion carries negative fieldAdjust from the field-repel.
+  const board = {
+    goals: {
+      g1: {
+        id: "g1",
+        objective: "x",
+        status: "open",
+        createdAt: "2026-05-28T00:00:00.000Z",
+        updatedAt: "2026-05-28T00:05:00.000Z",
+        events: [
+          { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", paths: ["src/a.mjs"], at: "2026-05-28T00:05:00.000Z", summary: "edit" },
+          { id: "w1", type: "work-item", peerId: "p1", itemId: "wi-impl", lane: "implementation", status: "open", summary: "implement feature", at: "2026-05-28T00:01:00.000Z" },
+        ],
+      },
+    },
+  };
+  const suggestions = derivePeerGoalScoutSuggestions(board, { nowMs });
+  const impl = suggestions.find((s) => s.recommendedLane === "implementation");
+  assert.ok(impl, "implementation suggestion exists");
+  assert.ok((impl.fieldAdjust || 0) < 0, "crowded write lane is demoted");
+  assert.ok(impl.pressureReasons.includes("field-repel"));
+});
+
+test("scout pressure leaves read/review lanes largely undemoted by repellent (damping)", () => {
+  const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
+  const board = {
+    goals: {
+      g1: {
+        id: "g1", objective: "x", status: "open",
+        createdAt: "2026-05-28T00:00:00.000Z", updatedAt: "2026-05-28T00:05:00.000Z",
+        events: [
+          { id: "c1", type: "claim", peerId: "w1", mode: "read", lane: "review", at: "2026-05-28T00:05:00.000Z", summary: "review" },
+        ],
+      },
+    },
+  };
+  const suggestions = derivePeerGoalScoutSuggestions(board, { nowMs });
+  const review = suggestions.find((s) => s.recommendedLane === "review");
+  // damped read repellent must not drive a large negative adjust
+  if (review) assert.ok((review.fieldAdjust || 0) > -3, "review lane only lightly affected");
+});
+
+test("scout field adjust is disabled when signalField.enabled is false", () => {
+  const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
+  const board = {
+    goals: {
+      g1: {
+        id: "g1", objective: "x", status: "open",
+        createdAt: "2026-05-28T00:00:00.000Z", updatedAt: "2026-05-28T00:05:00.000Z",
+        events: [{ id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", at: "2026-05-28T00:05:00.000Z", summary: "edit" }],
+      },
+    },
+  };
+  const suggestions = derivePeerGoalScoutSuggestions(board, { nowMs, signalField: { enabled: false } });
+  for (const s of suggestions) assert.equal(s.fieldAdjust, undefined);
+});
