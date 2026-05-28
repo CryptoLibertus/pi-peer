@@ -3,7 +3,7 @@ import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, posix as pathPosix } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { normalizePeerGoalClosurePolicy } from "./config.mjs";
-import { appendGoalJournalRecord, goalBoardPath, loadGoalBoardSnapshot, PEER_GOAL_BOARD_RELATIVE_PATH as STORE_PEER_GOAL_BOARD_RELATIVE_PATH, replayGoalJournal, saveGoalBoardSnapshot } from "./goal-store.mjs";
+import { appendGoalJournalRecord, compactGoalJournal, goalBoardPath, goalJournalPath, loadGoalBoardSnapshot, PEER_GOAL_BOARD_RELATIVE_PATH as STORE_PEER_GOAL_BOARD_RELATIVE_PATH, replayGoalJournal, saveGoalBoardSnapshot } from "./goal-store.mjs";
 
 export const PEER_GOAL_BOARD_RELATIVE_PATH = STORE_PEER_GOAL_BOARD_RELATIVE_PATH;
 
@@ -69,6 +69,11 @@ const SIGNAL_FIELD = Object.freeze({
 const GOAL_BOARD_LOCK_STALE_MS = 30_000;
 const GOAL_BOARD_LOCK_RETRY_MS = 10;
 const GOAL_BOARD_LOCK_TIMEOUT_MS = 5_000;
+// The journal is a write-ahead fallback that appends a full board snapshot per write.
+// Without compaction it grows unbounded (observed at 1.1GB). Collapse it back to a single
+// snapshot once it exceeds the larger of an absolute floor or a multiple of the board size.
+const GOAL_JOURNAL_COMPACT_RATIO = 4;
+const GOAL_JOURNAL_COMPACT_MIN_BYTES = 256 * 1024;
 
 export async function loadPeerGoalBoard(root) {
   try {
@@ -1770,8 +1775,37 @@ async function updatePeerGoalBoard(root, updater) {
     const result = await updater(board);
     await appendGoalJournalRecord(root, { type: "snapshot", board });
     await savePeerGoalBoard(root, board);
+    await compactGoalJournalIfLarge(root, board);
     return result;
   });
+}
+
+export function shouldCompactGoalJournal(journalBytes, boardBytes) {
+  const threshold = Math.max(GOAL_JOURNAL_COMPACT_MIN_BYTES, GOAL_JOURNAL_COMPACT_RATIO * (boardBytes || 0));
+  return (journalBytes || 0) > threshold;
+}
+
+// Best-effort: a compaction failure must never break a board write, since the journal is
+// only a recovery fallback. Earlier full-snapshot records are dead weight on replay anyway.
+async function compactGoalJournalIfLarge(root, board) {
+  try {
+    const [journalBytes, boardBytes] = await Promise.all([fileByteSize(goalJournalPath(root)), fileByteSize(goalBoardPath(root))]);
+    if (journalBytes === undefined) return;
+    if (shouldCompactGoalJournal(journalBytes, boardBytes)) {
+      await compactGoalJournal(root, board, { normalize: normalizeBoard });
+    }
+  } catch {
+    // ignore — compaction is non-critical
+  }
+}
+
+async function fileByteSize(path) {
+  try {
+    return (await stat(path)).size;
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
 }
 
 async function withGoalBoardLock(root, fn) {

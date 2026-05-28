@@ -1,11 +1,11 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalSignalField, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, formatPeerGoalSignalField, loadPeerGoalBoard, projectSubagentEvidence, recordPeerGoalTaskDispatch, validateGoalReadyToClose } from "../src/peers/goal-board.mjs";
+import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalSignalField, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, formatPeerGoalSignalField, loadPeerGoalBoard, projectSubagentEvidence, recordPeerGoalTaskDispatch, shouldCompactGoalJournal, validateGoalReadyToClose } from "../src/peers/goal-board.mjs";
 import { appendGoalJournalRecord, compactGoalJournal, goalJournalPath, replayGoalJournal } from "../src/peers/goal-store.mjs";
 import { parsePeerCommand } from "../src/peers/command.mjs";
 
@@ -2147,5 +2147,42 @@ test("frustration raises scout pressure for implementation lane", () => {
   const implDisabled = suggestionsDisabled.find((s) => s.recommendedLane === "implementation");
   assert.ok(implDisabled, "implementation work-item suggestion exists with field disabled");
   assert.ok(implEnabled.pressureScore > implDisabled.pressureScore, "frustration-raised enabled score is strictly greater than disabled score");
+});
+
+test("shouldCompactGoalJournal triggers above the floor and the board-size ratio", () => {
+  // Below the absolute floor: never compact, even though it dwarfs the board.
+  assert.equal(shouldCompactGoalJournal(100 * 1024, 1024), false);
+  // Above the floor and far above the board: compact.
+  assert.equal(shouldCompactGoalJournal(300 * 1024, 1024), true);
+  // Large board: floor is irrelevant, ratio governs. 10MB journal vs 4MB board (16MB threshold) → keep.
+  assert.equal(shouldCompactGoalJournal(10 * 1024 * 1024, 4 * 1024 * 1024), false);
+  // Same board, 20MB journal exceeds the 16MB ratio threshold → compact.
+  assert.equal(shouldCompactGoalJournal(20 * 1024 * 1024, 4 * 1024 * 1024), true);
+});
+
+test("a normal board write compacts a journal that has grown past the threshold", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-peer-journal-compact-"));
+  const goal = await createPeerGoal(root, { objective: "compaction target", peerId: "planner" });
+  // Simulate the legacy unbounded-growth state: a journal full of redundant full-board snapshots.
+  const snapshotLine = `${JSON.stringify({ type: "snapshot", board: { version: 1, goals: {} } })}\n`;
+  await writeFile(goalJournalPath(root), snapshotLine.repeat(8000), "utf8");
+  const before = (await stat(goalJournalPath(root))).size;
+  assert.ok(before > 256 * 1024, "journal padded over the compaction floor");
+
+  // Any ordinary mutation should collapse the journal to a single current snapshot.
+  await appendPeerGoalEvent(root, goal.id, { type: "note", peerId: "planner", summary: "tick" });
+
+  const after = (await stat(goalJournalPath(root))).size;
+  assert.ok(after < before, "journal shrank after compaction");
+  assert.ok(after < 256 * 1024, "journal is back under the floor (single snapshot)");
+
+  // Compaction must preserve state: the board and the new event still load.
+  const board = await loadPeerGoalBoard(root);
+  assert.ok(board.goals[goal.id], "goal survived compaction");
+  assert.equal(board.goals[goal.id].events.some((event) => event.summary === "tick"), true);
+
+  // And the compacted journal replays back to the same board.
+  const replayed = await replayGoalJournal(root);
+  assert.ok(replayed.board.goals[goal.id], "compacted journal replays to the live board");
 });
 
