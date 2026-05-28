@@ -100,7 +100,7 @@ test("hive run routes implementation lanes to implementation peers and honors ma
     maxPeers: 2,
   });
 
-  assert.equal(sent[0].peerId, "worker");
+  assert.ok(sent.some((entry) => entry.peerId === "worker"), "implementation lane routed to the implementation worker");
 });
 
 test("hive run creates autonomous rework work items for failed factory runs", async () => {

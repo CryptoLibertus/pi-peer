@@ -2095,11 +2095,57 @@ test("scout field adjust is disabled when signalField.enabled is false", () => {
       g1: {
         id: "g1", objective: "x", status: "open",
         createdAt: "2026-05-28T00:00:00.000Z", updatedAt: "2026-05-28T00:05:00.000Z",
-        events: [{ id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", at: "2026-05-28T00:05:00.000Z", summary: "edit" }],
+        events: [
+          { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", paths: ["src/a.mjs"], at: "2026-05-28T00:05:00.000Z", summary: "edit" },
+          { id: "w1", type: "work-item", peerId: "p1", itemId: "wi-impl", lane: "implementation", status: "open", summary: "implement feature", at: "2026-05-28T00:01:00.000Z" },
+        ],
       },
     },
   };
-  const suggestions = derivePeerGoalScoutSuggestions(board, { nowMs, signalField: { enabled: false } });
-  for (const s of suggestions) assert.equal(s.fieldAdjust, undefined);
+  const suggestionsDisabled = derivePeerGoalScoutSuggestions(board, { nowMs, signalField: { enabled: false } });
+  for (const s of suggestionsDisabled) assert.equal(s.fieldAdjust, undefined);
+  // Disabling removes the field demotion: disabled score should equal base - decay (no field term)
+  // and should be strictly greater than the enabled score where repellent demotes it.
+  const implDisabled = suggestionsDisabled.find((s) => s.recommendedLane === "implementation");
+  assert.ok(implDisabled, "implementation suggestion exists when disabled");
+  assert.equal(implDisabled.pressureScore, implDisabled.pressureBase - implDisabled.pressureDecay, "disabled score equals base - decay (no field term)");
+  const suggestionsEnabled = derivePeerGoalScoutSuggestions(board, { nowMs });
+  const implEnabled = suggestionsEnabled.find((s) => s.recommendedLane === "implementation");
+  assert.ok(implEnabled, "implementation suggestion exists when enabled");
+  assert.ok(implDisabled.pressureScore > implEnabled.pressureScore, "disabled score is higher than enabled score (demotion is removed)");
+});
+
+test("frustration raises scout pressure for implementation lane", () => {
+  const nowMs = Date.parse("2026-05-28T02:00:00.000Z");
+  // An expired claim on the implementation lane deposits frustration and no active-claim repellent.
+  // staleAfterMs is set very large so the claim is not stale (only expired via expiresAt).
+  const board = {
+    goals: {
+      g_frust: {
+        id: "g_frust",
+        objective: "frustration routing test",
+        status: "open",
+        createdAt: "2026-05-28T00:00:00.000Z",
+        updatedAt: "2026-05-28T01:00:00.000Z",
+        events: [
+          { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", at: "2026-05-28T00:00:00.000Z", expiresAt: "2026-05-28T00:30:00.000Z", staleAfterMs: 99_999_999, summary: "expired implementation claim" },
+          { id: "wi1", type: "work-item", peerId: "p1", itemId: "wi-impl", lane: "implementation", status: "open", summary: "implement feature", at: "2026-05-28T00:01:00.000Z" },
+        ],
+      },
+    },
+  };
+
+  // With field enabled: frustration from the expired claim should raise the score above base - decay.
+  const suggestionsEnabled = derivePeerGoalScoutSuggestions(board, { nowMs });
+  const implEnabled = suggestionsEnabled.find((s) => s.recommendedLane === "implementation");
+  assert.ok(implEnabled, "implementation work-item suggestion exists with field enabled");
+  assert.ok((implEnabled.fieldAdjust || 0) > 0, "fieldAdjust is positive (frustration raised the score)");
+  assert.ok(implEnabled.pressureReasons.includes("field-frustration"), "pressureReasons includes field-frustration");
+
+  // With field disabled: no field term, so score is lower.
+  const suggestionsDisabled = derivePeerGoalScoutSuggestions(board, { nowMs, signalField: { enabled: false } });
+  const implDisabled = suggestionsDisabled.find((s) => s.recommendedLane === "implementation");
+  assert.ok(implDisabled, "implementation work-item suggestion exists with field disabled");
+  assert.ok(implEnabled.pressureScore > implDisabled.pressureScore, "frustration-raised enabled score is strictly greater than disabled score");
 });
 
