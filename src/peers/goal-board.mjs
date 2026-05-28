@@ -1542,6 +1542,8 @@ function addSignalChannel(map, key, channel, value, { isLane, lane } = {}) {
 }
 
 function finalizeSignalField(goalId, nowMs, config, lanes, paths) {
+  // channels accumulate raw (pre-rounded) lane values; per-lane values are rounded for display,
+  // so sum(lanes[k].attract) may differ slightly from channels.attract.
   const channels = { attract: 0, repel: 0, frustration: 0 };
   const laneObj = {};
   for (const [key, e] of lanes) {

@@ -1947,8 +1947,6 @@ test("large epic self-organization flow resolves lanes, gates closure, and close
   assert.equal(derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root)).length, 0);
 });
 
-const HOUR = 60 * 60 * 1000;
-
 function fieldGoal(events) {
   return { id: "g1", objective: "field test", status: "open", createdAt: "2026-05-28T00:00:00.000Z", updatedAt: "2026-05-28T00:00:00.000Z", events };
 }
