@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, loadPeerGoalBoard, projectSubagentEvidence, recordPeerGoalTaskDispatch, validateGoalReadyToClose } from "../src/peers/goal-board.mjs";
+import { appendPeerGoalEvent, beginPeerGoalTask, closePeerGoal, completePeerGoalTask, createPeerGoal, deriveGoalState, derivePeerGoalScoutSuggestions, derivePeerGoalSignalField, derivePeerGoalWorkKey, formatPeerGoal, formatPeerGoalList, formatPeerGoalScout, formatPeerGoalSignalField, loadPeerGoalBoard, projectSubagentEvidence, recordPeerGoalTaskDispatch, validateGoalReadyToClose } from "../src/peers/goal-board.mjs";
 import { appendGoalJournalRecord, compactGoalJournal, goalJournalPath, replayGoalJournal } from "../src/peers/goal-store.mjs";
 import { parsePeerCommand } from "../src/peers/command.mjs";
 
@@ -1945,4 +1945,76 @@ test("large epic self-organization flow resolves lanes, gates closure, and close
   const closed = await closePeerGoal(root, goalId, { peerId: "coordinator", summary: "large epic gates satisfied" });
   assert.equal(closed.status, "closed");
   assert.equal(derivePeerGoalScoutSuggestions(await loadPeerGoalBoard(root)).length, 0);
+});
+
+const HOUR = 60 * 60 * 1000;
+
+function fieldGoal(events) {
+  return { id: "g1", objective: "field test", status: "open", createdAt: "2026-05-28T00:00:00.000Z", updatedAt: "2026-05-28T00:00:00.000Z", events };
+}
+
+test("signal field deposits attractant from findings and passing votes", () => {
+  const nowMs = Date.parse("2026-05-28T01:00:00.000Z");
+  const at = "2026-05-28T00:30:00.000Z";
+  const field = derivePeerGoalSignalField(
+    fieldGoal([
+      { id: "f1", type: "finding", peerId: "r1", lane: "research", at, summary: "found" },
+      { id: "v1", type: "vote", peerId: "rev1", lane: "review", verdict: "pass", at, summary: "lgtm" },
+    ]),
+    { nowMs },
+  );
+  assert.ok(field.lanes.research.attract > 0, "research lane has attractant");
+  assert.ok(field.lanes.review.attract > 0, "review lane has attractant");
+  assert.equal(field.lanes.research.repel, 0);
+  assert.equal(field.lanes.research.frustration, 0);
+});
+
+test("signal field deposits repellent from active write claims, heavier than read", () => {
+  const nowMs = Date.parse("2026-05-28T00:10:00.000Z");
+  const at = "2026-05-28T00:00:00.000Z";
+  const field = derivePeerGoalSignalField(
+    fieldGoal([
+      { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", paths: ["src/a.mjs"], at, summary: "edit a" },
+      { id: "c2", type: "claim", peerId: "w2", mode: "read", lane: "review", at, summary: "read b" },
+    ]),
+    { nowMs },
+  );
+  assert.ok(field.lanes.implementation.repel > field.lanes.review.repel, "write claim repels more than read");
+  assert.ok(field.paths["src/a.mjs"].repel > 0, "path-level repellent recorded");
+  assert.equal(field.paths["src/a.mjs"].lane, "implementation");
+});
+
+test("signal field deposits frustration from stale claims", () => {
+  // claim made long ago, no heartbeat, default stale = 45m, so it is stale by now
+  const nowMs = Date.parse("2026-05-28T02:00:00.000Z");
+  const field = derivePeerGoalSignalField(
+    fieldGoal([
+      { id: "c1", type: "claim", peerId: "w1", mode: "write", lane: "implementation", at: "2026-05-28T00:00:00.000Z", summary: "stuck" },
+    ]),
+    { nowMs },
+  );
+  assert.ok(field.lanes.implementation.frustration > 0, "stale claim produces frustration");
+});
+
+test("signal field decays older deposits below identical recent ones", () => {
+  const at = "2026-05-28T00:00:00.000Z";
+  const goal = fieldGoal([{ id: "f1", type: "finding", peerId: "r1", lane: "research", at, summary: "x" }]);
+  const recent = derivePeerGoalSignalField(goal, { nowMs: Date.parse("2026-05-28T00:05:00.000Z") });
+  const old = derivePeerGoalSignalField(goal, { nowMs: Date.parse("2026-05-28T03:00:00.000Z") });
+  assert.ok(recent.lanes.research.attract > old.lanes.research.attract, "older deposit decayed");
+});
+
+test("signal field skips deposits with unparseable anchor timestamps", () => {
+  const field = derivePeerGoalSignalField(
+    fieldGoal([{ id: "f1", type: "finding", peerId: "r1", lane: "research", at: "not-a-date", summary: "x" }]),
+    { nowMs: Date.parse("2026-05-28T01:00:00.000Z") },
+  );
+  assert.equal(Object.keys(field.lanes).length, 0, "no lane recorded for unparseable anchor");
+});
+
+test("signal field is empty and non-throwing for a goal with no events", () => {
+  const field = derivePeerGoalSignalField(fieldGoal([]), { nowMs: Date.parse("2026-05-28T01:00:00.000Z") });
+  assert.deepEqual(field.lanes, {});
+  assert.equal(field.dominant, null);
+  assert.deepEqual(field.channels, { attract: 0, repel: 0, frustration: 0 });
 });
