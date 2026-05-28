@@ -2102,3 +2102,15 @@ test("scout field adjust is disabled when signalField.enabled is false", () => {
   const suggestions = derivePeerGoalScoutSuggestions(board, { nowMs, signalField: { enabled: false } });
   for (const s of suggestions) assert.equal(s.fieldAdjust, undefined);
 });
+
+test("/peer goal field parses to a field goal action", () => {
+  const parsed = parsePeerCommand("goal field g1");
+  assert.equal(parsed.goalAction, "field");
+  assert.equal(parsed.goalId, "g1");
+});
+
+test("/peer field alias parses to a field goal action", () => {
+  const parsed = parsePeerCommand("field g1");
+  assert.equal(parsed.goalAction, "field");
+  assert.equal(parsed.goalId, "g1");
+});

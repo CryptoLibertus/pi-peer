@@ -10,6 +10,7 @@ const PEER_GOAL_ALIASES = Object.freeze({
   current: ["show"],
   fanout: ["fanout"],
   scout: ["scout"],
+  field: ["field"],
   dashboard: ["dashboard"],
   synthesize: ["synthesize"],
   synthesis: ["synthesize"],
@@ -632,6 +633,7 @@ function parsePeerGoalCommand(parsed, flags, positionals) {
   if (action === "synthesize" || action === "synthesis") return { ...withAction, goalAction: "synthesize", goalId: rest[0], limit: positiveIntegerFlag(flags.limit) };
   if (action === "verify") return { ...withAction, goalId: rest[0] };
   if (action === "scout") return { ...withAction, goalId: rest[0], limit: positiveIntegerFlag(flags.limit), includeClosed: flagEnabled(flags.includeClosed) };
+  if (action === "field") return { ...withAction, goalId: rest[0], includeClosed: flagEnabled(flags.includeClosed) };
   if (action === "fanout") {
     const goalId = rest[0];
     const objective = rest.slice(1).join(" ").trim();
