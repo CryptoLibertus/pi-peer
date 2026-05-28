@@ -1786,7 +1786,10 @@ export function shouldCompactGoalJournal(journalBytes, boardBytes) {
 }
 
 // Best-effort: a compaction failure must never break a board write, since the journal is
-// only a recovery fallback. Earlier full-snapshot records are dead weight on replay anyway.
+// only a recovery fallback and earlier full-snapshot records are dead weight on replay anyway.
+// Swallowing is safe because the check runs on every write — a transient failure self-heals on
+// the next mutation — and a persistent disk/permission failure surfaces earlier via
+// savePeerGoalBoard, which propagates. (These modules avoid console output to keep the TUI clean.)
 async function compactGoalJournalIfLarge(root, board) {
   try {
     const [journalBytes, boardBytes] = await Promise.all([fileByteSize(goalJournalPath(root)), fileByteSize(goalBoardPath(root))]);
@@ -1795,7 +1798,7 @@ async function compactGoalJournalIfLarge(root, board) {
       await compactGoalJournal(root, board, { normalize: normalizeBoard });
     }
   } catch {
-    // ignore — compaction is non-critical
+    // ignore — compaction is non-critical (see above)
   }
 }
 

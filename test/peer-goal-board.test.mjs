@@ -2158,6 +2158,9 @@ test("shouldCompactGoalJournal triggers above the floor and the board-size ratio
   assert.equal(shouldCompactGoalJournal(10 * 1024 * 1024, 4 * 1024 * 1024), false);
   // Same board, 20MB journal exceeds the 16MB ratio threshold → compact.
   assert.equal(shouldCompactGoalJournal(20 * 1024 * 1024, 4 * 1024 * 1024), true);
+  // Missing/zero sizes must not throw and must not trigger compaction (early lifecycle).
+  assert.equal(shouldCompactGoalJournal(undefined, undefined), false);
+  assert.equal(shouldCompactGoalJournal(0, 0), false);
 });
 
 test("a normal board write compacts a journal that has grown past the threshold", async () => {
