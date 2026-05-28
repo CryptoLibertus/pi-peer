@@ -30,6 +30,20 @@ test("parses dashboard alias as read-only goal dashboard", () => {
   assert.equal(parsed.goalId, "goal_123");
 });
 
+test("/peer goal field parses to a field goal action", () => {
+  const parsed = parsePeerCommand("goal field g1");
+  assert.equal(parsed.subcommand, "goal");
+  assert.equal(parsed.goalAction, "field");
+  assert.equal(parsed.goalId, "g1");
+});
+
+test("/peer field alias parses to a field goal action", () => {
+  const parsed = parsePeerCommand("field g1");
+  assert.equal(parsed.subcommand, "goal");
+  assert.equal(parsed.goalAction, "field");
+  assert.equal(parsed.goalId, "g1");
+});
+
 test("parses peer context command", () => {
   const parsed = parsePeerCommand("context");
   assert.equal(parsed.subcommand, "context");
